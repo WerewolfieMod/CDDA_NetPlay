@@ -211,6 +211,13 @@ bool debug_has_error_been_observed()
     return error_observed;
 }
 
+// DDA MP: when set, realDebugmsg skips the interactive prompt entirely.
+static bool mp_suppress_prompts = false;
+void debug_suppress_prompts( bool on )
+{
+    mp_suppress_prompts = on;
+}
+
 void debug_reset_error_observed()
 {
     error_observed = false;
@@ -544,6 +551,16 @@ void realDebugmsg( const char *filename, const char *line, const char *funcname,
     if( capturing ) {
         captured += text;
     } else {
+
+        if( mp_suppress_prompts ) {
+            if( !rep_folder.test( filename, line, funcname, text ) ) {
+                DebugLog( D_ERROR, D_MAIN ) << filename << ":" << line << " [" << funcname << "] " <<
+                                            text <<
+                                            std::flush;
+                rep_folder.set( filename, line, funcname, text );
+            }
+            return;
+        }
 
         if( !rep_folder.test( filename, line, funcname, text ) ) {
             DebugLog( D_ERROR, D_MAIN ) << filename << ":" << line << " [" << funcname << "] " << text <<

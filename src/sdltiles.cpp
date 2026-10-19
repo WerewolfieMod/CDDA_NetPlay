@@ -48,6 +48,7 @@
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
+#include "netplay/netplay.h" // DDA MP: present trace role tagging
 #include "hash_utils.h"
 #include "horde_entity.h"
 #include "input.h"
@@ -1160,10 +1161,59 @@ void refresh_display()
     if( test_mode ) {
         return;
     }
+    /* DDA MP: present trace for the first N calls of every process. The
+     * fullscreen client showed a black frame until the first input even
+     * though the display buffer was complete; this pinpoints whether the
+     * present gate, Copy or target state swallows the frame. */
+    static int mp_count = 0;
+    const int mp_id = ++mp_count;
+    const bool mp_log_now = mp_id <= 40 || mp_id % 100 == 0;
+    if( mp_log_now ) {
+        // Tag the role so host/client traces can be told apart in the shared
+        // netplay log; window flags indicate hidden/minimized/fullscreen.
+        const char *role = "menu";
+        if( netplay::host_is_running() ) {
+            role = "host";
+        } else if( netplay::client_is_connected() ) {
+            role = "client";
+        }
+        const Uint32 wflags = ::window.get() ? SDL_GetWindowFlags( ::window.get() ) : 0;
+        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        if( f ) {
+            std::fprintf( f, "present #%d [%s]: begin wflags=0x%08x ticks=%u\n", mp_id, role,
+                          wflags, GetTicks() );
+            std::fclose( f );
+        }
+    }
 
-    if( !present_gate() ) {
-        // skip whole present, it will retry after next drain
+    if( renderer_coordinator.should_abort_frame() ) {
+        needupdate = true;
+        if( mp_log_now ) {
+            std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+            if( f ) {
+                std::fprintf( f, "present #%d: gate abort_frame\n", mp_id );
+                std::fclose( f );
+            }
+        }
         return;
+    }
+    if( request_tile_repair_if_needed() ) {
+        needupdate = true;
+        if( mp_log_now ) {
+            std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+            if( f ) {
+                std::fprintf( f, "present #%d: gate tile_repair\n", mp_id );
+                std::fclose( f );
+            }
+        }
+        return;
+    }
+    if( mp_log_now ) {
+        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        if( f ) {
+            std::fprintf( f, "present #%d: gate ok\n", mp_id );
+            std::fclose( f );
+        }
     }
 
 #if defined(SDL_SOUND)
@@ -1195,12 +1245,47 @@ void refresh_display()
     // Integer-scaled top-left blit; remainder is border. A null full-window blit
     // would fractionally scale and grid the minimap.
     const SDL_Rect dstrect = get_display_buffer_render_rect();
+    if( mp_log_now ) {
+        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        if( f ) {
+            std::fprintf( f, "present #%d: dstrect %d,%d %dx%d\n", mp_id, dstrect.x,
+                          dstrect.y, dstrect.w, dstrect.h );
+            std::fclose( f );
+        }
+    }
     if( dstrect.w > 0 && dstrect.h > 0 ) {
         RenderCopy( renderer, display_buffer, nullptr, &dstrect );
     } else {
         RenderCopy( renderer, display_buffer, nullptr, nullptr );
     }
 #endif
+    // DDA MP: what is actually copied to the window right before present.
+    // Compare against netplay_dump_*.png (display buffer) when the client
+    // shows a black frame: identical symbiosis proves present copy state.
+    {
+        static int mp_screen_dump_count = 0;
+        ++mp_screen_dump_count;
+        const bool mp_dump = mp_screen_dump_count <= 3 || mp_screen_dump_count % 50 == 0;
+        if( mp_dump && permanent_render_target_bind( renderer, nullptr, present_vp ) ==
+            bind_result::ok ) {
+            const char *role = "menu";
+            if( netplay::host_is_running() ) {
+                role = "host";
+            } else if( netplay::client_is_connected() ) {
+                role = "client";
+            }
+            SDL_Rect vp_rect;
+            RenderGetViewport( renderer, &vp_rect );
+            SDL_Surface_Ptr surf = CreateRGBSurface( 0, vp_rect.w, vp_rect.h, 32, 0, 0, 0, 0 );
+            if( surf && surf->pixels
+                && RenderReadPixels( renderer, nullptr, GetSurfacePixelFormat( surf ),
+                                     surf->pixels, surf->pitch ) ) {
+                const std::string fn = "netplay_present_" + std::string( role ) + "_" +
+                                       std::to_string( mp_screen_dump_count ) + ".png";
+                IMG_SavePNG( surf.get(), fn.c_str() );
+            }
+        }
+    }
 
 #if defined(__ANDROID__)
     if( g ) {
@@ -1210,6 +1295,13 @@ void refresh_display()
 #endif
     draw_gamepad_radial_menu();
     RenderPresent( renderer );
+    if( mp_log_now ) {
+        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        if( f ) {
+            std::fprintf( f, "present #%d: presented\n", mp_id );
+            std::fclose( f );
+        }
+    }
 }
 
 // only update if the set interval has elapsed
@@ -7585,3 +7677,585 @@ bool window_contains_point_relative( const catacurses::window &win, const point 
     const half_open_rectangle<point> win_bounds( point::zero, bound );
     return win_bounds.contains( p );
 }
+
+#if defined(TILES)
+/* ------------------------------------------------------------------ */
+/* DDA MP: tileset replay backend                                      */
+/*                                                                     */
+/* The netplay client (and the host's debug replay) needs to render    */
+/* world slices from SNAPSHOT data without a loaded world. All the     */
+/* sprite machinery of cata_tiles works on bare ids; only the "scene"  */
+/* entry point (cata_tiles::draw) is world-coupled. This backend sets  */
+/* up a private cata_tiles context, seeds it per frame (clip/origin/   */
+/* lightlike state exactly like draw()'s prelude) and then emits       */
+/* sprites directly by id.                                             */
+/* ------------------------------------------------------------------ */
+
+class netplay_tile_context : public cata_tiles
+{
+    public:
+        using cata_tiles::cata_tiles;
+        using cata_tiles::draw_from_id_string;
+        using cata_tiles::flush_sprite_shader_for_untextured_draw;
+
+        void get_tile_px( int &w, int &h ) const {
+            w = tile_width;
+            h = tile_height;
+        }
+
+        void set_frame_anchor( const point &dest, const point &win_size,
+                               const tripoint_bub_ms &pivot )
+        {
+            const point s = get_window_base_tile_counts( win_size );
+            o = pivot.xy().raw() - point( s.x / 2, s.y / 2 );
+            op = dest;
+            screentile_width = s.x;
+            screentile_height = s.y;
+        }
+
+        /* Tile id existence check for the replay renderer. A missing tile id
+         * would take the base-class ASCII fallback, which constructs runtime
+         * `item` objects for ITEM category — those assert on `frozen` in a
+         * client process that never finalized item templates. */
+        bool replay_has_tile( const std::string &id )
+        {
+            return tileset_ptr && tileset_ptr->find_tile_type( id ) != nullptr;
+        }
+
+        /* Public passthrough to the protected looks_like resolver, used by the
+         * replay backend to mirror the item tile fallback of the base class. */
+        std::optional<tile_lookup_res> replay_find_tile_looks_like(
+            const std::string &id, TILE_CATEGORY category, const std::string &variant )
+        {
+            return find_tile_looks_like( id, category, variant );
+        }
+
+        /* Replay draws carry per-cell light from the host and must never take
+         * the smooth-lighting path (no lightmap is prepared here; the lit
+         * sprite path asserts lit_extent membership and would abort). */
+        void sanitize_replay_lighting()
+        {
+            smooth_lighting_active = false;
+            lit_per_tile = false;
+            lighting_status_ = smooth_lighting::lighting_status::classic_by_option;
+        }
+
+        /* DDA MP: replay one sprite under draw_light::fixed, so it keeps the
+         * supplied lit_level's look whatever the scene light is — like the
+         * host's draw_item_highlight and draw_vpart badges. */
+        void replay_draw_fixed( const char *id, TILE_CATEGORY kind,
+                                const std::string &variant, const tripoint_bub_ms &p,
+                                int subtile, int rota, lit_level ll, int height_3d )
+        {
+            restore_on_out_of_scope<draw_light> restore( m_draw_light );
+            m_draw_light = draw_light::fixed;
+            draw_from_id_string( id, kind, variant, p, subtile, rota, ll, false,
+                                 height_3d );
+        }
+
+        /* DDA MP: screen-space top-left of the cell whose bubble position is
+         * `bub`. Replicates cata_tiles::player_to_screen for the replay anchor
+         * (player_to_screen itself needs a point_bub_ms, which is awkward to
+         * construct here). Used by the per-cell light overlay. */
+        point replay_cell_screen( const point &bub ) const
+        {
+            if( is_isometric() ) {
+                // Replicates cata_tiles::player_to_tile + player_to_screen
+                // (iso branch) using direct member access.
+                const int col = bub.y + bub.x + screentile_width / 2 - o.y - o.x;
+                const int row = bub.y - bub.x + screentile_height / 2 - o.y + o.x;
+                return op + point{
+                           divide_round_down( ( col - 1 ) * tile_width, 2 ),
+                           divide_round_down( ( row + 1 ) * tile_width, 4 ) - tile_height,
+                       };
+            }
+            const point colrow = bub - o;
+            return op + point{ colrow.x * tile_width, colrow.y * tile_height };
+        }
+};
+
+namespace {
+
+struct netplay_tile_backend {
+    std::unique_ptr<netplay_tile_context> tiles;
+    std::unique_ptr<display_buffer_draw_scope> scope;
+    tripoint_bub_ms anchor;
+    // DDA MP: streamed smooth-lighting texels of the current snapshot, laid
+    // out like one lightmap level (light columns + reach columns); z is the
+    // anchor's z. Reset per frame batch, refilled from the snapshot cells.
+    std::vector<smooth_lighting::lightmap_texel> lm_strip;
+    bool lm_any = false;
+    // lit frame (netplay_begin_replay_lit) took over lighting this present
+    bool lit_ok = false;
+};
+
+} // namespace
+
+static netplay_tile_backend *netplay_backend_cast( void *handle )
+{
+    return static_cast<netplay_tile_backend *>( handle );
+}
+
+namespace netplay
+{
+
+/* DDA MP: save the display buffer to a PNG (diagnostics; first N frames of
+ * each backend, unconditional — do not gate on env, logs failures to
+ * netplay_tiles.log). */
+static void netplay_dump_display_buffer( int frame_no )
+{
+    auto dump_log = []( const std::string & msg ) {
+        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        if( f ) {
+            std::fputs( msg.c_str(), f );
+            std::fputs( "\n", f );
+            std::fclose( f );
+        }
+    };
+    if( !renderer || !display_buffer ) {
+        dump_log( "dump #" + std::to_string( frame_no ) + ": no renderer/buffer" );
+        return;
+    }
+    if( display_buffer_scope_depth != 0 ) {
+        dump_log( "dump #" + std::to_string( frame_no ) + ": inside outer scope" );
+        return;
+    }
+    union pass_bits {
+        cata_shader::variant_pass *vp;
+        void *v;
+    };
+    pass_bits pb;
+    pb.vp = get_shared_variant_pass();
+    const bind_result br = permanent_render_target_bind( renderer, display_buffer.get(), pb.vp );
+    if( br != bind_result::ok ) {
+        dump_log( "dump #" + std::to_string( frame_no ) + ": bind failed r=" +
+                  std::to_string( static_cast<int>( br ) ) );
+        return;
+    }
+    SDL_Rect viewport;
+    RenderGetViewport( renderer, &viewport );
+    SDL_Surface_Ptr surface = CreateRGBSurface( 0, viewport.w, viewport.h, 32, 0, 0, 0, 0 );
+    if( !surface || !surface->pixels ) {
+        permanent_render_target_bind( renderer, nullptr, pb.vp );
+        dump_log( "dump #" + std::to_string( frame_no ) + ": surface alloc failed" );
+        return;
+    }
+    if( !RenderReadPixels( renderer, nullptr, GetSurfacePixelFormat( surface ),
+                           surface->pixels, surface->pitch ) ) {
+        permanent_render_target_bind( renderer, nullptr, pb.vp );
+        dump_log( "dump #" + std::to_string( frame_no ) + ": ReadPixels failed" );
+        return;
+    }
+    permanent_render_target_bind( renderer, nullptr, pb.vp );
+    // DDA MP: role-tagged filename so host/client dumps don't collide.
+    const char *role = "menu";
+    if( netplay::host_is_running() ) {
+        role = "host";
+    } else if( netplay::client_is_connected() ) {
+        role = "client";
+    }
+    const std::string fn = "netplay_dump_" + std::string( role ) + "_" +
+                           std::to_string( frame_no ) + ".png";
+    if( IMG_SavePNG( surface.get(), fn.c_str() ) != 0 ) {
+        dump_log( "dump #" + std::to_string( frame_no ) + ": SavePNG failed " + fn );
+        return;
+    }
+    dump_log( "dump #" + std::to_string( frame_no ) + ": saved " + fn );
+}
+
+void *tiles_backend_create()
+{
+    if( !use_tiles ) {
+        return nullptr;
+    }
+    auto *b = new( std::nothrow ) netplay_tile_backend();
+    if( b == nullptr ) {
+        return nullptr;
+    }
+    b->tiles = std::make_unique<netplay_tile_context>( renderer, geometry, ts_cache );
+    try {
+        ui_adaptor dummy( ui_adaptor::disable_uis_below{} );
+        // DDA MP: precheck=true loads a metadata-only bundle WITHOUT tile
+        // mappings — every sprite lookup would miss and fall into the ASCII
+        // surrogate path (invisible canvas; ITEM fallback aborts on
+        // Item_factory::frozen). Load the real thing: full mappings and
+        // atlases. force=true bypasses reuse of any precheck bundle.
+        // Tileset layering warnings debugmsg a modal error prompt mid-UI —
+        // capture them instead and park in the diagnostic log.
+        std::string dmsg_captured;
+    struct mp_prompt_guard_t {
+        ~mp_prompt_guard_t() {
+            debug_suppress_prompts( false );
+        }
+    } mp_prompt_guard;
+    debug_suppress_prompts( true );
+    dmsg_captured = capture_debugmsg_during( [&b] {
+            b->tiles->load_tileset( get_option<std::string>( "TILES" ),
+                                    /*precheck=*/false, /*force=*/true,
+                                    /*pump_events=*/true, /*terrain=*/false );
+        } );
+        if( !dmsg_captured.empty() ) {
+            std::FILE *lg = std::fopen( "netplay_tiles.log", "a" );
+            if( lg ) {
+                std::fputs( "tileset load notes:\n", lg );
+                std::fputs( dmsg_captured.c_str(), lg );
+                std::fputs( "\n", lg );
+                std::fclose( lg );
+            }
+        }
+    } catch( ... ) {
+        dbg( D_ERROR ) << "netplay tile replay: failed to load tileset";
+        delete b;
+        return nullptr;
+    }
+    b->tiles->set_draw_scale( 16 ); // native tile size (same default as the game)
+    // Never consult the (nonexistent) world from sprite draws.
+    b->tiles->set_world_backed( false );
+    return b;
+}
+
+void tiles_backend_destroy( void *handle )
+{
+    delete netplay_backend_cast( handle );
+}
+
+bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
+                          int px_h, int pivot_bub_x, int pivot_bub_y )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles || !b->tiles->is_valid() ) {
+        return false;
+    }
+    // Must live for the whole draw batch, exactly like the game's own frame.
+    b->scope = std::make_unique<display_buffer_draw_scope>();
+    if( display_buffer_scope_is_invalid() || !g ) {
+        return false;
+    }
+    //set clipping to prevent drawing over stuff we shouldn't
+    SDL_Rect clip_rect = { dest_x, dest_y, px_w, px_h };
+    RenderSetClipRect( renderer, &clip_rect );
+    // opaque black fill to prevent artifacts where no pixels are drawn
+    geometry->rect( renderer, clip_rect, SDL_Color{ 0, 0, 0, 255 } );
+    b->anchor = tripoint_bub_ms( pivot_bub_x, pivot_bub_y, 0 );
+    b->tiles->set_frame_anchor( point( dest_x, dest_y ), point( px_w, px_h ), b->anchor );
+    b->tiles->sanitize_replay_lighting();
+    // Streamed light texels arrive fresh each batch; reset what last frame
+    // held. netplay_ui stores them, then calls tiles_backend_enable_lighting.
+    if( !b->lm_strip.empty() ) {
+        std::fill( b->lm_strip.begin(), b->lm_strip.end(),
+                   smooth_lighting::lightmap_texel() );
+    }
+    b->lm_any = false;
+    b->lit_ok = false;
+    return true;
+}
+
+void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub,
+                         int dx, int dy, int lit, int subtile, int rota, bool mp_fixed )
+{
+    static std::array<int, 7> heights = { { 0, 0, 0, 0, 0, 0, 0 } };
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles || id == nullptr || id[0] == '\0' || kind < 0 || kind > 6 ) {
+        return;
+    }
+    static const TILE_CATEGORY kinds[7] = {
+        TILE_CATEGORY::TERRAIN, TILE_CATEGORY::FURNITURE, TILE_CATEGORY::ITEM,
+        TILE_CATEGORY::MONSTER, TILE_CATEGORY::VEHICLE_PART, TILE_CATEGORY::TRAP,
+        TILE_CATEGORY::NONE
+    };
+    static const std::string empty_sub;
+    const std::string &subcat = ( sub == nullptr || sub[0] == '\0' ) ? empty_sub : sub;
+    // Missing tile -> base-class fallback; for ITEM that path constructs an
+    // `item` which asserts on Item_factory::frozen (unfinalized in a client).
+    // Skip instead of falling in. (DDA MP: item misses go to the diag log.)
+    std::string mp_item_id;
+    if( kind == 2 ) {
+        if( !b->tiles->replay_has_tile( id ) ) {
+            // Mirror the cata_tiles fallback for items: direct id, then the
+            // itype `looks_like` chain, then the "corpse" alias. This is a pure
+            // tileset/type lookup, no runtime `item` construction (safe before
+            // Item_factory finalization).
+            std::optional<tile_lookup_res> res = b->tiles->replay_find_tile_looks_like(
+                    id, TILE_CATEGORY::ITEM, empty_sub );
+            if( res ) {
+                mp_item_id = res->id();
+                id = mp_item_id.c_str();
+            } else {
+                static int mp_item_miss = 0;
+                if( mp_item_miss < 40 ) {
+                    ++mp_item_miss;
+                    std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+                    if( f ) {
+                        std::fprintf( f, "tiles: missing item tile '%s'\n", id );
+                        std::fclose( f );
+                    }
+                }
+                // The game's last resort paints the generic "missing" tile.
+                if( b->tiles->replay_has_tile( "missing" ) ) {
+                    mp_item_id = "missing";
+                    id = mp_item_id.c_str();
+                } else {
+                    return;
+                }
+            }
+        }
+    } else if( kind == 6 ) {
+        if( !b->tiles->replay_has_tile( id ) ) {
+            return;
+        }
+    }
+    const tripoint_bub_ms p( b->anchor + tripoint_rel_ms( dx, dy, 0 ) );
+    // No world behind this replay: never apply night-vision shading.
+    heights[kind] = 0;
+    // DDA MP: fixed-light replay sprites (highlight badges etc.) take their
+    // lit_level's look whatever the scene light is, exactly like the host's
+    // draw_light::fixed draws (draw_item_highlight, draw_vpart's badges).
+    if( mp_fixed ) {
+        b->tiles->replay_draw_fixed( id, kinds[kind], subcat, p, subtile, rota,
+                                     static_cast<lit_level>( lit ), heights[kind] );
+        return;
+    }
+    if( kind == 4 ) {
+        // Vehicle part: `sub` carries the vpart variant name ("" = none).
+        b->tiles->draw_from_id_string( id, kinds[4], empty_sub, p, subtile, rota,
+                                       static_cast<lit_level>( lit ), false,
+                                       heights[4], 0, subcat );
+        return;
+    }
+    b->tiles->draw_from_id_string( id, kinds[kind], subcat, p, subtile, rota,
+                                   static_cast<lit_level>( lit ), false, heights[kind] );
+}
+
+void tiles_backend_tile_size( void *handle, int &w, int &h )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles ) {
+        w = 0;
+        h = 0;
+        return;
+    }
+    b->tiles->get_tile_px( w, h );
+}
+
+/* DDA MP: one lit_level byte + a barrier bit turned into the synthetic light
+ * texel a smooth-lighting light map would hold for the cell, mirroring
+ * smooth_lighting::classify_light_cell's per-level semantics:
+ *   BRIGHT -> full light, seen; LIT/LOW -> approximate light, seen;
+ *   DARK/BRIGHT_ONLY/MEMORIZED/BLANK -> no light, not seen in detail (the
+ *   lit shader then blends toward the memory look exactly like on the host).
+ * Client-side the exact apparent light is unknown, LOW guesses a mid value.
+ * The barrier bit keeps the filter's reach masks from leaking light. */
+static smooth_lighting::lightmap_texel netplay_synthetic_light_texel( int light, bool barrier )
+{
+    smooth_lighting::lightmap_texel t;
+    const lit_level ll = static_cast<lit_level>( light );
+    float value = 0.0f;
+    bool detail = false;
+    switch( ll ) {
+        case lit_level::BRIGHT:
+            value = 1.0f;
+            detail = true;
+            break;
+        case lit_level::LIT:
+            value = 1.0f;
+            detail = true;
+            break;
+        case lit_level::LOW:
+            value = 0.4f;
+            detail = true;
+            break;
+        default:
+            // DARK, BRIGHT_ONLY, MEMORIZED, BLANK: no detail, like the host
+            break;
+    }
+    t.r = static_cast<uint8_t>( 255.0f * value + 0.5f );
+    // neutral hue shares (the white light's 1/3, 1/3 thirds)
+    t.g = 85;
+    t.b = 85;
+    t.a = barrier ? smooth_lighting::texel_barrier : 0;
+    if( detail ) {
+        t.a |= smooth_lighting::texel_detail;
+    }
+    return t;
+}
+
+void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
+                                   bool barrier )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles ) {
+        return;
+    }
+    if( b->lm_strip.empty() ) {
+        b->lm_strip.assign( static_cast<size_t>( smooth_lighting::lightmap_width ) * MAPSIZE_Y,
+                            smooth_lighting::lightmap_texel() );
+    }
+    const point cell = b->anchor.raw().xy() + point( dx, dy );
+    if( cell.x < 0 || cell.x >= MAPSIZE_X || cell.y < 0 || cell.y >= MAPSIZE_Y ) {
+        return;
+    }
+    // light texel, left of the reach columns; the client never queries the
+    // game map, so these synthetic coordinates are all the alignment the
+    // replay path needs as long as draws and texels share this anchor
+    b->lm_strip[static_cast<size_t>( cell.y ) * smooth_lighting::lightmap_width + cell.x] =
+        netplay_synthetic_light_texel( light, barrier );
+    b->lm_any = true;
+}
+
+bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles || !b->tiles->is_valid() || !b->lm_any ) {
+        return false;
+    }
+    // The snapshot cells sit pivot-relative in the synthetic bubble frame
+    // (anchor at its pivot); the streamed lit levels map 1:1 into the strip.
+    const point anchor_pt = b->anchor.raw().xy();
+    const half_open_rectangle<point> area(
+        anchor_pt + point( -snap_w / 2, -snap_h / 2 ),
+        anchor_pt + point( -snap_w / 2 + snap_w, -snap_h / 2 + snap_h ) );
+    // Build the filter's reach masks client-side from the streamed barrier
+    // bits: the same cells the host's fill would mask, over this frame's
+    // streamed cell rectangle.
+    const smooth_lighting::barrier_grid grid{ b->lm_strip.data(),
+            smooth_lighting::lightmap_width, MAPSIZE_X, MAPSIZE_Y
+    };
+    for( int y = area.p_min.y; y < area.p_max.y && y < MAPSIZE_Y; ++y ) {
+        for( int x = area.p_min.x; x < area.p_max.x && x < MAPSIZE_X; ++x ) {
+            b->lm_strip[static_cast<size_t>( y ) * smooth_lighting::lightmap_width +
+                        smooth_lighting::reach_column + x] =
+                smooth_lighting::encode_reach_texel(
+                    smooth_lighting::reach_mask( grid, point( x, y ) ) );
+        }
+    }
+    smooth_lightmap *lm = get_shared_lightmap();
+    if( lm == nullptr ||
+        !lm->netplay_inject_layer( renderer, b->anchor.z(), b->lm_strip, area ) ) {
+        return false;
+    }
+    if( !b->tiles->netplay_begin_replay_lit( area, b->anchor.z() ) ) {
+        return false;
+    }
+    b->lit_ok = true;
+    static int mp_lit_log = 0;
+    if( mp_lit_log < 8 ) {
+        ++mp_lit_log;
+        if( std::FILE *f = std::fopen( "netplay_tiles.log", "a" ) ) {
+            std::fprintf( f, "tiles: lit frame ok (smooth_lighting_active)\n" );
+            std::fclose( f );
+        }
+    }
+    return true;
+}
+
+
+void tiles_backend_cell_light( void *handle, int dx, int dy, int light )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles ) {
+        return;
+    }
+    // The host darkens cells through the smooth-lighting lightmap; the client
+    // has no lightmap, so replay the visible result with a per-cell multiply
+    // overlay. Scene sprites are drawn at LIT and dimmed here; the highlight
+    // badges are drawn after this call and stay fully bright, exactly like the
+    // fixed-light `draw_item_highlight` on the host.
+    if( light == static_cast<int>( lit_level::LIT ) ||
+        light == static_cast<int>( lit_level::BRIGHT ) ||
+        light == static_cast<int>( lit_level::BLANK ) ) {
+        return;
+    }
+    const point bub = b->anchor.raw().xy() + point( dx, dy );
+    const point c = b->tiles->replay_cell_screen( bub );
+    const int tw = b->tiles->get_tile_width();
+    const int th = b->tiles->get_tile_height();
+    int rr = 0;
+    int gg = 0;
+    int bb = 0;
+    switch( static_cast<lit_level>( light ) ) {
+        case lit_level::MEMORIZED:
+            // Bluish memory cast, close to the baked memory tiles.
+            rr = 110;
+            gg = 110;
+            bb = 150;
+            break;
+        case lit_level::BRIGHT_ONLY:
+            rr = 175;
+            gg = 175;
+            bb = 175;
+            break;
+        case lit_level::LOW:
+            rr = 90;
+            gg = 90;
+            bb = 90;
+            break;
+        default:
+            // DARK
+            rr = 28;
+            gg = 28;
+            bb = 28;
+            break;
+    }
+    // BLENDMODE_MOD with alpha=1 multiplies rgb only, preserving dst alpha.
+    SetRenderDrawBlendMode( renderer, SDL_BLENDMODE_MOD );
+    SetRenderDrawColor( renderer, rr, gg, bb, 255 );
+    if( b->tiles->is_isometric() ) {
+        // Trace the diamond: horizontal strips whose half-width grows
+        // linearly to the middle and shrinks back, matching the tile's
+        // on-screen footprint.
+        const int cx = c.x + tw / 2;
+        for( int v = 0; v < th; ++v ) {
+            const int hw = ( v <= th / 2 )
+                           ? ( v * tw ) / th
+                           : ( ( th - v ) * tw ) / th;
+            if( hw <= 0 ) {
+                continue;
+            }
+            SDL_Rect strip{ cx - hw, c.y + v, hw * 2, 1 };
+            RenderFillRect( renderer, &strip );
+        }
+    } else {
+        SDL_Rect rect{ c.x, c.y, tw, th };
+        RenderFillRect( renderer, &rect );
+    }
+    SetRenderDrawBlendMode( renderer, SDL_BLENDMODE_NONE );
+    SetRenderDrawColor( renderer, 0, 0, 0, 255 );
+}
+
+void tiles_backend_font_size( int &w, int &h )
+{
+    w = fontwidth;
+    h = fontheight;
+}
+
+void tiles_backend_clear_screen( void *handle )
+{
+    ( void )handle;
+    // Bind the buffer and wipe the WHOLE target (RenderClear), not just our
+    // canvas rect: stale pixels (debug prompt text, previous tile frames)
+    // that no window repr painting would otherwise persist behind us.
+    clear_sdl_window();
+    // Force every registered window to re-render on the next redraw so the
+    // cleared buffer is repained immediately.
+    ui_manager::invalidate_all_ui_adaptors();
+    cata_cursesport::bump_curses_render_epoch();
+    needupdate = true;
+}
+
+void tiles_backend_end( void *handle )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr ) {
+        return;
+    }
+    b->scope = nullptr; // unbind display buffer + flush batch
+    RenderSetClipRect( renderer, nullptr );
+    static int dump_frames = 0;
+    if( dump_frames < 5 ) {
+        ++dump_frames;
+        netplay_dump_display_buffer( dump_frames );
+    }
+}
+
+} // namespace netplay
+#endif // TILES

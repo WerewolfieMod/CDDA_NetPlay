@@ -962,15 +962,14 @@ int main( int argc, const char *argv[] )
 
     netplay::init();
     if( !cli.mp_client.empty() ) {
-        // DDA MP: "--mpclient host[:port]" as a CLI shortcut into the join flow.
+        // DDA MP: "--mpclient host[:port]" as a CLI shortcut into the join
+        // flow; after the session (or reconnect cascade) falls back to the
+        // normal main menu instead of leaving the program.
         netplay::client_connect( cli.mp_client, netplay::DEFAULT_PORT );
         if( netplay::client_is_connected() ) {
             netplay::run_view_loop();
-            netplay::client_disconnect();
-            netplay::shutdown();
-            exit_handler( -999 );
-            return 0;
         }
+        netplay::client_disconnect();
     }
 
     run_game_loop( cli );

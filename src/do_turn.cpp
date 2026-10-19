@@ -25,6 +25,7 @@
 #ifdef TILES
 #include "cata_imgui.h"
 #endif
+#include "netplay/netplay.h"
 #include "cata_variant.h"
 #include "craft_reservation.h"
 #include "clzones.h"
@@ -814,5 +815,8 @@ bool game::do_turn()
 #endif
 
     debug_menu::debug_capture::tick_if_active();
+    // DDA MP: stream the current view to connected network sessions once per
+    // world turn (and collect any queued remote keystrokes for the next turn).
+    netplay::host_game_tick();
     return false;
 }

@@ -1799,6 +1799,81 @@ smooth_lighting::prefilter_layout smooth_lightmap::prefilter_layout(
             last - first + 1 );
 }
 
+/* DDA MP: see cata_tiles.h. The netplay client installs host-streamed
+ * texels; the game never fills a level here, so the texture upload is only
+ * what fill()'s upload loop would have done. */
+bool smooth_lightmap::netplay_inject_layer( const SDL_Renderer_Ptr &renderer, const int z,
+        const std::vector<smooth_lighting::lightmap_texel> &strip,
+        const half_open_rectangle<point> &area )
+{
+    if( strip.size() != static_cast<size_t>( smooth_lighting::lightmap_width ) * MAPSIZE_Y ) {
+        return false;
+    }
+    const int layer = z + OVERMAP_DEPTH;
+    if( layer < 0 || layer >= OVERMAP_LAYERS ) {
+        return false;
+    }
+    if( ensure_texture( renderer ) ) {
+        return false;
+    }
+    seen_boxes_[layer] = smooth_lighting::seen_box( strip.data(), smooth_lighting::lightmap_width,
+                           area );
+    std::vector<smooth_lighting::lightmap_texel> &uploaded = uploaded_[layer];
+    if( strip != uploaded ) {
+        const SDL_Rect rect = { 0, layer * MAPSIZE_Y, smooth_lighting::lightmap_width, MAPSIZE_Y };
+        // the prefiltered light is stale from here, even if the upload fails
+        ++upload_generation_;
+        if( !UpdateTexture( texture_, &rect, strip.data(), smooth_lighting::lightmap_width * 4 ) ) {
+            uploaded.clear();
+            return false;
+        }
+        uploaded = strip;
+    }
+    extent_ = smooth_lighting::lightmap_extent{ area, z, z };
+    return true;
+}
+
+/* DDA MP: light map texel fetch shared by the two samplers below. */
+static bool netplay_fetch_strip_texel( const tripoint_bub_ms &p, const int extra_column,
+                                       uint8_t &r, uint8_t &g, uint8_t &b, uint8_t &a )
+{
+    smooth_lightmap *const lm = get_shared_lightmap();
+    if( lm == nullptr || !lm->extent().covers( p ) ) {
+        return false;
+    }
+    const int layer = p.z() + OVERMAP_DEPTH;
+    if( layer < 0 || layer >= OVERMAP_LAYERS ) {
+        return false;
+    }
+    const std::vector<smooth_lighting::lightmap_texel> &strip = lm->layer_texels( layer );
+    if( strip.size() != static_cast<size_t>( smooth_lighting::lightmap_width ) * MAPSIZE_Y ) {
+        return false;
+    }
+    if( p.x() < 0 || p.x() >= MAPSIZE_X || p.y() < 0 || p.y() >= MAPSIZE_Y ) {
+        return false;
+    }
+    const size_t idx = static_cast<size_t>( p.y() ) * smooth_lighting::lightmap_width + p.x();
+    const smooth_lighting::lightmap_texel &t =
+        strip[idx + ( extra_column > 0 ? smooth_lighting::reach_column : 0 )];
+    r = t.r;
+    g = t.g;
+    b = t.b;
+    a = t.a;
+    return true;
+}
+
+bool cata_tiles::netplay_sample_light( const tripoint_bub_ms &p, uint8_t &r, uint8_t &g,
+                                       uint8_t &b, uint8_t &a ) const
+{
+    return netplay_fetch_strip_texel( p, 0, r, g, b, a );
+}
+
+bool cata_tiles::netplay_sample_light_reach( const tripoint_bub_ms &p, uint8_t &r, uint8_t &g,
+        uint8_t &b, uint8_t &a ) const
+{
+    return netplay_fetch_strip_texel( p, 1, r, g, b, a );
+}
+
 std::optional<smooth_lighting::light_anchor> cata_tiles::default_light_anchor(
     const TILE_CATEGORY category, const std::string &id )
 {
@@ -1996,6 +2071,165 @@ bool cata_tiles::begin_smooth_lighting( const visibility_variables &cache,
                     break;
                 case cata_shader::prefilter_outcome::unsafe:
                     abort_lit_frame();
+            }
+        }
+    }
+    failures.succeed();
+    lit_extent = lightmap->extent();
+    smooth_lighting_active = true;
+    lit_per_tile = frame.per_tile;
+    note_lighting_status( lit.status );
+    return true;
+}
+
+/* DDA MP: see cata_tiles.h. Mirrors begin_smooth_lighting with the game-side
+ * map fill replaced by the texels the netplay client streamed and the caller
+ * has already injected into the shared light map. Runs on the game thread of
+ * the replay backend; renderer-bind aborts drop all lit states instead of
+ * aborting the whole frame, so the client can fall back to classic looks. */
+bool cata_tiles::netplay_begin_replay_lit( const half_open_rectangle<point> &area, const int z )
+{
+    using smooth_lighting::lighting_status;
+    smooth_lighting_active = false;
+    lit_per_tile = false;
+    const std::string &mode = get_option<std::string>( "LIGHTING_MODE" );
+    if( mode == "classic" ) {
+        note_lighting_status( lighting_status::classic_by_option );
+        return false;
+    }
+    cata_shader::variant_pass *vp = get_shared_variant_pass();
+    smooth_lightmap *lightmap = get_shared_lightmap();
+    if( !vp || !vp->available() || !lightmap ) {
+        note_lighting_status( lighting_status::classic_no_shader_path );
+        return false;
+    }
+    smooth_lighting::failure_policy &failures = lightmap->failures();
+    smooth_lighting::failure_policy &filtered_failures = lightmap->filtered_failures();
+    failures.rebuilt( vp->resource_generation() );
+    filtered_failures.rebuilt( vp->resource_generation() );
+    if( failures.latched() ) {
+        note_lighting_status( lighting_status::classic_failed );
+        return false;
+    }
+    const auto fail_frame = [&]( const std::optional<smooth_lighting::lit_failure> &failure ) {
+        if( failure && failures.fail( *failure ) ) {
+            DebugLog( D_ERROR, DC_ALL ) << "smooth lighting off until the renderer is rebuilt: "
+                                        << smooth_lighting::to_string( *failure );
+            note_lighting_status( lighting_status::classic_failed );
+        } else {
+            note_lighting_status( lighting_status::classic_this_frame );
+        }
+        return false;
+    };
+    const auto fail_filtered = [&]( const smooth_lighting::lit_failure f ) {
+        if( filtered_failures.fail( f ) ) {
+            DebugLog( D_ERROR, DC_ALL ) << "smooth filtered lighting off until the renderer is rebuilt: "
+                                        << smooth_lighting::to_string( f );
+        }
+    };
+    const auto begin = [&]( const cata_shader::lit_begin_result & begun ) {
+        switch( smooth_lighting::action_for( begun.outcome ) ) {
+            case smooth_lighting::lit_frame_action::abort_frame:
+                // the renderer bind is undefined: drop every lit state so the
+                // rest of this present binds something sane, then fall back
+                vp->drop_lit_states();
+                return fail_frame( begun.failure );
+            case smooth_lighting::lit_frame_action::draw_classic:
+                if( begun.failure ) {
+                    return fail_frame( begun.failure );
+                }
+                note_lighting_status( lighting_status::classic_no_shader_path );
+                return false;
+            case smooth_lighting::lit_frame_action::draw_lit:
+                break;
+        }
+        return true;
+    };
+    if( const std::optional<smooth_lighting::lit_failure> f = lightmap->ensure_texture( renderer ) ) {
+        return fail_frame( f );
+    }
+    const cata_shader::lit_prepare_result prepared = vp->prepare_lit();
+    if( !begin( { prepared.outcome, prepared.failure } ) ) {
+        return false;
+    }
+    const int layer = z + OVERMAP_DEPTH;
+    if( layer < 0 || layer >= OVERMAP_LAYERS ) {
+        note_lighting_status( lighting_status::classic_this_frame );
+        return false;
+    }
+    const bool want_filtered = mode == "smooth_filtered";
+    // only the seen cells and their neighbours take filtered light; the
+    // injected texels already carry the seen box the fill path would leave
+    const smooth_lighting::prefilter_layout layout = lightmap->prefilter_layout( area, z, z );
+    int max_texture_size = 0;
+    GetRendererMaxTextureSize( renderer, &max_texture_size, nullptr );
+    smooth_lighting::lit_mode lit = smooth_lighting::choose_lit_mode( want_filtered,
+                                    prepared.capability, filtered_failures.latched(),
+                                    smooth_lighting::prefilter_fits( layout, max_texture_size,
+                                            prepared.capability.filtered.has_value() ) );
+    if( !lit.per_tile ) {
+        switch( lightmap->ensure_prefilter_texture( renderer, layout.size(), max_texture_size, [vp]() {
+            return vp->drop_lit_states();
+        } ) ) {
+        case prefilter_texture_result::ok:
+            break;
+        case prefilter_texture_result::failed:
+            fail_filtered( smooth_lighting::lit_failure::prefilter );
+            lit = { true, lighting_status::smooth_filtered_unavailable };
+            break;
+        case prefilter_texture_result::unsafe:
+            vp->drop_lit_states();
+            note_lighting_status( lighting_status::classic_this_frame );
+            return false;
+        }
+    }
+    cata_shader::lit_frame frame;
+    frame.lightmap = lightmap->texture();
+    frame.prefiltered = lightmap->prefilter_texture();
+    frame.layout = layout;
+    frame.lookup = prepared.capability.filtered.value_or( smooth_lighting::lookup::hardware );
+    frame.memory = memory_look_from_options( vp->active_memory_preset() );
+    frame.blend_memory = get_option<bool>( "LIGHTING_MEMORY_BLEND" );
+    frame.per_tile = lit.per_tile;
+    frame.iso = is_isometric();
+    // a replay client never activates night-vision goggles
+    frame.night_vision = false;
+    cata_shader::lit_begin_result begun = vp->begin_lit( frame );
+    if( !frame.per_tile && begun.outcome == cata_shader::lit_begin_outcome::failed && begun.failure &&
+        smooth_lighting::scope_of( *begun.failure, true ) == smooth_lighting::failure_scope::filtered ) {
+        // filtered binding failed safely: this frame reads each tile's own
+        // light instead
+        fail_filtered( *begun.failure );
+        frame.per_tile = true;
+        lit = { true, lighting_status::smooth_filtered_unavailable };
+        begun = vp->begin_lit( frame );
+    }
+    if( !begin( begun ) ) {
+        return false;
+    }
+    if( !frame.per_tile ) {
+        const smooth_lighting::prefilter_inputs inputs{ lightmap->upload_generation(), layout,
+                frame.lookup, vp->resource_generation() };
+        smooth_lighting::prefilter_cache &prefilter = lightmap->prefilter();
+        if( prefilter.needs_run( inputs ) ) {
+            prefilter.begin_write();
+            switch( vp->prefilter_lit( frame ) ) {
+                case cata_shader::prefilter_outcome::ok:
+                    prefilter.publish( inputs );
+                    break;
+                case cata_shader::prefilter_outcome::failed:
+                    fail_filtered( smooth_lighting::lit_failure::prefilter );
+                    // this frame reads each tile's own light instead
+                    frame.per_tile = true;
+                    lit = { true, lighting_status::smooth_filtered_unavailable };
+                    if( !begin( vp->begin_lit( frame ) ) ) {
+                        return false;
+                    }
+                    break;
+                case cata_shader::prefilter_outcome::unsafe:
+                    vp->drop_lit_states();
+                    note_lighting_status( lighting_status::classic_this_frame );
+                    return false;
             }
         }
     }
@@ -2888,7 +3122,8 @@ bool cata_tiles::draw_from_id_string_internal( const std::string &id, TILE_CATEG
 
     if( !tt ) {
         // Use fog overlay as fallback for transparent terrain
-        if( category == TILE_CATEGORY::TERRAIN && !here.dont_draw_lower_floor( tripoint_bub_ms( pos ) ) ) {
+        // DDA MP: world_backed=false (tileset replay) must not consult the map.
+        if( category == TILE_CATEGORY::TERRAIN && world_backed && !here.dont_draw_lower_floor( tripoint_bub_ms( pos ) ) ) {
             draw_zlevel_overlay( tripoint_bub_ms( pos ), ll, height_3d );
 
             // t_open_air is plentiful at high z-levels
@@ -3775,6 +4010,52 @@ bool cata_tiles::draw_furniture( const tripoint_bub_ms &p, const lit_level ll, i
         }
     }
     return false;
+}
+
+/* DDA MP: see cata_tiles.h. Mirrors the non-overridden branch of
+ * draw_terrain / draw_furniture exactly, so streamed snapshots carry the
+ * same multi-tile subtile / rotation that the host renderer uses. */
+void cata_tiles::netplay_probe_terrain( const tripoint_bub_ms &p, int &subtile, int &rota )
+{
+    subtile = 0;
+    rota = 0;
+    map &here = get_map();
+    const ter_id &t = here.ter( p );
+    if( !t ) {
+        return;
+    }
+    const std::bitset<NUM_TERCONN> &connect_group = t.obj().connect_to_groups;
+    const std::bitset<NUM_TERCONN> &rotate_group = t.obj().rotate_to_groups;
+    if( connect_group.any() ) {
+        get_connect_values( p, subtile, rota, connect_group, rotate_group, {} );
+    } else {
+        static const std::array<bool, 5> all_visible = { { false, false, false, false, false } };
+        get_terrain_orientation( p, rota, subtile, {}, all_visible, rotate_group );
+    }
+}
+
+void cata_tiles::netplay_probe_furniture( const tripoint_bub_ms &p, int &subtile, int &rota )
+{
+    subtile = 0;
+    rota = 0;
+    map &here = get_map();
+    const furn_id &f = here.furn( p );
+    if( !f ) {
+        return;
+    }
+    const std::array<int, 4> neighborhood = {
+        static_cast<int>( here.furn( p + point::south ) ),
+        static_cast<int>( here.furn( p + point::east ) ),
+        static_cast<int>( here.furn( p + point::west ) ),
+        static_cast<int>( here.furn( p + point::north ) )
+    };
+    const std::bitset<NUM_TERCONN> &connect_group = f.obj().connect_to_groups;
+    const std::bitset<NUM_TERCONN> &rotate_group = f.obj().rotate_to_groups;
+    if( connect_group.any() ) {
+        get_furn_connect_values( p, subtile, rota, connect_group, rotate_group, {} );
+    } else {
+        get_tile_values_with_ter( p, f.to_i(), neighborhood, subtile, rota, rotate_group );
+    }
 }
 
 bool cata_tiles::draw_trap( const tripoint_bub_ms &p, const lit_level ll, int &height_3d,

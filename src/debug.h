@@ -221,6 +221,11 @@ void debug_reset_error_observed();
  */
 std::string capture_debugmsg_during( const std::function<void()> &func );
 
+// DDA MP: suppress the interactive error prompt (debug_error_prompt) while
+// data that cannot rely on a UI context is being loaded (netplay tileset
+// preload). Messages still go to the debug log.
+void debug_suppress_prompts( bool );
+
 /**
  * Should be called after catacurses::stdscr is initialized.
  * If catacurses::stdscr is available, shows all buffered debugmsg prompts.

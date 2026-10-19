@@ -1,5 +1,6 @@
 #include "game.h"
 #include "map_memory.h"
+#include "netplay/netplay.h"
 
 #include <algorithm>
 #include <bitset>
@@ -2455,7 +2456,12 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
     std::optional<tripoint_bub_ms> liveview_pos;
 
     do {
-        action = ctxt.handle_input();
+        if( netplay::host_pop_action( action ) ) {
+            // A remote session sent a keystroke; it takes priority over local
+            // input and is processed as if the host had pressed it.
+        } else {
+            action = ctxt.handle_input();
+        }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
                     ter_view_p.raw().xy(),

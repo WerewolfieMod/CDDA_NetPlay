@@ -280,6 +280,20 @@ class smooth_lightmap
         void invalidate() {
             keys_.forget_all();
         }
+        // DDA MP: the last-uploaded texels of `layer`'s strip (z + OVERMAP_DEPTH);
+        // a full strip is lightmap_width * MAPSIZE_Y light texels (light columns
+        // plus the reach columns the upload skips copying).
+        const std::vector<smooth_lighting::lightmap_texel> &layer_texels( int layer ) const {
+            return uploaded_[layer];
+        }
+        // DDA MP: install host-streamed texels for one z level instead of a
+        // game-side fill. `strip` holds one full level (lightmap_width *
+        // MAPSIZE_Y texels); `area` is the cell rectangle the streamed texels
+        // cover. Uploads only when the texels changed; false when the texture
+        // is unavailable or the upload failed.
+        bool netplay_inject_layer( const SDL_Renderer_Ptr &renderer, int z,
+                const std::vector<smooth_lighting::lightmap_texel> &strip,
+                const half_open_rectangle<point> &area );
         // grow prefiltered light's texture to at least `size` within
         // `max_texture_size`; `release_readers` drops what reads the old one
         // and says whether that was safe
@@ -943,6 +957,38 @@ class cata_tiles
         bool draw_item_highlight( const tripoint_bub_ms &pos, int &height_3d );
 
     public:
+        /* DDA MP multiplay snapshot support: compute the same per-cell
+         * appearance values (multitile subtile + rotation) that
+         * draw_terrain / draw_furniture would resolve for a visible,
+         * non-overridden cell — without drawing or memorizing anything.
+         * Used by the netplay host to stream exact variants to thin
+         * client tile replay renderers. Leaves outputs at 0 for empty ids. */
+        void netplay_probe_terrain( const tripoint_bub_ms &p, int &subtile, int &rota );
+        void netplay_probe_furniture( const tripoint_bub_ms &p, int &subtile, int &rota );
+
+        /* DDA MP multiplay: sample the shared smooth-lighting lightmap texel
+         * for a cell (r = light 0..255, g/b = hue shares, a = detail/barrier
+         * flags) exactly as the GPU lit path consumes it. False when the
+         * lightmap is off, the cell is outside its extent, or that level was
+         * never filled; the netplay client then renders their lit_level the
+         * classic way. */
+        bool netplay_sample_light( const tripoint_bub_ms &p, uint8_t &r, uint8_t &g,
+                                   uint8_t &b, uint8_t &a ) const;
+
+        /* DDA MP multiplay: like netplay_sample_light, but also returns the
+         * encoded reach-mask texel that sits right of the light columns in
+         * the same strip; it is empty (zeros) when no masks were built. */
+        bool netplay_sample_light_reach( const tripoint_bub_ms &p, uint8_t &r, uint8_t &g,
+                                         uint8_t &b, uint8_t &a ) const;
+
+        /* DDA MP multiplay: bind the smooth-lighting lit frame for replay
+         * draws over the light map texels a host streams (the caller has
+         * already installed them via smooth_lightmap::netplay_inject_layer).
+         * Mirrors begin_smooth_lighting without the game-side map fill;
+         * false leaves smooth lighting off, and the caller draws with
+         * classic per-lit_level looks then. */
+        bool netplay_begin_replay_lit( const half_open_rectangle<point> &area, int z );
+
         // Animation layers
         void init_explosion( const tripoint_bub_ms &p, int radius );
         void draw_explosion_frame();
@@ -1028,6 +1074,11 @@ class cata_tiles
         bool has_draw_override( const tripoint_bub_ms &p ) const;
 
         void set_disable_occlusion( bool val );
+        /// DDA MP: when false (the netplay tileset replay backend), sprite
+        /// draws never consult the world (no z-level fog / map caches).
+        void set_world_backed( bool val ) {
+            world_backed = val;
+        }
 
         /**
          * Initialize the current tileset (load tile images, load mapping), using the current
@@ -1195,6 +1246,7 @@ class cata_tiles
         bool in_animation = false;
 
         bool disable_occlusion = false;
+        bool world_backed = true;
 
         bool do_draw_explosion = false;
         bool do_draw_custom_explosion = false;

@@ -21,6 +21,9 @@
 namespace netplay
 {
 
+/// Distance-agnostic socket handle (sockfd on POSIX; SOCKET on Windows).
+using socket_t = std::int64_t;
+
 /// Default TCP port (player request: Minecraft-style 25565).
 constexpr int DEFAULT_PORT = 25565;
 
@@ -43,12 +46,45 @@ struct cell {
     int color;      ///< ncurses-style color pair id (pair number)
 };
 
+/// Optional per-cell sprite info supporting the tileset replay renderer
+/// (client-side). All strings carry CDDA tile/image ids; empty = the ascii
+/// fallback (cell glyph/color) is used for that layer.
+struct tile_cell {
+    uint8_t light = 0;      ///< lit_level as plain int (see lightmap.h)
+    std::string ter;        ///< terrain id ("t_grass")
+    std::string furn;       ///< furniture id, also vehicle part from memory
+    std::string trap;       ///< trap id
+    std::string critter;    ///< monster type id
+    std::string item;       ///< uppermost ground item type id
+    /// Vehicle part tileset id as resolved by the host renderer
+    /// ("vp_{id}" or "vp_{id}_#{variant}"), empty = no vehicle here.
+    std::string vpart;
+    /// MULTI_TILE subtile + rotation as resolved by the host renderer
+    /// (0..7 / 0..3, see MULTITILE_TYPE). Empty ids ignore these.
+    uint8_t ter_sub = 0;
+    uint8_t ter_rot = 0;
+    uint8_t furn_sub = 0;
+    uint8_t furn_rot = 0;
+    uint8_t vpart_sub = 0;
+    uint8_t vpart_rot = 0;
+    /// bit0 = visible items on the cell (draw the highlight_item marker),
+    /// bit1 = more than one item (pile indicator),
+    /// bit2 = the vpart on this cell has cargo with items (part badge),
+    /// bit3 = the cell blocks light: the client marks it as a barrier when it
+    ///        builds its own synthetic light map from the lit_level bytes,
+    ///        so the smooth-lighting filter keeps light out of walled areas
+    uint8_t flags = 0;
+};
+
 /// Full screen frame for a remote session.
 struct snapshot {
     int width = 0;
     int height = 0;
     std::vector<cell> cells;
     std::string status_line;
+    /// Optional parallel sprite payload, same layout as cells. May be empty
+    /// (host without tile mining, synthetic test frames...).
+    std::vector<tile_cell> tiles;
 };
 
 /// One keyboard pseudo-event from the client.
@@ -81,8 +117,28 @@ int host_listen_port();
 std::string host_listen_address();
 /// Number of currently connected sessions.
 int host_session_count();
+/// Display names of the currently connected sessions (copy, stable order).
+std::vector<std::string> host_session_names();
 /// Per-turn maintenance (accept/expire, flush queues). Safe to call often.
 void host_pump();
+
+/// Broadcast a screen frame to every live session (thread-safe; session
+/// sockets that fail to receive are dropped).
+void host_broadcast_snapshot( const snapshot &snap );
+
+/// Pop one queued client key code (0 = none arrived since last call).
+/// Returns false when the queue is empty.
+bool host_pop_key( uint32_t &code );
+
+/* ---- host game glue (netplay_world.cpp; needs game internals) ---- */
+
+/// Game-side per-turn hook: builds and broadcasts an ascii snapshot of the
+/// host's current view (~45x25 cells around the host avatar). Call at the
+/// end of world turns; no-op when not hosting or no sessions.
+void host_game_tick();
+/// Convert one queued client key into a DEFAULTMODE action id string.
+/// Returns false when there is nothing queued (or the code isn't mapped).
+bool host_pop_action( std::string &action );
 
 /* ---- client bindings ---- */
 
@@ -90,6 +146,9 @@ bool client_connect( const std::string &host, int port = DEFAULT_PORT );
 void client_disconnect();
 bool client_is_connected();
 std::string client_deny_reason();
+/// Address of the last successfull client_connect("host:port") attempt;
+/// empty when no session was ever started. Used for reconnect prompts.
+std::string client_last_address();
 /// Take the freshest received snapshot (empty if none yet).
 bool client_receive( snapshot &out );
 /// Send an input batch upstream.
@@ -97,14 +156,76 @@ void client_send_keys( const std::vector<key_event> &keys );
 /// Per-turn maintenance. Safe to call often.
 void client_pump();
 
-/* ---- interactive glass ---- */
+/* ---- fat client: host world static data ----
+ *
+ * Host announces its active world name in WELCOME; the client then loads
+ * that world's mod data (game::load_world_modfiles) BEFORE the tileset
+ * replay backend is created, so tileset layering contexts (and item
+ * templates) resolve the same way they do on the host. Requires the client
+ * to run from the same installation as the host (shared worlds directory).
+ */
+void host_set_world_name( const std::string &name );
+std::string client_host_world_name();
 
-/// In-game menu: "Open world to network" (host) dialogs.
+/* ---- game-side glass ---- */
 void show_host_dialog();
-/// In-game menu: client "Join by IP" console dialogs.
 void show_join_dialog();
-/// Main-menu "Join by IP": ask IP, connect, drop into remote-view mode.
-/// Returns true when the user went into a net session that ended.
 void run_view_loop();
+
+/// True unless DDA_MP_TILES=0 in the environment (debug bisection switch
+/// for the tileset replay feature: disables host mining AND client drawing).
+bool tiles_replay_enabled();
+
+#if defined(TILES)
+/* ---- tileset replay backend (implemented in sdltiles.cpp) ----
+ *
+ * Lets netplay code render SNAPSHOT sprite data through the CDDA tileset
+ * without a loaded world. Opaque handle: nullptr = unavailable/failure. */
+void *tiles_backend_create();
+void tiles_backend_destroy( void *handle );
+/// Start one frame batch: clip rect (dest + pixel size), pivot in bubble
+/// coords (window center). Returns false when the frame must be skipped.
+bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
+                          int px_h, int pivot_bub_x, int pivot_bub_y );
+/// Draw one sprite layer. kind: 0=terrain, 1=furniture, 2=item, 3=monster,
+/// 4=vehicle part, 5=trap, 6=character sprite (player_male/npc_*; category
+/// NONE). dx/dy are pivot-relative cell offsets; lit is lit_level as int;
+/// sub is an optional tileset subcategory ("" = none); subtile/rota are the
+/// multi-tile variant values (MULTITILE_TYPE / rotation 0..3, or 0/0).
+/// mp_fixed: the sprite keeps its lit_level's look whatever the scene light
+/// is (highlight badges etc., like the host's draw_light::fixed draws).
+void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub,
+                         int dx, int dy, int lit, int subtile, int rota,
+                         bool mp_fixed = false );
+// DDA MP: multiply-blend a per-cell light overlay that replicates the host's
+// lightmap gradient (the client has no lightmap). DARK/LOW/BRIGHT_ONLY and
+// MEMORIZED cells get a dimming diamond (iso) or rect; LIT+ stays untouched.
+// Must be called after the cell's scene sprites, before the bright badges.
+// Only a fallback: skipped entirely when enable_lighting took over.
+void tiles_backend_cell_light( void *handle, int dx, int dy, int light );
+/// DDA MP: stream one cell's light facts for the client's own synthetic
+/// light map: the lit_level byte (carried by the snapshot anyway) and the
+/// barrier bit. Call for every cell BEFORE enable_lighting.
+void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
+                                   bool barrier );
+/// DDA MP: build the client's own synthetic smooth-lighting light map out of
+/// the streamed lit_level bytes and barrier bits, inject it into the shared
+/// light map and bind the lit frame exactly like the game's own renderer, so
+/// the replay sprites take the real GPU lit path (gray/tone/colored-light/
+/// memory look identical to the host; light values are per-lit_level
+/// approximations). snap_w/h are the snapshot cell dimensions. False (or no
+/// streamed light) leaves the classic fallback path active.
+bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h );
+/// Black out the entire display buffer so stale UI remnants (debug prompt
+/// text etc.) never persist behind the replay canvas. Call BEFORE the ui
+/// window redraw of the same iteration.
+void tiles_backend_clear_screen( void *handle );
+/// Per-tile pixel size of the loaded tileset; {0,0} on failure.
+void tiles_backend_tile_size( void *handle, int &w, int &h );
+/// Terminal font cell size in pixels (for aligning the sprite canvas to
+/// the curses window interior); {0,0} on failure.
+void tiles_backend_font_size( int &w, int &h );
+void tiles_backend_end( void *handle );
+#endif // TILES
 
 } // namespace netplay

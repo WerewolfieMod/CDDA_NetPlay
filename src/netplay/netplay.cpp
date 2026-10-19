@@ -3,16 +3,25 @@
 // Public API in "netplay/netplay.h".
 
 #include "netplay.h"
+#ifdef _WIN32
+#include "worldfactory.h" // world_generator (WELCOME world name)
+#endif
 
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <csignal>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#ifdef _WIN32
+#include <windows.h> // WideCharToMultiByte (crash diagnostics)
+#endif
+
+#include "zstd/zstd.h"
 
 #ifdef _WIN32
 #   ifndef NOMINMAX
@@ -87,6 +96,12 @@ static void put_str( std::vector<char> &buf, const std::string &s )
     put_u16( buf, static_cast<uint16_t>( s.size() ) );
     buf.insert( buf.end(), s.begin(), s.end() );
 }
+static void put_str8( std::vector<char> &buf, const std::string &s )
+{
+    const size_t n = std::min<size_t>( s.size(), 255 );
+    buf.push_back( static_cast<char>( n ) );
+    buf.insert( buf.end(), s.begin(), s.begin() + static_cast<std::ptrdiff_t>( n ) );
+}
 
 struct reader {
     const char *data = nullptr;
@@ -122,6 +137,23 @@ struct reader {
     }
     std::string get_str() {
         const uint16_t len = get_u16();
+        if( !ok || off + len > size ) {
+            ok = false;
+            return {};
+        }
+        std::string s( data + off, data + off + len );
+        off += len;
+        return s;
+    }
+    uint8_t get_u8() {
+        if( off + 1 > size ) {
+            ok = false;
+            return 0;
+        }
+        return static_cast<uint8_t>( data[off++] );
+    }
+    std::string get_str8() {
+        const uint8_t len = get_u8();
         if( !ok || off + len > size ) {
             ok = false;
             return {};
@@ -216,6 +248,34 @@ struct netplay_state {
         net_init_os();
     }
     ~netplay_state() {
+        // DDA MP: static state is destroyed by an atexit destructor; any
+        // still-joinable std::thread would std::terminate during destruction.
+        // stop_* are CAS-guarded, so sweep the members explicitly.
+        stop_client();
+        stop_host();
+        if( accept_thread.joinable() ) {
+            accept_thread.join();
+        }
+        if( client_thread.joinable() ) {
+            client_thread.join();
+        }
+        std::vector<std::thread> leftover;
+        {
+            std::lock_guard<std::mutex> lk( sessions_mutex );
+            for( auto &[id, th] : id2reader ) {
+                ( void )id;
+                if( th.joinable() ) {
+                    leftover.push_back( std::move( th ) );
+                }
+            }
+            id2reader.clear();
+        }
+        // Join without holding sessions_mutex (threads acquire it).
+        for( std::thread &th : leftover ) {
+            if( th.joinable() ) {
+                th.join();
+            }
+        }
         net_deinit_os();
     }
 
@@ -232,12 +292,22 @@ struct netplay_state {
     int session_watermark = 0;
     std::map<int, socket_t> id2sock;
     std::map<int, std::string> id2name;
+    std::map<int, std::thread> id2reader;
+
+    /* queued client keystrokes (wire codes), bounded to avoid hogging */
+    std::mutex keys_mutex;
+    std::deque<uint32_t> host_keys;
 
     /* ---- client ---- */
     std::atomic<bool> connected = false;
     socket_t client_sock = BAD_SOCKET;
     std::thread client_thread;
+    std::string client_address;
+    std::string last_address;
     std::string deny_reason;
+    /* world the host announced in WELCOME (fat client) */
+    std::string host_world_name;
+    std::string client_last_host_world;
     snapshot latest;
     bool have_latest = false;
     std::vector<std::vector<char>> client_out;
@@ -253,13 +323,36 @@ void netplay_state::stop_host()
         if( accept_thread.joinable() ) {
             accept_thread.join();
         }
-        std::lock_guard<std::mutex> lk( sessions_mutex );
-        for( auto &[id, sock] : id2sock ) {
-            ( void )id;
-            close_socket( sock );
+        std::vector<std::thread> readers;
+        {
+            std::lock_guard<std::mutex> lk( sessions_mutex );
+            // Politely let every session know we're leaving before the socket
+            // teardown; clients will then show their "disconnected" state.
+            for( auto &[id, sock] : id2sock ) {
+                ( void )id;
+                send_all( sock, encode_frame( frame::BYE, {} ) );
+            }
+            for( auto &[id, sock] : id2sock ) {
+                ( void )id;
+                close_socket( sock );
+            }
+            id2sock.clear();
+            id2name.clear();
+            for( auto &[id, th] : id2reader ) {
+                ( void )id;
+                if( th.joinable() ) {
+                    readers.push_back( std::move( th ) );
+                }
+            }
+            id2reader.clear();
         }
-        id2sock.clear();
-        id2name.clear();
+        // Join without holding sessions_mutex: reader threads acquire it while
+        // unregistering themselves.
+        for( std::thread &th : readers ) {
+            if( th.joinable() ) {
+                th.join();
+            }
+        }
     }
 }
 
@@ -282,8 +375,181 @@ void netplay_state::stop_client()
 static internal::netplay_state state;
 static std::mutex state_mutex; // guards init/shutdown
 
+/* ------------------------------------------------------------------ */
+/* fat client world data                                                */
+/* ------------------------------------------------------------------ */
+
+void host_set_world_name( const std::string &name )
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    state.client_last_host_world = name;
+}
+
+std::string client_host_world_name()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_world;
+}
+
+/* ------------------------------------------------------------------ */
+/* tiles replay switch                                                 */
+/* ------------------------------------------------------------------ */
+
+/// kill-switch for the tileset replay renderer (host mining + client
+/// rendering). DDA_MP_TILES=0 disables; used for bisection debugging.
+bool tiles_replay_enabled()
+{
+    static int cached = -1;
+    if( cached < 0 ) {
+#ifdef _WIN32
+        char buf[8];
+        size_t sz = 0;
+        if( !getenv_s( &sz, buf, sizeof( buf ), "DDA_MP_TILES" ) && sz > 0 ) {
+            cached = ( buf[0] == '0' ) ? 0 : 1;
+            return cached != 0;
+        }
+#else
+        if( const char *v = getenv( "DDA_MP_TILES" ) ) {
+            cached = ( v[0] == '0' ) ? 0 : 1;
+            return cached != 0;
+        }
+#endif
+        cached = 1;
+    }
+    return cached != 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* crash diagnostics black box                                          */
+/* ------------------------------------------------------------------ */
+
+static void mp_diag_write( const std::string &s )
+{
+    std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+    if( f ) {
+        std::fputs( s.c_str(), f );
+        std::fputs( "\n", f );
+        std::fclose( f );
+    }
+}
+
+// DDA MP: capture stderr (cata_assert prints the failing file:line there).
+static void mp_diag_redirect_stderr()
+{
+    if( std::freopen( "netplay_stderr.log", "w", stderr ) == nullptr ) {
+        mp_diag_write( "stderr redirect failed" );
+    } else {
+        setvbuf( stderr, nullptr, _IONBF, 0 );
+    }
+}
+
+#ifdef _WIN32
+static void mp_diag_invalid_parameter( const wchar_t *expression,
+                                       const wchar_t * /*function*/,
+                                       const wchar_t *file,
+                                       unsigned int line,
+                                       uintptr_t /*reserved*/ )
+{
+    std::string msg = "CRT INVALID PARAMETER";
+    try {
+        auto to8 = []( const wchar_t *w ) {
+            std::string out;
+            if( w == nullptr ) {
+                return out;
+            }
+            const int n = WideCharToMultiByte( CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr );
+            if( n > 1 ) {
+                out.resize( static_cast<size_t>( n ) - 1 );
+                WideCharToMultiByte( CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr );
+            }
+            return out;
+        };
+        if( expression != nullptr && expression[0] != L'\0' ) {
+            msg += " expr=" + to8( expression );
+        }
+        if( file != nullptr && file[0] != L'\0' ) {
+            msg += " file=" + to8( file ) + " line=" + std::to_string( line );
+        }
+    } catch( ... ) {
+        msg += " <fmt failed>";
+    }
+    mp_diag_write( msg );
+    // returning lets the CRT invoke _invoke_watson (fail-fast) as usual
+}
+#endif
+
+static void mp_diag_terminate()
+{
+    mp_diag_write( "TERMINATE (uncaught exception)" );
+    try {
+        if( std::current_exception() != nullptr ) {
+            std::rethrow_exception( std::current_exception() );
+        } else {
+            mp_diag_write( "  no active exception" );
+        }
+    } catch( const std::exception &e ) {
+        mp_diag_write( std::string( "  std::exception: " ) + e.what() );
+    } catch( ... ) {
+        mp_diag_write( "  non-std exception" );
+    }
+    std::abort();
+}
+
+static void mp_diag_sigabrt( int /*sig*/ )
+{
+    mp_diag_write( "ABORT() invoked" );
+    // Log module-relative addresses for offline symbolization (symmap).
+    void *frames[32] = {};
+    const unsigned short n = CaptureStackBackTrace( 0, 32, frames, nullptr );
+    const HMODULE exe = GetModuleHandleA( nullptr );
+    std::string out = "ABORT STACK:";
+    char tmp[80];
+    for( unsigned short i = 0; i < n; i++ ) {
+        HMODULE mod = nullptr;
+        GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCSTR>( frames[i] ), &mod );
+        const uintptr_t addr = reinterpret_cast<uintptr_t>( frames[i] );
+        const uintptr_t base = reinterpret_cast<uintptr_t>( mod );
+        ptrdiff_t off = static_cast<ptrdiff_t>( addr - base );
+        if( mod == exe ) {
+            std::snprintf( tmp, sizeof( tmp ), " [exe+0x%zx]", static_cast<size_t>( off ) );
+        } else if( mod != nullptr ) {
+            char name[MAX_PATH] = {};
+            GetModuleFileNameA( mod, name, MAX_PATH );
+            const char *slash = std::strrchr( name, '\\' );
+            std::snprintf( tmp, sizeof( tmp ), " [%s+0x%zx]",
+                           slash ? slash + 1 : name, static_cast<size_t>( off ) );
+        } else {
+            std::snprintf( tmp, sizeof( tmp ), " [%p]", frames[i] );
+        }
+        out += tmp;
+    }
+    mp_diag_write( out );
+}
+
 bool init()
 {
+    // DDA MP crash "black box": UCRT fail-fasts (invalid parameter, uncaught
+    // exception, abort) cannot be caught with try/catch. These hooks write
+    // the failure signature into netplay_tiles.log right before death so the
+    // origin point is identifiable from the log alone.
+    static bool diag_hooks_installed = [] {
+        try {
+            mp_diag_redirect_stderr();
+#ifdef _WIN32
+            _set_invalid_parameter_handler( mp_diag_invalid_parameter );
+#endif
+            std::set_terminate( mp_diag_terminate );
+            std::signal( SIGABRT, mp_diag_sigabrt );
+            std::signal( SIGABRT, mp_diag_sigabrt );
+            mp_diag_write( "diag hooks installed" );
+        } catch( ... ) {
+            // diagnostics must never break startup
+        }
+        return true;
+    }();
+
     return true; // constructed the first time `state` is touched
 }
 void shutdown()
@@ -296,6 +562,41 @@ void shutdown()
 /* ------------------------------------------------------------------ */
 /* host                                                                */
 /* ------------------------------------------------------------------ */
+
+static void host_session_reader( int sid, socket_t sock )
+{
+    while( true ) {
+        frame op;
+        std::vector<char> payload;
+        if( !recv_frame( sock, op, payload ) ) {
+            break;
+        }
+        if( op == frame::KEYS ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const uint32_t n = r.get_u32();
+            for( uint32_t i = 0; i < n && r.ok; i++ ) {
+                const uint32_t code = r.get_u32();
+                r.get_i32(); // mods, unused in v1
+                if( !r.ok ) {
+                    break;
+                }
+                std::lock_guard<std::mutex> lk( state.keys_mutex );
+                if( state.host_keys.size() < 256 ) {
+                    state.host_keys.push_back( code );
+                }
+            }
+        } else if( op == frame::BYE ) {
+            break;
+        }
+        // other frames are ignored on the host side for now
+    }
+
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    state.id2sock.erase( sid );
+    state.id2name.erase( sid );
+}
 
 static void host_accept_loop()
 {
@@ -346,7 +647,25 @@ static void host_accept_loop()
         std::vector<char> w;
         put_u16( w, /* NETPLAY_PROTOCOL */ 0x0001 );
         put_u32( w, static_cast<uint32_t>( sid ) );
+        // DDA MP fat client: announce the host's active world so the client
+        // can load the same mod data before rendering snapshots.
+        std::string wname;
+#ifdef _WIN32
+        if( world_generator != nullptr && world_generator->active_world != nullptr ) {
+            wname = world_generator->active_world->world_name;
+        }
+#endif
+        put_str( w, wname );
         send_all( peer, encode_frame( frame::WELCOME, w ) );
+
+        // Every accepted session now has a dedicated reader thread that
+        // harvests KEYS frames into the host queue until disconnect.
+        {
+            std::lock_guard<std::mutex> lk( state.sessions_mutex );
+            state.id2reader[sid] = std::thread( [sid, peer] {
+                host_session_reader( sid, peer );
+            } );
+        }
     }
 }
 
@@ -423,6 +742,17 @@ int host_session_count()
     return static_cast<int>( state.id2sock.size() );
 }
 
+std::vector<std::string> host_session_names()
+{
+    std::vector<std::string> names;
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    for( const auto &[id, name] : state.id2name ) {
+        ( void )id;
+        names.push_back( name );
+    }
+    return names;
+}
+
 std::string host_listen_address()
 {
     if( !state.running ) {
@@ -457,6 +787,129 @@ void host_pump()
 }
 
 /* ------------------------------------------------------------------ */
+/* payload compression (zstd)                                          */
+/* ------------------------------------------------------------------ */
+
+static constexpr size_t SNAP_MAX_UNCOMPRESSED = 64u * 1024u * 1024u;
+
+/// Wrap a payload into: [1 byte tag][body]. tag 0 = raw body, tag 1 = zstd.
+static std::vector<char> maybe_compress( const std::vector<char> &raw )
+{
+    std::vector<char> out( 1 + raw.size() );
+    const size_t bound = raw.empty() ? 0 : ZSTD_compressBound( raw.size() );
+    bool compressed = false;
+    if( !raw.empty() ) {
+        out.resize( 1 + bound );
+        const size_t n = ZSTD_compress( out.data() + 1, bound, raw.data(), raw.size(), 3 );
+        if( !ZSTD_isError( n ) && 1 + n < raw.size() ) {
+            out[0] = 1;
+            out.resize( 1 + n );
+            compressed = true;
+        }
+    }
+    if( !compressed ) {
+        out[0] = 0;
+        std::copy( raw.begin(), raw.end(), out.begin() + 1 );
+        out.resize( 1 + raw.size() );
+    }
+    return out;
+}
+
+/// Inverse of maybe_compress; empty result means "unusable payload".
+static std::vector<char> maybe_decompress( const char *data, size_t size )
+{
+    if( size < 1 ) {
+        return {};
+    }
+    const uint8_t tag = static_cast<uint8_t>( data[0] );
+    if( tag == 0 ) {
+        return std::vector<char>( data + 1, data + size );
+    }
+    if( tag != 1 ) {
+        return {};
+    }
+    const size_t size_hint = ZSTD_getFrameContentSize( data + 1, size - 1 );
+    if( size_hint == ZSTD_CONTENTSIZE_ERROR ||
+        size_hint == ZSTD_CONTENTSIZE_UNKNOWN || size_hint > SNAP_MAX_UNCOMPRESSED ) {
+        return {};
+    }
+    std::vector<char> out( size_hint );
+    const size_t got = ZSTD_decompress( out.data(), out.size(), data + 1, size - 1 );
+    if( ZSTD_isError( got ) ) {
+        return {};
+    }
+    out.resize( got );
+    return out;
+}
+
+static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
+{
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( snap.width ) );
+    put_u16( p, static_cast<uint16_t>( snap.height ) );
+    put_str( p, snap.status_line );
+    for( const cell &c : snap.cells ) {
+        put_u32( p, static_cast<uint32_t>( c.glyph ) );
+        put_i32( p, static_cast<int32_t>( c.color ) );
+    }
+    // Optional tileset replay payload. Append only when it matches 1:1 with
+    // the ascii cells; legacy (shorter) payloads end here, and the reader
+    // detects the extension by remaining bytes (backwards compatible).
+    if( snap.tiles.size() == snap.cells.size() && !snap.tiles.empty() ) {
+        put_u16( p, static_cast<uint16_t>( snap.tiles.size() ) );
+        for( const tile_cell &t : snap.tiles ) {
+            p.push_back( static_cast<char>( t.light ) );
+            put_str8( p, t.ter );
+            put_str8( p, t.furn );
+            put_str8( p, t.trap );
+            put_str8( p, t.critter );
+            put_str8( p, t.item );
+            put_str8( p, t.vpart );
+            // v3.2(+3): per-cell multi-tile appearance values (6 bytes) plus
+            // the flags byte (bit3 = light barrier). The reader detects the
+            // extension by trying to consume the whole section with the
+            // extras first, then falls back to the legacy layout (backwards
+            // compatible both directions).
+            p.push_back( static_cast<char>( t.ter_sub ) );
+            p.push_back( static_cast<char>( t.ter_rot ) );
+            p.push_back( static_cast<char>( t.furn_sub ) );
+            p.push_back( static_cast<char>( t.furn_rot ) );
+            p.push_back( static_cast<char>( t.vpart_sub ) );
+            p.push_back( static_cast<char>( t.vpart_rot ) );
+            p.push_back( static_cast<char>( t.flags ) );
+        }
+    }
+    return p;
+}
+
+void host_broadcast_snapshot( const snapshot &snap )
+{
+    std::vector<char> f = encode_frame( frame::SNAPSHOT, maybe_compress( encode_snapshot_payload_raw( snap ) ) );
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    auto it = state.id2sock.begin();
+    while( it != state.id2sock.end() ) {
+        if( send_all( it->second, f ) ) {
+            ++it;
+        } else {
+            // failed session: drop it; its reader thread will notice too
+            close_socket( it->second );
+            it = state.id2sock.erase( it );
+        }
+    }
+}
+
+bool host_pop_key( uint32_t &code )
+{
+    std::lock_guard<std::mutex> lk( state.keys_mutex );
+    if( state.host_keys.empty() ) {
+        return false;
+    }
+    code = state.host_keys.front();
+    state.host_keys.pop_front();
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* client                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -469,16 +922,21 @@ static void client_run( socket_t sock )
         if( !recv_frame( sock, op, payload ) ) {
             break;
         }
-        reader r;
-        r.data = payload.data();
-        r.size = payload.size();
         if( op == frame::SNAPSHOT ) {
+            const std::vector<char> body = maybe_decompress( payload.data(), payload.size() );
+            if( body.empty() ) {
+                // broken or unsupported payload: drop and keep waiting
+                continue;
+            }
+            reader r;
+            r.data = body.data();
+            r.size = body.size();
             snapshot snap;
             snap.width = static_cast<int>( r.get_u16() );
             snap.height = static_cast<int>( r.get_u16() );
             snap.status_line = r.get_str();
             if( r.ok && snap.width > 0 && snap.height > 0
-                && snap.width * snap.height * 8/* bytes/cell */ <= payload.size() - r.off ) {
+                && snap.width * snap.height * 8/* bytes/cell */ <= body.size() - r.off ) {
                 const size_t cells = snap.width * snap.height;
                 snap.cells.reserve( cells );
                 for( size_t i = 0; i < cells; i++ ) {
@@ -488,11 +946,87 @@ static void client_run( socket_t sock )
                     snap.cells.push_back( c );
                 }
                 if( r.ok ) {
+                    // Optional tileset replay extension: present when bytes
+                    // remain after the ascii cells (legacy payloads end
+                    // here). v3.2 packs 4 extra appearance bytes per cell
+                    // (ter/furn subtile+rotation); decode tries that exact
+                    // layout first, then the legacy one.
+                    if( r.ok && r.off + 2 <= body.size() ) {
+                        reader probe;
+                        probe.data = r.data;
+                        probe.size = r.size;
+                        probe.off = r.off;
+                        const uint16_t tc = probe.get_u16();
+                        // sanity: each tile cell costs >= 6 bytes
+                        if( probe.ok && tc > 0
+                            && tc <= ( body.size() - probe.off ) / 6 ) {
+                            const size_t tiles_off = r.off;
+                            auto try_decode = [&]( size_t extras ) {
+                                reader rr;
+                                rr.data = probe.data;
+                                rr.size = probe.size;
+                                rr.off = tiles_off;
+                                rr.get_u16();
+                                std::vector<tile_cell> out;
+                                out.reserve( tc );
+                                for( uint16_t i = 0; i < tc && rr.ok; i++ ) {
+                                    tile_cell t;
+                                    t.light = rr.get_u8();
+                                    t.ter = rr.get_str8();
+                                    t.furn = rr.get_str8();
+                                    t.trap = rr.get_str8();
+                                    t.critter = rr.get_str8();
+                                    t.item = rr.get_str8();
+                                    t.vpart = rr.get_str8();
+                                    if( extras >= 6 ) {
+                                        t.ter_sub = rr.get_u8();
+                                        t.ter_rot = rr.get_u8();
+                                        t.furn_sub = rr.get_u8();
+                                        t.furn_rot = rr.get_u8();
+                                        t.vpart_sub = rr.get_u8();
+                                        t.vpart_rot = rr.get_u8();
+                                    }
+                                    if( extras >= 7 ) {
+                                        t.flags = rr.get_u8();
+                                    }
+                                    out.push_back( std::move( t ) );
+                                }
+                                // exact fit decides which layout ran
+                                if( !rr.ok || rr.off != body.size() ) {
+                                    out.clear();
+                                    return out;
+                                }
+                                return out;
+                            };
+                            std::vector<tile_cell> parsed = try_decode( 7 );
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 0 );
+                            }
+                            if( !parsed.empty() ) {
+                                snap.tiles = std::move( parsed );
+                            }
+                        }
+                    }
+                }
+                if( r.ok ) {
                     state.latest = snap;
                     state.have_latest = true;
                 }
             }
+        } else if( op == frame::WELCOME ) {
+            // DDA MP fat client: [u16 proto][u32 sid][str world name]
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            r.get_u16();
+            r.get_u32();
+            if( r.ok ) {
+                state.client_last_host_world = r.get_str();
+            }
         } else if( op == frame::DENY ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
             local_deny = r.get_str();
         } else if( op == frame::BYE ) {
             break;
@@ -568,6 +1102,8 @@ bool client_connect( const std::string &address_, int port )
     }
 
     state.deny_reason.clear();
+    state.client_address = address_;
+    state.last_address = address_;
     state.connected = true;
     state.client_sock = sock;
     state.client_thread = std::thread( [] { client_run( state.client_sock ); } );
@@ -603,6 +1139,11 @@ std::string client_deny_reason()
     return state.deny_reason;
 }
 
+std::string client_last_address()
+{
+    return state.last_address;
+}
+
 bool client_receive( snapshot &out )
 {
     if( !state.have_latest ) {
@@ -623,7 +1164,11 @@ void client_send_keys( const std::vector<key_event> &keys )
         put_u32( p, k.code );
         put_i32( p, k.mods );
     }
-    send_all( state.client_sock, encode_frame( frame::KEYS, p ) );
+    if( !send_all( state.client_sock, encode_frame( frame::KEYS, p ) ) ) {
+        // Sending failed: the session is dead. Closing the socket unblocks the
+        // receiver thread; the view loop will surface the reconnect prompt.
+        state.stop_client();
+    }
 }
 
 void client_pump()

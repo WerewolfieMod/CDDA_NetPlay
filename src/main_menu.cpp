@@ -923,7 +923,6 @@ bool main_menu::opening_screen()
                     break;
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:
-                case main_menu_opts::JOINMP:
                 default:
                     break;
             }
