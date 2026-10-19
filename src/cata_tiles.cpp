@@ -2128,7 +2128,7 @@ bool cata_tiles::netplay_begin_replay_lit( const half_open_rectangle<point> &are
         }
     };
     const auto begin = [&]( const cata_shader::lit_begin_result & begun ) {
-        switch( smooth_lighting::action_for( begun.outcome ) ) {
+        switch( cata_shader::action_for( begun.outcome ) ) {
             case smooth_lighting::lit_frame_action::abort_frame:
                 // the renderer bind is undefined: drop every lit state so the
                 // rest of this present binds something sane, then fall back
