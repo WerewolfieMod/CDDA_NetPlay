@@ -11,6 +11,7 @@
 #include "netplay/netplay.h"
 
 #include <array>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -111,6 +112,12 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
         here.get_abs( center + tripoint_rel_ms( -FRAMEW / 2, -FRAMEH / 2, 0 ) ),
         here.get_abs( center + tripoint_rel_ms( FRAMEW / 2, FRAMEH / 2, 0 ) ) );
     const auto &viscache = here.get_cache_ref( center.z() ).visibility_cache;
+    // DDA MP debug: per-cell trace of the mined light facts for the first 2
+    // snapshots, one line into netplay_light_trace.log per cell, to compare
+    // cell for cell with the client's rows (prefix H) and the blue-tile issue.
+    static int mp_light_trace_frame = 0;
+    static std::string mp_light_trace;
+    const bool mp_light_trace_this = mp_light_trace_frame < 2;
     for( int dy = 0; dy < FRAMEH; dy++ ) {
         for( int dx = 0; dx < FRAMEW; dx++ ) {
             const tripoint_bub_ms p( center + tripoint_rel_ms( dx - FRAMEW / 2,
@@ -139,6 +146,17 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                     t.light_r = ltr;
                     t.light_g = ltg;
                     t.light_b = ltb;
+                    if( mp_light_trace_this ) {
+                        mp_light_trace += string_format(
+                                              "H f=%02d y=%02d x=%02d ll=%d r=%3d g=%3d b=%3d a=%d\n",
+                                              mp_light_trace_frame, dy, dx,
+                                              static_cast<int>( ll ), ltr, ltg, ltb, lta );
+                    }
+                } else if( mp_light_trace_this ) {
+                    mp_light_trace += string_format(
+                                          "H f=%02d y=%02d x=%02d ll=%d miss\n",
+                                          mp_light_trace_frame, dy, dx,
+                                          static_cast<int>( ll ) );
                 }
 #endif
                 const bool visible = ll != lit_level::BLANK && ll != lit_level::DARK &&
@@ -261,6 +279,14 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
             out.tiles.push_back( std::move( t ) );
         }
     }
+    if( mp_light_trace_this && !mp_light_trace.empty() ) {
+        if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
+            std::fputs( mp_light_trace.c_str(), f );
+            std::fclose( f );
+        }
+        mp_light_trace.clear();
+    }
+    ++mp_light_trace_frame;
 }
 
 /* ------------------------------------------------------------------ */

@@ -7919,6 +7919,13 @@ void tiles_backend_destroy( void *handle )
     delete netplay_backend_cast( handle );
 }
 
+/* DDA MP debug: per-cell trace of the streamed light facts (see
+ * tiles_backend_set_cell_light); first 4 lit frames go into
+ * netplay_light_trace.log so the streamed bytes and the texel the shader
+ * consumes can be compared cell for cell with the host's mining rows. */
+static int mp_light_trace_frame = -1;
+static std::string mp_light_trace;
+
 bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
                           int px_h, int pivot_bub_x, int pivot_bub_y )
 {
@@ -7947,6 +7954,8 @@ bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
     }
     b->lm_any = false;
     b->lit_ok = false;
+    // DDA MP debug: advance the per-cell light trace's frame number
+    ++mp_light_trace_frame;
     return true;
 }
 
@@ -8082,6 +8091,18 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
         b->lm_strip.assign( static_cast<size_t>( smooth_lighting::lightmap_width ) * MAPSIZE_Y,
                             smooth_lighting::lightmap_texel() );
     }
+    // DDA MP debug: log what the lit path would consume for this cell: the
+    // streamed lit_level and rgb (verbatim from the host's smooth-lighting
+    // light map) plus the derived a byte (detail bit from lit_level, barrier
+    // bit from flags). x, y are replay-canvas tile coordinates.
+    if( mp_light_trace_frame <= 3 ) {
+        const smooth_lighting::lightmap_texel texel = netplay_streamed_light_texel(
+                    light, lr, lg, lb, barrier );
+        mp_light_trace += string_format(
+                              "C f=%02d y=%02d x=%02d ll=%d r=%3d g=%3d b=%3d a=%d\n",
+                              mp_light_trace_frame, dy, dx, light, texel.r, texel.g,
+                              texel.b, texel.a );
+    }
     const point cell = b->anchor.raw().xy() + point( dx, dy );
     if( cell.x < 0 || cell.x >= MAPSIZE_X || cell.y < 0 || cell.y >= MAPSIZE_Y ) {
         return;
@@ -8096,6 +8117,14 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
 
 bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
 {
+    // DDA MP debug: flush the per-cell trace of this frame's streamed light
+    if( !mp_light_trace.empty() ) {
+        if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
+            std::fputs( mp_light_trace.c_str(), f );
+            std::fclose( f );
+        }
+        mp_light_trace.clear();
+    }
     netplay_tile_backend *b = netplay_backend_cast( handle );
     if( b == nullptr || !b->tiles || !b->tiles->is_valid() || !b->lm_any ) {
         return false;
