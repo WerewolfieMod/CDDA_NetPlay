@@ -457,19 +457,26 @@ void run_view_loop()
                                                               trace_draws, kind, id ) );
                                     }
                                 };
-                                // DDA MP: prepass — stream every cell's lit
-                                // level + barrier bit, then bind the lit
+                                // DDA MP: prepass — stream every cell's
+                                // light texel color (the host's own
+                                // smooth-lighting values), then bind the lit
                                 // frame so the sprites take the real GPU lit
-                                // path (same gray/tone/memory formulas as the
-                                // host's own renderer; light values are the
-                                // client's per-lit_level synthesis).
+                                // path (same gray/tone/colored-light/memory
+                                // formulas as the host's own renderer).
+                                // Cells without valid light bytes (host
+                                // without smooth lighting) leave the classic
+                                // fallback on.
                                 for( int y = 0; y < snap.height; y++ ) {
                                     for( int x = 0; x < snap.width; x++ ) {
                                         const tile_cell &t = snap.tiles[y * snap.width + x];
+                                        if( !( t.flags & 16 ) ) {
+                                            continue;
+                                        }
                                         netplay::tiles_backend_set_cell_light(
                                             tiles_backend, x - snap.width / 2,
                                             y - snap.height / 2,
                                             static_cast<int>( t.light ),
+                                            t.light_r, t.light_g, t.light_b,
                                             ( t.flags & 8 ) != 0 );
                                     }
                                 }

@@ -70,10 +70,21 @@ struct tile_cell {
     /// bit0 = visible items on the cell (draw the highlight_item marker),
     /// bit1 = more than one item (pile indicator),
     /// bit2 = the vpart on this cell has cargo with items (part badge),
-    /// bit3 = the cell blocks light: the client marks it as a barrier when it
-    ///        builds its own synthetic light map from the lit_level bytes,
-    ///        so the smooth-lighting filter keeps light out of walled areas
+    /// bit3 = the cell blocks light (a smooth-lighting barrier; the client
+    ///        builds its own reach masks from this so the smooth filter
+    ///        keeps light out of walled areas),
+    /// bit4 = the light texel color bytes below are valid (the host runs
+    ///        smooth lighting and sampled its light map for this cell)
     uint8_t flags = 0;
+    /// Smooth-lighting light texel color when flags & 16: r = light 0..255,
+    /// g/b = hue shares. The client's smooth filter and lit shader consume
+    /// these exactly like the host's own light map, so the continuous
+    /// gradient and any colored light match cell for cell. The texel's a
+    /// channel is not sent: detail is derivable from `light` (lit_level)
+    /// and the barrier bit rides on flags.
+    uint8_t light_r = 0;
+    uint8_t light_g = 0;
+    uint8_t light_b = 0;
 };
 
 /// Full screen frame for a remote session.
@@ -203,18 +214,21 @@ void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub
 // Must be called after the cell's scene sprites, before the bright badges.
 // Only a fallback: skipped entirely when enable_lighting took over.
 void tiles_backend_cell_light( void *handle, int dx, int dy, int light );
-/// DDA MP: stream one cell's light facts for the client's own synthetic
-/// light map: the lit_level byte (carried by the snapshot anyway) and the
-/// barrier bit. Call for every cell BEFORE enable_lighting.
+/// DDA MP: stream one cell's smooth-lighting light texel color (the same
+/// values the host's own shader consumes; lr = light 0..255, lg/lb = hue
+/// shares) plus the barrier bit; the lit_level byte fixes which cells are
+/// seen in detail. Call for every cell with valid light bytes BEFORE
+/// enable_lighting.
 void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
+                                   uint8_t lr, uint8_t lg, uint8_t lb,
                                    bool barrier );
-/// DDA MP: build the client's own synthetic smooth-lighting light map out of
-/// the streamed lit_level bytes and barrier bits, inject it into the shared
-/// light map and bind the lit frame exactly like the game's own renderer, so
-/// the replay sprites take the real GPU lit path (gray/tone/colored-light/
-/// memory look identical to the host; light values are per-lit_level
-/// approximations). snap_w/h are the snapshot cell dimensions. False (or no
-/// streamed light) leaves the classic fallback path active.
+/// DDA MP: inject the streamed light texels into the shared smooth-lighting
+/// light map, compute the filter's reach masks from the streamed barrier
+/// bits and bind the lit frame exactly like the game's own renderer, so the
+/// replay sprites take the real GPU lit path (gray/tone/colored light/
+/// memory look identical to the host). snap_w/h are the snapshot cell
+/// dimensions. False (no streamed light) leaves the classic fallback path
+/// active.
 bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h );
 /// Black out the entire display buffer so stale UI remnants (debug prompt
 /// text etc.) never persist behind the replay canvas. Call BEFORE the ui

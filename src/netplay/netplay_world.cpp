@@ -120,19 +120,25 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                 const lit_level ll = viscache[p.x()][p.y()];
                 t.light = static_cast<uint8_t>( static_cast<int>( ll ) );
 #if defined( TILES )
-                // DDA MP: the client builds its own synthetic smooth-lighting
-                // light map from these lit_level bytes; the only per-cell fact
-                // it cannot reproduce is which cells block light, so mark
-                // those (the texel a-channel carries smooth-lighting's barrier
-                // bit). Collected on the game thread; no race with the
-                // renderer.
+                // DDA MP: carry the host's own smooth-lighting light texel
+                // color so the client replays the continuous light gradient
+                // cell for cell (including colored light). The texel's a
+                // channel is not sent: detail is derivable from the
+                // lit_level byte and the barrier bit rides on flags.
+                // Collected on the game thread; no race with the renderer.
                 uint8_t ltr = 0;
                 uint8_t ltg = 0;
                 uint8_t ltb = 0;
                 uint8_t lta = 0;
                 if( tilecontext && tilecontext->netplay_sample_light( p, ltr, ltg,
-                        ltb, lta ) && ( lta & smooth_lighting::texel_barrier ) ) {
-                    t.flags |= 8;
+                        ltb, lta ) ) {
+                    t.flags |= 16;
+                    if( lta & smooth_lighting::texel_barrier ) {
+                        t.flags |= 8;
+                    }
+                    t.light_r = ltr;
+                    t.light_g = ltg;
+                    t.light_b = ltb;
                 }
 #endif
                 const bool visible = ll != lit_level::BLANK && ll != lit_level::DARK &&
