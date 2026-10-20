@@ -449,6 +449,14 @@ void run_view_loop()
                             if( netplay::tiles_backend_begin( tiles_backend, dest_x, dest_y,
                                                               canvas_w, canvas_h, PIVOT, PIVOT ) ) {
                                 mp_frame_trace( "begin ok" );
+                                // DDA MP debug: sizes of the snapshot feeding
+                                // this frame (the light prepass and the draw
+                                // loops both iterate snap.width/height and
+                                // tile the tiles vector with that stride).
+                                mp_tlog( string_format(
+                                             "snap #%d w=%d h=%d tiles=%zu",
+                                             trace_frames, snap.width, snap.height,
+                                             snap.tiles.size() ) );
                                 static int trace_draws = 0;
                                 auto trace_draw = [&]( int kind, const char *id ) {
                                     if( trace_draws < 400 ) {

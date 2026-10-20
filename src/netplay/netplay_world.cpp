@@ -389,6 +389,22 @@ void host_game_tick()
     }
     snapshot snap;
     build_host_snapshot( snap );
+    // DDA MP debug: log what the host broadcasts (w/h and tile count) so the
+    // netplay test can compare it with what the client's replay loop sees.
+    {
+        static int mp_snap_log = 0;
+        if( mp_snap_log < 200 ) {
+            ++mp_snap_log;
+            try {
+                std::ofstream f( "netplay_tiles.log", std::ios::app );
+                if( f ) {
+                    f << "host snap #" << mp_snap_log << " w=" << snap.width
+                      << " h=" << snap.height << " cells=" << snap.cells.size()
+                      << " tiles=" << snap.tiles.size() << "\n";
+                }
+            } catch( ... ) { }
+        }
+    }
     host_broadcast_snapshot( snap );
 }
 
