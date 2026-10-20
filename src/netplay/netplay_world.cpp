@@ -96,6 +96,56 @@ static std::string status_line_for( const avatar &u )
     return string_format( _( "HP: %d/%d | %s | %s" ), hp, hp_max, timestr, wname );
 }
 
+#if defined(TILES)
+/* DDA MP v3.7: authoritative light. mine_tiles previously sampled the
+ * renderer's last-uploaded smooth-lighting texels, which lag this turn's
+ * state by one render frame, while the lit_level byte of the same snapshot
+ * comes from a visibility cache that map::draw refreshed moments earlier.
+ * Whenever anything moved, the two disagreed: cells the host had already
+ * hidden stayed "seen in detail" on the client (gray patches over a zero
+ * light value), and still-lit cells cut to the memory look a turn early.
+ * Encoding here, on the game thread, from the same fresh caches the next
+ * render frame would encode from makes the texel and the lit_level byte
+ * describe exactly the same state. */
+static std::vector<smooth_lighting::lightmap_texel> mp_host_auth_light;
+static bool mp_host_auth_light_ok = false;
+
+static void mp_host_encode_light( map &here, const tripoint_bub_ms &center )
+{
+    mp_host_auth_light_ok = false;
+    // the render frame encodes its own fill area with the same threshold;
+    // our area is the mined bubble frame plus a margin so the client's
+    // smooth filter never cross-samples cells we did not encode (its
+    // assign() zero fill covers anything outside)
+    smooth_lighting::lightmap_fill_settings s;
+    static constexpr int frame_margin = 4;
+    s.area = half_open_rectangle<point>(
+        point( std::max( 0, center.x() - FRAMEW / 2 - frame_margin ),
+               std::max( 0, center.y() - FRAMEH / 2 - frame_margin ) ),
+        point( std::min( MAPSIZE_X, center.x() - FRAMEW / 2 + FRAMEW + frame_margin ),
+               std::min( MAPSIZE_Y, center.y() - FRAMEH / 2 + FRAMEH + frame_margin ) ) );
+    s.vision_threshold = here.get_visibility_variables_cache().vision_threshold;
+    s.tint = true;
+    // per tile sampling never reads the reach masks
+    s.masks = false;
+    mp_host_auth_light_ok = smooth_lighting::encode_lightmap_layer( here, center.z(), s, mp_host_auth_light );
+}
+
+static bool mp_host_fetch_auth_texel( const tripoint_bub_ms &p,
+                                      smooth_lighting::lightmap_texel &t )
+{
+    if( !mp_host_auth_light_ok || mp_host_auth_light.empty() ) {
+        return false;
+    }
+    const point pp = p.xy().raw();
+    if( pp.x < 0 || pp.x >= MAPSIZE_X || pp.y < 0 || pp.y >= MAPSIZE_Y ) {
+        return false;
+    }
+    t = mp_host_auth_light[smooth_lighting::light_index( pp )];
+    return true;
+}
+#endif
+
 /// Mine per-cell tileset sprite ids for the client's tileset replay renderer.
 /// Mirrors what cata_tiles::draw would have resolved for the same cells:
 ///  - visible cells: terrain/furniture/trap right off the map, plus monsters
@@ -128,33 +178,29 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                 const lit_level ll = viscache[p.x()][p.y()];
                 t.light = static_cast<uint8_t>( static_cast<int>( ll ) );
 #if defined( TILES )
-                // DDA MP: carry the host's own smooth-lighting light texel
-                // color so the client replays the continuous light gradient
-                // cell for cell (including colored light). The texel's a
-                // channel is not sent: detail is derivable from the
-                // lit_level byte and the barrier bit rides on flags.
-                // Collected on the game thread; no race with the renderer.
-                uint8_t ltr = 0;
-                uint8_t ltg = 0;
-                uint8_t ltb = 0;
-                uint8_t lta = 0;
-                if( tilecontext && tilecontext->netplay_sample_light( p, ltr, ltg,
-                        ltb, lta ) ) {
+                // DDA MP v3.7: sample the authoritative texel encoded from
+                // this turn's fresh visibility/light caches (see
+                // mp_host_encode_light). The a channel rides the same
+                // renderer-state facts as the color bytes.
+                smooth_lighting::lightmap_texel lt{};
+                if( mp_host_fetch_auth_texel( p, lt ) ) {
+                    // the color bytes are always the authoritative state of
+                    // this turn: an empty texel is a valid "not seen"
                     t.flags |= 16;
-                    if( lta & smooth_lighting::texel_barrier ) {
+                    if( lt.a & smooth_lighting::texel_barrier ) {
                         t.flags |= 8;
                     }
-                    if( lta & smooth_lighting::texel_detail ) {
+                    if( lt.a & smooth_lighting::texel_detail ) {
                         t.flags |= 32;
                     }
-                    t.light_r = ltr;
-                    t.light_g = ltg;
-                    t.light_b = ltb;
+                    t.light_r = lt.r;
+                    t.light_g = lt.g;
+                    t.light_b = lt.b;
                     if( mp_light_trace_this ) {
                         mp_light_trace += string_format(
                                               "H f=%02d y=%02d x=%02d ll=%d r=%3d g=%3d b=%3d a=%d\n",
                                               mp_light_trace_frame, dy, dx,
-                                              static_cast<int>( ll ), ltr, ltg, ltb, lta );
+                                              static_cast<int>( ll ), lt.r, lt.g, lt.b, lt.a );
                     }
                 } else if( mp_light_trace_this ) {
                     mp_light_trace += string_format(
@@ -314,6 +360,13 @@ static void build_host_snapshot( snapshot &out )
     // pipeline the game's own ascii renderer uses (memory of unseen tiles
     // included). It also updates the visibility cache and map memory.
     here.draw( win, center );
+#if defined(TILES)
+    // DDA MP v3.7: encode the authoritative light texels now, right after
+    // map::draw refreshed the visibility/light caches this snapshot reads,
+    // so its texels and its lit_level byte describe the same turn state
+    // (see mp_host_encode_light).
+    mp_host_encode_light( here, center );
+#endif
 
     // Critter overlay: map::draw does not render creatures; draw visible
     // monsters/NPCs over the freshly painted cells.
