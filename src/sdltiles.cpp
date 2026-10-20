@@ -8050,29 +8050,19 @@ void tiles_backend_tile_size( void *handle, int &w, int &h )
  * client's lit path consumes. r/g/b come from the host verbatim (the same
  * values the host's own shader multiplies onto its sprites), so the
  * continuous gradient and any colored light match cell for cell. The a
- * channel rides on the other streamed facts: smooth_lighting's
- * classify_light_cell marks BRIGHT/LOW/LIT as seen in detail, everything
- * else draws the memory look; the barrier bit keeps the client-built reach
- * masks from leaking light through walls. */
-static smooth_lighting::lightmap_texel netplay_streamed_light_texel( int light,
-        uint8_t lr, uint8_t lg, uint8_t lb, bool barrier )
+ * channel rides on streamed flags bits only: the texel detail bit comes
+ * from the same renderer state the color bytes came from (to derive it
+ * from the lit_level byte would race the renderer's light map turn and
+ * lit the path blue over empty texels), and the barrier bit keeps the
+ * client-built reach masks from leaking light through walls. */
+static smooth_lighting::lightmap_texel netplay_streamed_light_texel( uint8_t lr,
+        uint8_t lg, uint8_t lb, bool barrier, bool detail )
 {
     smooth_lighting::lightmap_texel t;
     t.r = lr;
     t.g = lg;
     t.b = lb;
-    switch( static_cast<lit_level>( light ) ) {
-        case lit_level::BRIGHT:
-        case lit_level::LIT:
-        case lit_level::LOW:
-            t.a = smooth_lighting::texel_detail;
-            break;
-        default:
-            // DARK, BRIGHT_ONLY, MEMORIZED, BLANK: not seen in detail, the
-            // lit shader blends these toward the memory look like on the host
-            t.a = 0;
-            break;
-    }
+    t.a = detail ? smooth_lighting::texel_detail : 0;
     if( barrier ) {
         t.a |= smooth_lighting::texel_barrier;
     }
@@ -8081,7 +8071,7 @@ static smooth_lighting::lightmap_texel netplay_streamed_light_texel( int light,
 
 void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
                                    uint8_t lr, uint8_t lg, uint8_t lb,
-                                   bool barrier )
+                                   bool barrier, bool detail )
 {
     netplay_tile_backend *b = netplay_backend_cast( handle );
     if( b == nullptr || !b->tiles ) {
@@ -8093,11 +8083,13 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
     }
     // DDA MP debug: log what the lit path would consume for this cell: the
     // streamed lit_level and rgb (verbatim from the host's smooth-lighting
-    // light map) plus the derived a byte (detail bit from lit_level, barrier
-    // bit from flags). x, y are replay-canvas tile coordinates.
-    if( mp_light_trace_frame <= 3 ) {
+    // light map) plus the derived a byte (texel detail bit from flags, the
+    // barrier bit from flags). x, y are replay-canvas tile coordinates.
+    if( ( mp_light_trace_frame <= 3 ) ||
+        ( mp_light_trace_frame > 0 && mp_light_trace_frame <= 2000 &&
+          mp_light_trace_frame % 120 < 4 ) ) {
         const smooth_lighting::lightmap_texel texel = netplay_streamed_light_texel(
-                    light, lr, lg, lb, barrier );
+                    lr, lg, lb, barrier, detail );
         mp_light_trace += string_format(
                               "C f=%02d y=%02d x=%02d ll=%d r=%3d g=%3d b=%3d a=%d\n",
                               mp_light_trace_frame, dy, dx, light, texel.r, texel.g,
@@ -8111,7 +8103,7 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
     // game map, so these streamed coordinates are all the alignment the
     // replay path needs as long as draws and texels share this anchor
     b->lm_strip[static_cast<size_t>( cell.y ) * smooth_lighting::lightmap_width + cell.x] =
-        netplay_streamed_light_texel( light, lr, lg, lb, barrier );
+        netplay_streamed_light_texel( lr, lg, lb, barrier, detail );
     b->lm_any = true;
 }
 

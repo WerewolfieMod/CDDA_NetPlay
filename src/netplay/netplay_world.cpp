@@ -117,7 +117,8 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
     // cell for cell with the client's rows (prefix H) and the blue-tile issue.
     static int mp_light_trace_frame = 0;
     static std::string mp_light_trace;
-    const bool mp_light_trace_this = mp_light_trace_frame < 2;
+    const bool mp_light_trace_this = mp_light_trace_frame < 4 ||
+        ( mp_light_trace_frame < 400 && mp_light_trace_frame % 96 < 2 );
     for( int dy = 0; dy < FRAMEH; dy++ ) {
         for( int dx = 0; dx < FRAMEW; dx++ ) {
             const tripoint_bub_ms p( center + tripoint_rel_ms( dx - FRAMEW / 2,
@@ -142,6 +143,9 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                     t.flags |= 16;
                     if( lta & smooth_lighting::texel_barrier ) {
                         t.flags |= 8;
+                    }
+                    if( lta & smooth_lighting::texel_detail ) {
+                        t.flags |= 32;
                     }
                     t.light_r = ltr;
                     t.light_g = ltg;

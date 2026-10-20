@@ -477,7 +477,8 @@ void run_view_loop()
                                             y - snap.height / 2,
                                             static_cast<int>( t.light ),
                                             t.light_r, t.light_g, t.light_b,
-                                            ( t.flags & 8 ) != 0 );
+                                            ( t.flags & 8 ) != 0,
+                                            ( t.flags & 32 ) != 0 );
                                     }
                                 }
                                 const bool mp_light_ok = netplay::tiles_backend_enable_lighting(

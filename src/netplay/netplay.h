@@ -74,7 +74,12 @@ struct tile_cell {
     ///        builds its own reach masks from this so the smooth filter
     ///        keeps light out of walled areas),
     /// bit4 = the light texel color bytes below are valid (the host runs
-    ///        smooth lighting and sampled its light map for this cell)
+    ///        smooth lighting and sampled its light map for this cell),
+    /// bit5 = the cell is seen in detail per the light texel's own texel
+    ///        detail bit (same renderer state the color bytes came from;
+    ///        deriving visibility from the lit_level byte races the
+    ///        renderer's light map turn and paints lit path blue over
+    ///        empty texels)
     uint8_t flags = 0;
     /// Smooth-lighting light texel color when flags & 16: r = light 0..255,
     /// g/b = hue shares. The client's smooth filter and lit shader consume
@@ -216,12 +221,12 @@ void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub
 void tiles_backend_cell_light( void *handle, int dx, int dy, int light );
 /// DDA MP: stream one cell's smooth-lighting light texel color (the same
 /// values the host's own shader consumes; lr = light 0..255, lg/lb = hue
-/// shares) plus the barrier bit; the lit_level byte fixes which cells are
-/// seen in detail. Call for every cell with valid light bytes BEFORE
-/// enable_lighting.
+/// shares) plus the barrier and texel-detail bits (both from the same
+/// renderer state the color bytes came from). Call for every cell with
+/// valid light bytes BEFORE enable_lighting.
 void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
                                    uint8_t lr, uint8_t lg, uint8_t lb,
-                                   bool barrier );
+                                   bool barrier, bool detail );
 /// DDA MP: inject the streamed light texels into the shared smooth-lighting
 /// light map, compute the filter's reach masks from the streamed barrier
 /// bits and bind the lit frame exactly like the game's own renderer, so the
