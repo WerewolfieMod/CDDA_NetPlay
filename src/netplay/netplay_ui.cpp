@@ -457,6 +457,13 @@ void run_view_loop()
                                              "snap #%d w=%d h=%d tiles=%zu",
                                              trace_frames, snap.width, snap.height,
                                              snap.tiles.size() ) );
+                                static int mp_skip_log_frames = 0;
+                                auto mp_trace_frame_early = [&]() {
+                                    return mp_skip_log_frames < 2;
+                                };
+                                if( mp_trace_frame_early() ) {
+                                    ++mp_skip_log_frames;
+                                }
                                 static int trace_draws = 0;
                                 auto trace_draw = [&]( int kind, const char *id ) {
                                     if( trace_draws < 400 ) {
@@ -478,6 +485,17 @@ void run_view_loop()
                                     for( int x = 0; x < snap.width; x++ ) {
                                         const tile_cell &t = snap.tiles[y * snap.width + x];
                                         if( !( t.flags & 16 ) ) {
+                                            // DDA MP debug: count the cells the
+                                            // prepass skips (no valid light
+                                            // bytes) for the first frames, so
+                                            // the skip pattern can be checked
+                                            // cell for cell.
+                                            if( mp_trace_frame_early() ) {
+                                                mp_tlog( string_format(
+                                                             "skip w=%d h=%d y=%d x=%d flags=%d",
+                                                             snap.width, snap.height, y, x,
+                                                             static_cast<int>( t.flags ) ) );
+                                            }
                                             continue;
                                         }
                                         netplay::tiles_backend_set_cell_light(

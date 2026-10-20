@@ -1023,6 +1023,31 @@ static void client_run( socket_t sock )
                 if( r.ok ) {
                     state.latest = snap;
                     state.have_latest = true;
+                    // DDA MP debug: what the client actually parsed from the
+                    // snapshot payload (sizes + how many tiles carry the
+                    // light-valid flag), to compare with what the replay
+                    // loop sees later.
+                    {
+                        static int mp_rx_log = 0;
+                        if( mp_rx_log < 120 ) {
+                            ++mp_rx_log;
+                            std::size_t lit = 0;
+                            for( const tile_cell &t : snap.tiles ) {
+                                if( t.flags & 16 ) {
+                                    ++lit;
+                                }
+                            }
+                            try {
+                                std::ofstream f( "netplay_tiles.log", std::ios::app );
+                                if( f ) {
+                                    f << "rx snap #" << mp_rx_log << " w=" << snap.width
+                                      << " h=" << snap.height
+                                      << " tiles=" << snap.tiles.size()
+                                      << " bit4cnt=" << lit << "\n";
+                                }
+                            } catch( ... ) { }
+                        }
+                    }
                 }
             }
         } else if( op == frame::WELCOME ) {
