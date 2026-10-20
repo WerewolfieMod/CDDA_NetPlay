@@ -7925,6 +7925,12 @@ void tiles_backend_destroy( void *handle )
  * consumes can be compared cell for cell with the host's mining rows. */
 static int mp_light_trace_frame = -1;
 static std::string mp_light_trace;
+// DDA MP debug: per-frame set_cell_light call summary (count + dx/dy range)
+static int mp_set_cell_calls = 0;
+static int mp_set_cell_xmin = 0;
+static int mp_set_cell_xmax = -1;
+static int mp_set_cell_ymin = 0;
+static int mp_set_cell_ymax = -1;
 
 bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
                           int px_h, int pivot_bub_x, int pivot_bub_y )
@@ -8073,6 +8079,21 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
                                    uint8_t lr, uint8_t lg, uint8_t lb,
                                    bool barrier, bool detail )
 {
+    // DDA MP debug: per-frame count of prepass calls and their coordinate
+    // range, flushed by enable_lighting as the S line. Settles how many
+    // cells really reach the light-strip backend per frame.
+    ++mp_set_cell_calls;
+    if( mp_set_cell_calls == 1 ) {
+        mp_set_cell_xmin = dx;
+        mp_set_cell_xmax = dx;
+        mp_set_cell_ymin = dy;
+        mp_set_cell_ymax = dy;
+    } else {
+        mp_set_cell_xmin = std::min( mp_set_cell_xmin, dx );
+        mp_set_cell_xmax = std::max( mp_set_cell_xmax, dx );
+        mp_set_cell_ymin = std::min( mp_set_cell_ymin, dy );
+        mp_set_cell_ymax = std::max( mp_set_cell_ymax, dy );
+    }
     netplay_tile_backend *b = netplay_backend_cast( handle );
     if( b == nullptr || !b->tiles ) {
         return;
@@ -8110,6 +8131,13 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
 bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
 {
     // DDA MP debug: flush the per-cell trace of this frame's streamed light
+    mp_light_trace += string_format(
+                          "S f=%02d n=%d x=[%d..%d] y=[%d..%d]\n",
+                          mp_light_trace_frame, mp_set_cell_calls, mp_set_cell_xmin,
+                          mp_set_cell_xmax, mp_set_cell_ymin, mp_set_cell_ymax );
+    mp_set_cell_calls = 0;
+    mp_set_cell_xmax = -1;
+    mp_set_cell_ymax = -1;
     if( !mp_light_trace.empty() ) {
         if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
             std::fputs( mp_light_trace.c_str(), f );
