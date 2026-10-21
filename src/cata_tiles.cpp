@@ -2783,10 +2783,77 @@ cata_tiles::find_tile_looks_like( const std::string &id, TILE_CATEGORY category,
     }
 }
 
+/* DDA MP v3.8: netplay appearance facts, mirror cata_tiles::draw_entity_with_overlays
+ * without drawing. Overlay ids resolve through find_overlay_looks_like so the
+ * client replays the exact sprites the host's renderer picks. */
+int ng_facing_rot( const FacingDirection facing )
+{
+    if( facing == FacingDirection::RIGHT ) {
+        return 0;
+    } else if( facing == FacingDirection::LEFT ) {
+        return -1;
+    }
+    return -2;
+}
+
+void cata_tiles::netplay_probe_monster( const monster &m, int &rot_facing,
+        std::vector<std::string> &overlays )
+{
+    overlays.clear();
+    rot_facing = ng_facing_rot( m.facing );
+    if( rot_facing == -2 ) {
+        return;
+    }
+    for( const std::pair<std::string, std::string> &overlay : m.get_overlay_ids() ) {
+        std::string draw_id = overlay.first;
+        if( find_overlay_looks_like( true, overlay.first, overlay.second, draw_id ) ) {
+            overlays.push_back( draw_id );
+        }
+    }
+}
+
+void cata_tiles::netplay_probe_character( const Character &ch, std::string &base_id,
+        int &rot_facing, std::vector<std::string> &overlays )
+{
+    overlays.clear();
+    rot_facing = ng_facing_rot( ch.facing );
+
+    const std::vector<trait_id> override_look_muts = ch.get_functioning_mutations( true,
+    false, []( const mutation_branch & mut ) {
+        return mut.override_look.has_value();
+    } );
+
+    if( override_look_muts.empty() ) {
+        base_id = ch.is_npc() ? ( ch.male ? "npc_male" : "npc_female" )
+                  : ( ch.male ? "player_male" : "player_female" );
+        if( rot_facing != -2 ) {
+            for( const std::pair<std::string, std::string> &overlay : ch.get_overlay_ids() ) {
+                std::string draw_id = overlay.first;
+                if( find_overlay_looks_like( ch.male, overlay.first, overlay.second, draw_id ) ) {
+                    overlays.push_back( draw_id );
+                }
+            }
+        }
+        return;
+    }
+
+    // override look: base sprite is the mutation's look id and only the
+    // override-aware overlays are drawn on top
+    mutation_branch::OverrideLook look = override_look_muts.at( 0 ).obj().override_look.value();
+    base_id = look.id;
+    if( rot_facing != -2 ) {
+        for( const std::pair<std::string, std::string> &overlay : ch.get_overlay_ids_when_override_look() ) {
+            std::string draw_id = overlay.first;
+            if( find_overlay_looks_like( ch.male, overlay.first, overlay.second, draw_id ) ) {
+                overlays.push_back( draw_id );
+            }
+        }
+    }
+}
+
 bool cata_tiles::find_overlay_looks_like( const bool male, const std::string &overlay,
         const std::string &variant, std::string &draw_id )
-{
-    bool exists = false;
+{    bool exists = false;
 
     std::string looks_like;
     std::string over_type;

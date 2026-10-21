@@ -868,8 +868,11 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             // v3.2(+3): per-cell multi-tile appearance values (6 bytes),
             // v3.5: flags byte (bit3 barrier, bit4 light color valid) and
             // the smooth-lighting light texel color (3 bytes where
-            // flags & 16). The reader detects the extension by trying to
-            // consume the whole section with the longest extras first,
+            // flags & 16), v3.8: critter appearance (facing flip byte +
+            // attitude badge byte + the ';' separated overlay draw id list,
+            // 16-bit length; variable length strings keep the reader
+            // self-describing). The reader detects the extension by trying
+            // to consume the whole section with the longest extras first,
             // then falls back (backwards compatible both directions).
             p.push_back( static_cast<char>( t.ter_sub ) );
             p.push_back( static_cast<char>( t.ter_rot ) );
@@ -881,6 +884,9 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             p.push_back( static_cast<char>( t.light_r ) );
             p.push_back( static_cast<char>( t.light_g ) );
             p.push_back( static_cast<char>( t.light_b ) );
+            p.push_back( static_cast<char>( t.critter_rot ) );
+            p.push_back( static_cast<char>( t.critter_badge ) );
+            put_str( p, t.critter_overlays );
         }
     }
     return p;
@@ -998,6 +1004,11 @@ static void client_run( socket_t sock )
                                         t.light_g = rr.get_u8();
                                         t.light_b = rr.get_u8();
                                     }
+                                    if( extras >= 13 ) {
+                                        t.critter_rot = static_cast<int8_t>( rr.get_u8() );
+                                        t.critter_badge = rr.get_u8();
+                                        t.critter_overlays = rr.get_str();
+                                    }
                                     out.push_back( std::move( t ) );
                                 }
                                 // exact fit decides which layout ran
@@ -1007,7 +1018,10 @@ static void client_run( socket_t sock )
                                 }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 10 );
+                            std::vector<tile_cell> parsed = try_decode( 13 );
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 10 );
+                            }
                             if( parsed.empty() ) {
                                 parsed = try_decode( 7 );
                             }

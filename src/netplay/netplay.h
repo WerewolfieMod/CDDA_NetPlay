@@ -90,6 +90,18 @@ struct tile_cell {
     uint8_t light_r = 0;
     uint8_t light_g = 0;
     uint8_t light_b = 0;
+    /// DDA MP v3.8 critter appearance: facing flip of the creature's sprites
+    /// (0 = right, -1 = left, -2 = no facing, draw the static sprite) and
+    /// the overlay draw ids in the host renderer's draw order, ';' separated
+    /// (clothing overlays, wielded items, effect overlays...). Both are the
+    /// exact facts cata_tiles::draw_entity_with_overlays resolves.
+    int8_t critter_rot = -2;
+    std::string critter_overlays;
+    /// DDA MP v3.8.1 attitude badge the host renderer paints bottom-right:
+    /// 0 = none, else (Creature::Attitude << 1) | sees_player_bit. The
+    /// sees_player bit already folds the host viewer's INATTENTIVE check.
+    /// Drawn as a fixed-lit sprite ("overlay_<attitude>[_sees_player]").
+    uint8_t critter_badge = 0;
 };
 
 /// Full screen frame for a remote session.

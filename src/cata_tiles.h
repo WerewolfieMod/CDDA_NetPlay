@@ -966,6 +966,18 @@ class cata_tiles
         void netplay_probe_terrain( const tripoint_bub_ms &p, int &subtile, int &rota );
         void netplay_probe_furniture( const tripoint_bub_ms &p, int &subtile, int &rota );
 
+        /* DDA MP v3.8: exact appearance facts of a character the host's own
+         * draw_entity_with_overlays would draw: the base sprite id honoring
+         * override-look mutations, the facing flip (0 = right, -1 = left,
+         * -2 = no facing: draw the static sprite) and the overlay draw ids in
+         * draw order (clothing, wielded items, effects...). Pure tileset
+         * lookups, no drawing. */
+        void netplay_probe_character( const class Character &ch, std::string &base_id,
+                                      int &rot_facing, std::vector<std::string> &overlays );
+        /* Same for monsters (effects overlays and the facing flip). */
+        void netplay_probe_monster( const class monster &m, int &rot_facing,
+                                    std::vector<std::string> &overlays );
+
         /* DDA MP multiplay: sample the shared smooth-lighting lightmap texel
          * for a cell (r = light 0..255, g/b = hue shares, a = detail/barrier
          * flags) exactly as the GPU lit path consumes it. False when the

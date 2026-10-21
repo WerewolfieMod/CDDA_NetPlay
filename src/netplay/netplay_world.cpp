@@ -153,6 +153,9 @@ static bool mp_host_fetch_auth_texel( const tripoint_bub_ms &p,
 ///  - unseen cells: the viewer's map memory (ter + f_/vp_/tr_ decoration id).
 /// Vehicles are not mined in v1 (they fall back to the black cell / the
 /// host's ascii frame for referenced glyphs).
+/* DDA MP: local trait handle for the INATTENTIVE attitude badge check. */
+static const trait_id trait_INATTENTIVE( "INATTENTIVE" );
+
 static void mine_tiles( snapshot &out, avatar &u, map &here,
                         const tripoint_bub_ms &center )
 {
@@ -246,6 +249,41 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                     monster *m = get_creature_tracker().creature_at<monster>( p );
                     if( m != nullptr && m->type != nullptr && m->type->id.is_valid() ) {
                         t.critter = m->type->id.str();
+#if defined(TILES)
+                        // DDA MP v3.8: facing flip and effect overlays the
+                        // host's own renderer would draw.
+                        if( tilecontext ) {
+                            int rot = -2;
+                            std::vector<std::string> ovls;
+                            tilecontext->netplay_probe_monster( *m, rot, ovls );
+                            t.critter_rot = static_cast<int8_t>( rot );
+                            for( size_t oi = 0; oi < ovls.size(); oi++ ) {
+                                if( oi != 0 ) {
+                                    t.critter_overlays += ';';
+                                }
+                                t.critter_overlays += ovls[oi];
+                            }
+                            // DDA MP v3.8.1: the attitude icon the host's
+                            // draw_critter_at paints last (fixed light, no
+                            // flip). Bit0 = sees the host viewer (after the
+                            // INATTENTIVE check), high bits = Attitude.
+                            if( show_creature_overlay_icons ) {
+                                const bool sees_p = m->sees( here, u ) &&
+                                                    !u.has_trait( trait_INATTENTIVE );
+                                t.critter_badge = static_cast<uint8_t>(
+                                                      static_cast<int>( m->attitude_to( u ) ) << 1 |
+                                                      ( sees_p ? 1 : 0 ) );
+                            }
+                            if( mp_light_trace_this ) {
+                                mp_light_trace += string_format(
+                                                      "HC f=%02d y=%02d x=%02d src=mon id=%s rot=%d badge=%d ovl=%s\n",
+                                                      mp_light_trace_frame, dy, dx, t.critter.c_str(),
+                                                      static_cast<int>( t.critter_rot ),
+                                                      static_cast<int>( t.critter_badge ),
+                                                      t.critter_overlays.c_str() );
+                            }
+                        }
+#endif
                     } else {
                         // DDA MP: NPC sprites (non-hostile humans are not in
                         // the monster tracker as mon_* ids).
@@ -254,12 +292,74 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                                        ? static_cast<const npc *>( cr )
                                        : nullptr;
                         if( n != nullptr && !n->symbol().empty() ) {
+#if defined(TILES)
+                            // DDA MP v3.8: exact appearance (base id honored
+                            // below, plus facing flip and clothing overlays).
+                            std::string base_id;
+                            std::vector<std::string> ovls;
+                            if( tilecontext ) {
+                                int rot = -2;
+                                tilecontext->netplay_probe_character( *n, base_id, rot, ovls );
+                                t.critter = n->male ? "npc_male" : "npc_female";
+                                t.critter_rot = static_cast<int8_t>( rot );
+                                for( size_t oi = 0; oi < ovls.size(); oi++ ) {
+                                    if( oi != 0 ) {
+                                        t.critter_overlays += ';';
+                                    }
+                                    t.critter_overlays += ovls[oi];
+                                }
+                                // DDA MP v3.8.1: attitude icon, same fact as
+                                // draw_critter_at paints over the npc sprite.
+                                if( show_creature_overlay_icons ) {
+                                    const bool sees_p = n->sees( here, u ) &&
+                                                        !u.has_trait( trait_INATTENTIVE );
+                                    t.critter_badge = static_cast<uint8_t>(
+                                                          static_cast<int>( n->attitude_to( u ) ) << 1 |
+                                                          ( sees_p ? 1 : 0 ) );
+                                }
+                                if( mp_light_trace_this ) {
+                                    mp_light_trace += string_format(
+                                                          "HC f=%02d y=%02d x=%02d src=npc base=%s rot=%d badge=%d ovl=%s\n",
+                                                          mp_light_trace_frame, dy, dx, base_id.c_str(),
+                                                          static_cast<int>( t.critter_rot ),
+                                                          static_cast<int>( t.critter_badge ),
+                                                          t.critter_overlays.c_str() );
+                                }
+                            } else {
+                                t.critter = n->male ? "npc_male" : "npc_female";
+                            }
+#else
                             t.critter = n->male ? "npc_male" : "npc_female";
+#endif
                         }
                     }
                     // DDA MP: the host avatar is not tracked as a critter.
                     if( p == u.pos_bub() ) {
+#if defined(TILES)
+                        std::string base_id = u.male ? "player_male" : "player_female";
+                        std::vector<std::string> ovls;
+                        if( tilecontext ) {
+                            int rot = -2;
+                            tilecontext->netplay_probe_character( u, base_id, rot, ovls );
+                            t.critter_rot = static_cast<int8_t>( rot );
+                            for( size_t oi = 0; oi < ovls.size(); oi++ ) {
+                                if( oi != 0 ) {
+                                    t.critter_overlays += ';';
+                                }
+                                t.critter_overlays += ovls[oi];
+                            }
+                            if( mp_light_trace_this ) {
+                                mp_light_trace += string_format(
+                                                      "HC f=%02d y=%02d x=%02d src=ava base=%s rot=%d ovl=%s\n",
+                                                      mp_light_trace_frame, dy, dx, base_id.c_str(),
+                                                      static_cast<int>( t.critter_rot ),
+                                                      t.critter_overlays.c_str() );
+                            }
+                        }
+                        t.critter = base_id;
+#else
                         t.critter = u.male ? "player_male" : "player_female";
+#endif
                     }
                     if( here.sees_some_items( p, u ) ) {
                         const maptile &tile = here.maptile_at( p );

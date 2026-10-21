@@ -10,6 +10,7 @@
 #include <string>
 
 #include "cursesdef.h"
+#include "creature.h"    // Creature::attitude_raw_string (attitude badge)
 #include "debug.h"       // debug_suppress_prompts (fat client load)
 #include "game.h"        // g (fat client world data load)
 #include "init.h"        // DynamicDataLoader (fat client finalize guard)
@@ -594,10 +595,69 @@ void run_view_loop()
                                         if( !t.critter.empty() ) {
                                             const int kind = ( t.critter.rfind( "player_", 0 ) == 0 ||
                                                                t.critter.rfind( "npc_", 0 ) == 0 ) ? 6 : 3;
+                                            // DDA MP v3.8: facing flip and the
+                                            // clothing/effect overlays the host
+                                            // renderer draws (draw_entity_with_overlays
+                                            // facts streamed per cell). -2 means no
+                                            // facing: draw the static sprite like before.
+                                            const int rot = t.critter_rot == -1 ? -1 :
+                                                            t.critter_rot == 0 ? 0 : 0;
+                                            {
+                                                static int mp_cdraw_cnt = 0;
+                                                if( mp_cdraw_cnt < 150 ) {
+                                                    ++mp_cdraw_cnt;
+                                                    mp_tlog( string_format(
+                                                                 "CD n=%d y=%d x=%d kind=%d id=%s rot=%d badge=%d ovl=%s",
+                                                                 mp_cdraw_cnt, y, x, kind,
+                                                                 t.critter.c_str(), rot,
+                                                                 static_cast<int>( t.critter_badge ),
+                                                                 t.critter_overlays.c_str() ) );
+                                                }
+                                            }
                                             trace_draw( kind, t.critter.c_str() );
                                             netplay::tiles_backend_draw( tiles_backend, kind,
                                                     t.critter.c_str(), "", x - snap.width / 2,
-                                                    y - snap.height / 2, mp_lit, 0, 0 );
+                                                    y - snap.height / 2, mp_lit, 0, rot );
+                                            if( !t.critter_overlays.empty() ) {
+                                                std::string ov = t.critter_overlays;
+                                                size_t sep;
+                                                while( ( sep = ov.find( ';' ) ) != std::string::npos ) {
+                                                    const std::string ovl = ov.substr( 0, sep );
+                                                    ov.erase( 0, sep + 1 );
+                                                    if( ovl.empty() ) {
+                                                        continue;
+                                                    }
+                                                    trace_draw( 6, ovl.c_str() );
+                                                    netplay::tiles_backend_draw( tiles_backend, 6,
+                                                            ovl.c_str(), "",
+                                                            x - snap.width / 2,
+                                                            y - snap.height / 2, mp_lit, 0, rot );
+                                                }
+                                                if( !ov.empty() ) {
+                                                    trace_draw( 6, ov.c_str() );
+                                                    netplay::tiles_backend_draw( tiles_backend, 6,
+                                                            ov.c_str(), "",
+                                                            x - snap.width / 2,
+                                                            y - snap.height / 2, mp_lit, 0, rot );
+                                                }
+                                            }
+                                            if( t.critter_badge != 0 ) {
+                                                // DDA MP v3.8.1: the attitude icon
+                                                // the host paints over the drawn
+                                                // critter (draw_critter_at): fixed
+                                                // light at LIT, no facing flip.
+                                                const Creature::Attitude att = static_cast<Creature::Attitude>(
+                                                                                   t.critter_badge >> 1 );
+                                                const std::string bid = "overlay_" +
+                                                        Creature::attitude_raw_string( att ) +
+                                                        ( ( t.critter_badge & 1 ) != 0 ?
+                                                          "_sees_player" : "" );
+                                                netplay::tiles_backend_draw( tiles_backend, 6,
+                                                        bid.c_str(), "", x - snap.width / 2,
+                                                        y - snap.height / 2,
+                                                        static_cast<int>( lit_level::LIT ), 0, 0,
+                                                        true );
+                                            }
                                         }
                                         if( !mp_light_ok ) {
                                             netplay::tiles_backend_cell_light( tiles_backend,
