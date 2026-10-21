@@ -169,6 +169,12 @@ static int DrawableHeight;
 // This value is finally returned by input_manager::get_input_event.
 input_event last_input;
 
+/* DDA MP v3.9: diagnostics master switch. When false, no netplay_tiles.log /
+ * netplay_light_trace.log / netplay_present_*.png / netplay_dump_*.png are
+ * produced (present traces, buffer dumps, replay light/cell traces).
+ * Flip to true and rebuild to re-enable. */
+constexpr bool mp_netplay_diag = false;
+
 static int inputdelay;         //How long getch will wait for a character to be typed
 int fontwidth;          //the width of the font, background is always this size
 int fontheight;         //the height of the font, background is always this size
@@ -1167,16 +1173,22 @@ void refresh_display()
      * present gate, Copy or target state swallows the frame. */
     static int mp_count = 0;
     const int mp_id = ++mp_count;
-    const bool mp_log_now = mp_id <= 40 || mp_id % 100 == 0;
+    // Tag the role so host/client traces can be told apart in the shared
+    // netplay log; window flags indicate hidden/minimized/fullscreen.
+    const char *role = "menu";
+    if( netplay::host_is_running() ) {
+        role = "host";
+    } else if( netplay::client_is_connected() ) {
+        role = "client";
+    }
+    // DDA MP v3.9: while the client session is alive, log the first 400
+    // presents with the gate verdict — the fullscreen flicker (alternate
+    // tiles/black frames) needs per-frame gate facts to be pinned down.
+    const bool mp_log_now = mp_netplay_diag &&
+        ( mp_id <= 40 || mp_id % 100 == 0
+          || ( mp_id <= 400 && !netplay::host_is_running()
+               && netplay::client_is_connected() ) );
     if( mp_log_now ) {
-        // Tag the role so host/client traces can be told apart in the shared
-        // netplay log; window flags indicate hidden/minimized/fullscreen.
-        const char *role = "menu";
-        if( netplay::host_is_running() ) {
-            role = "host";
-        } else if( netplay::client_is_connected() ) {
-            role = "client";
-        }
         const Uint32 wflags = ::window.get() ? SDL_GetWindowFlags( ::window.get() ) : 0;
         std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
         if( f ) {
@@ -1265,7 +1277,8 @@ void refresh_display()
     {
         static int mp_screen_dump_count = 0;
         ++mp_screen_dump_count;
-        const bool mp_dump = mp_screen_dump_count <= 3 || mp_screen_dump_count % 50 == 0;
+        const bool mp_dump = mp_netplay_diag &&
+                             ( mp_screen_dump_count <= 3 || mp_screen_dump_count % 50 == 0 );
         if( mp_dump && permanent_render_target_bind( renderer, nullptr, present_vp ) ==
             bind_result::ok ) {
             const char *role = "menu";
@@ -7863,8 +7876,19 @@ static void netplay_dump_display_buffer( int frame_no )
     dump_log( "dump #" + std::to_string( frame_no ) + ": saved " + fn );
 }
 
+/* DDA MP v3.9: creating the replay backend loads the whole tileset — the
+ * multi-second heavy part of the first frame. show_join_dialog now creates
+ * it right after the fat-client data load, while the loading screen still
+ * owns the window; done lazily on the first tile frame it froze the stale
+ * main-menu frame on the glass for the whole load. Repeat create() calls
+ * return the same shared instance; destroy() (view loop exit) clears it. */
+static void *mp_shared_tiles_backend = nullptr;
+
 void *tiles_backend_create()
 {
+    if( mp_shared_tiles_backend != nullptr ) {
+        return mp_shared_tiles_backend;
+    }
     if( !use_tiles ) {
         return nullptr;
     }
@@ -7894,7 +7918,7 @@ void *tiles_backend_create()
                                     /*precheck=*/false, /*force=*/true,
                                     /*pump_events=*/true, /*terrain=*/false );
         } );
-        if( !dmsg_captured.empty() ) {
+        if( mp_netplay_diag && !dmsg_captured.empty() ) {
             std::FILE *lg = std::fopen( "netplay_tiles.log", "a" );
             if( lg ) {
                 std::fputs( "tileset load notes:\n", lg );
@@ -7911,11 +7935,15 @@ void *tiles_backend_create()
     b->tiles->set_draw_scale( 16 ); // native tile size (same default as the game)
     // Never consult the (nonexistent) world from sprite draws.
     b->tiles->set_world_backed( false );
+    mp_shared_tiles_backend = b;
     return b;
 }
 
 void tiles_backend_destroy( void *handle )
 {
+    if( handle != nullptr && handle == mp_shared_tiles_backend ) {
+        mp_shared_tiles_backend = nullptr;
+    }
     delete netplay_backend_cast( handle );
 }
 
@@ -7997,7 +8025,7 @@ void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub
                 id = mp_item_id.c_str();
             } else {
                 static int mp_item_miss = 0;
-                if( mp_item_miss < 40 ) {
+                if( mp_netplay_diag && mp_item_miss < 40 ) {
                     ++mp_item_miss;
                     std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
                     if( f ) {
@@ -8106,9 +8134,10 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
     // streamed lit_level and rgb (verbatim from the host's smooth-lighting
     // light map) plus the derived a byte (texel detail bit from flags, the
     // barrier bit from flags). x, y are replay-canvas tile coordinates.
-    if( ( mp_light_trace_frame <= 3 ) ||
-        ( mp_light_trace_frame > 0 && mp_light_trace_frame <= 2000 &&
-          mp_light_trace_frame % 120 < 4 ) ) {
+    if( mp_netplay_diag &&
+        ( ( mp_light_trace_frame <= 3 ) ||
+          ( mp_light_trace_frame > 0 && mp_light_trace_frame <= 2000 &&
+            mp_light_trace_frame % 120 < 4 ) ) ) {
         const smooth_lighting::lightmap_texel texel = netplay_streamed_light_texel(
                     lr, lg, lb, barrier, detail );
         mp_light_trace += string_format(
@@ -8131,14 +8160,16 @@ void tiles_backend_set_cell_light( void *handle, int dx, int dy, int light,
 bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
 {
     // DDA MP debug: flush the per-cell trace of this frame's streamed light
-    mp_light_trace += string_format(
-                          "S f=%02d n=%d x=[%d..%d] y=[%d..%d]\n",
-                          mp_light_trace_frame, mp_set_cell_calls, mp_set_cell_xmin,
-                          mp_set_cell_xmax, mp_set_cell_ymin, mp_set_cell_ymax );
-    mp_set_cell_calls = 0;
-    mp_set_cell_xmax = -1;
-    mp_set_cell_ymax = -1;
-    if( !mp_light_trace.empty() ) {
+    if( mp_netplay_diag ) {
+        mp_light_trace += string_format(
+                              "S f=%02d n=%d x=[%d..%d] y=[%d..%d]\n",
+                              mp_light_trace_frame, mp_set_cell_calls, mp_set_cell_xmin,
+                              mp_set_cell_xmax, mp_set_cell_ymin, mp_set_cell_ymax );
+        mp_set_cell_calls = 0;
+        mp_set_cell_xmax = -1;
+        mp_set_cell_ymax = -1;
+    }
+    if( mp_netplay_diag && !mp_light_trace.empty() ) {
         if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
             std::fputs( mp_light_trace.c_str(), f );
             std::fclose( f );
@@ -8179,7 +8210,7 @@ bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
     }
     b->lit_ok = true;
     static int mp_lit_log = 0;
-    if( mp_lit_log < 8 ) {
+    if( mp_netplay_diag && mp_lit_log < 8 ) {
         ++mp_lit_log;
         if( std::FILE *f = std::fopen( "netplay_tiles.log", "a" ) ) {
             std::fprintf( f, "tiles: lit frame ok (smooth_lighting_active)\n" );
@@ -8292,7 +8323,7 @@ void tiles_backend_end( void *handle )
     b->scope = nullptr; // unbind display buffer + flush batch
     RenderSetClipRect( renderer, nullptr );
     static int dump_frames = 0;
-    if( dump_frames < 5 ) {
+    if( mp_netplay_diag && dump_frames < 5 ) {
         ++dump_frames;
         netplay_dump_display_buffer( dump_frames );
     }

@@ -2462,6 +2462,10 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
         } else {
             action = ctxt.handle_input();
         }
+        // DDA MP v3.9: answer pending client snapshot requests here — this
+        // loop runs on timeouts even when the host player idles, so a
+        // freshly-loaded client gets its first picture without any keypress.
+        netplay::host_pump_snapshot_requests();
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
                     ter_view_p.raw().xy(),

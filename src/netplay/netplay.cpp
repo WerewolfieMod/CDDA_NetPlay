@@ -298,6 +298,10 @@ struct netplay_state {
     std::mutex keys_mutex;
     std::deque<uint32_t> host_keys;
 
+    /* a client asked for the current picture (SNAP_REQ); consumed by the
+     * host main thread — reader threads must not touch game state */
+    std::atomic<bool> snap_request_pending = false;
+
     /* ---- client ---- */
     std::atomic<bool> connected = false;
     socket_t client_sock = BAD_SOCKET;
@@ -587,6 +591,10 @@ static void host_session_reader( int sid, socket_t sock )
                     state.host_keys.push_back( code );
                 }
             }
+        } else if( op == frame::SNAP_REQ ) {
+            // Empty payload: "the client finished loading, send the current
+            // picture". Consumed on the host main thread (game loop pump).
+            state.snap_request_pending = true;
         } else if( op == frame::BYE ) {
             break;
         }
@@ -919,9 +927,18 @@ bool host_pop_key( uint32_t &code )
     return true;
 }
 
+bool host_pop_snapshot_request()
+{
+    return state.snap_request_pending.exchange( false );
+}
+
 /* ------------------------------------------------------------------ */
 /* client                                                              */
 /* ------------------------------------------------------------------ */
+
+/* DDA MP v3.9: diagnostics master switch (rx snapshot size logs through
+ * netplay_tiles.log). Flip to true and rebuild to re-enable. */
+constexpr bool mp_netplay_diag = false;
 
 static void client_run( socket_t sock )
 {
@@ -1043,7 +1060,7 @@ static void client_run( socket_t sock )
                     // loop sees later.
                     {
                         static int mp_rx_log = 0;
-                        if( mp_rx_log < 120 ) {
+                        if( mp_netplay_diag && mp_rx_log < 120 ) {
                             ++mp_rx_log;
                             std::size_t lit = 0;
                             for( const tile_cell &t : snap.tiles ) {
@@ -1218,6 +1235,17 @@ void client_send_keys( const std::vector<key_event> &keys )
     if( !send_all( state.client_sock, encode_frame( frame::KEYS, p ) ) ) {
         // Sending failed: the session is dead. Closing the socket unblocks the
         // receiver thread; the view loop will surface the reconnect prompt.
+        state.stop_client();
+    }
+}
+
+void client_request_snapshot()
+{
+    if( !state.connected ) {
+        return;
+    }
+    if( !send_all( state.client_sock, encode_frame( frame::SNAP_REQ, {} ) ) ) {
+        // Sending failed: the session is dead (same policy as KEYS).
         state.stop_client();
     }
 }

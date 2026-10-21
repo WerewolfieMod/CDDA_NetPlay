@@ -156,6 +156,11 @@ static bool mp_host_fetch_auth_texel( const tripoint_bub_ms &p,
 /* DDA MP: local trait handle for the INATTENTIVE attitude badge check. */
 static const trait_id trait_INATTENTIVE( "INATTENTIVE" );
 
+/* DDA MP v3.9: diagnostics master switch. When false, no netplay_tiles.log /
+ * netplay_light_trace.log lines are produced by this TU (mine traces,
+ * snapshot size logs). Flip to true and rebuild to re-enable. */
+constexpr bool mp_netplay_diag = false;
+
 static void mine_tiles( snapshot &out, avatar &u, map &here,
                         const tripoint_bub_ms &center )
 {
@@ -170,8 +175,9 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
     // cell for cell with the client's rows (prefix H) and the blue-tile issue.
     static int mp_light_trace_frame = 0;
     static std::string mp_light_trace;
-    const bool mp_light_trace_this = mp_light_trace_frame < 4 ||
-        ( mp_light_trace_frame < 400 && mp_light_trace_frame % 96 < 2 );
+    const bool mp_light_trace_this = mp_netplay_diag &&
+        ( mp_light_trace_frame < 4 ||
+        ( mp_light_trace_frame < 400 && mp_light_trace_frame % 96 < 2 ) );
     for( int dy = 0; dy < FRAMEH; dy++ ) {
         for( int dx = 0; dx < FRAMEW; dx++ ) {
             const tripoint_bub_ms p( center + tripoint_rel_ms( dx - FRAMEW / 2,
@@ -429,7 +435,7 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
             out.tiles.push_back( std::move( t ) );
         }
     }
-    if( mp_light_trace_this && !mp_light_trace.empty() ) {
+    if( mp_netplay_diag && mp_light_trace_this && !mp_light_trace.empty() ) {
         if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
             std::fputs( mp_light_trace.c_str(), f );
             std::fclose( f );
@@ -546,7 +552,7 @@ void host_game_tick()
     // netplay test can compare it with what the client's replay loop sees.
     {
         static int mp_snap_log = 0;
-        if( mp_snap_log < 200 ) {
+        if( mp_netplay_diag && mp_snap_log < 200 ) {
             ++mp_snap_log;
             try {
                 std::ofstream f( "netplay_tiles.log", std::ios::app );
@@ -559,6 +565,19 @@ void host_game_tick()
         }
     }
     host_broadcast_snapshot( snap );
+}
+
+/* DDA MP v3.9: the host streams snapshots only on its own turn, so an idle
+ * host would leave a freshly-loaded client staring at its menu until somebody
+ * pressed a key. The client polls with SNAP_REQ instead; the reader threads
+ * must not touch game state, so this consumes the flag on the host main
+ * thread and answers with the current picture. No-op without a request. */
+void host_pump_snapshot_requests()
+{
+    if( !host_pop_snapshot_request() ) {
+        return;
+    }
+    host_game_tick();
 }
 
 /* ------------------------------------------------------------------ */

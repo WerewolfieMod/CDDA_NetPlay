@@ -38,6 +38,7 @@ enum class frame : int {
     PING = 7,
     PONG = 8,
     BYE = 9,        ///< either side: graceful close
+    SNAP_REQ = 10,  ///< client -> host: "send me the current picture now"
 };
 
 /// One screen cell as streamed in SNAPSHOT frames.
@@ -158,12 +159,20 @@ void host_broadcast_snapshot( const snapshot &snap );
 /// Returns false when the queue is empty.
 bool host_pop_key( uint32_t &code );
 
+/// Pop the pending snapshot request flag (a client asked for the current
+/// picture). Reader threads set it; the host main thread consumes it.
+bool host_pop_snapshot_request();
+
 /* ---- host game glue (netplay_world.cpp; needs game internals) ---- */
 
 /// Game-side per-turn hook: builds and broadcasts an ascii snapshot of the
 /// host's current view (~45x25 cells around the host avatar). Call at the
 /// end of world turns; no-op when not hosting or no sessions.
 void host_game_tick();
+/// Service one pending client snapshot request by building and broadcasting
+/// the current picture (host_game_tick). Call from a main-thread loop that
+/// also runs while the host is idle; no-op without a pending request.
+void host_pump_snapshot_requests();
 /// Convert one queued client key into a DEFAULTMODE action id string.
 /// Returns false when there is nothing queued (or the code isn't mapped).
 bool host_pop_action( std::string &action );
@@ -179,6 +188,10 @@ std::string client_deny_reason();
 std::string client_last_address();
 /// Take the freshest received snapshot (empty if none yet).
 bool client_receive( snapshot &out );
+/// Ask the host to send its current picture right away. The host streams
+/// snapshots only on its own turn, so a freshly-loaded client needs this to
+/// see anything before somebody presses a key. Safe to call often.
+void client_request_snapshot();
 /// Send an input batch upstream.
 void client_send_keys( const std::vector<key_event> &keys );
 /// Per-turn maintenance. Safe to call often.

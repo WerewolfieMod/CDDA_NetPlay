@@ -12,6 +12,7 @@
 #include "cursesdef.h"
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
 #include "debug.h"       // debug_suppress_prompts (fat client load)
+#include "sdl_wrappers.h" // GetTicks (view probe timestamps)
 #include "game.h"        // g (fat client world data load)
 #include "init.h"        // DynamicDataLoader (fat client finalize guard)
 #include "lightmap.h"    // lit_level (client light overlay)
@@ -122,9 +123,16 @@ void show_host_dialog()
 
 static std::string fat_client_loaded_world;
 
+/* DDA MP v3.9: diagnostics master switch (fat-load notes, tiles frame
+ * traces, view probes). Flip to true and rebuild to re-enable. */
+constexpr bool mp_netplay_diag = false;
+
 // Appends to netplay_tiles.log (same channel as the replay renderer trace).
 static void mp_fat_log( const std::string &msg )
 {
+    if( !mp_netplay_diag ) {
+        return;
+    }
     try {
         std::ofstream f( "netplay_tiles.log", std::ios::app );
         if( f ) {
@@ -217,11 +225,28 @@ void show_join_dialog()
         return;
     }
 
+    // DDA MP v3.9: ask for the current picture right after the WELCOME —
+    // the host answers while the client loads its world data, so the view
+    // loop starts with a frame already buffered and shows tiles instantly.
+    // If the host plays during the load, its tick snapshots keep the buffer
+    // fresh; the view loop's own request loop stays as a fallback.
+    netplay::client_request_snapshot();
+
     // DDA MP fat client: the host announced its world in WELCOME. Load its
     // mod data now вЂ” before entering the fullscreen view вЂ” so the loading
     // starts immediately upon the user's join confirmation, not after the
     // first input is pumped in the view loop.
     fat_client_load_data();
+
+#if defined(TILES)
+    // DDA MP v3.9: load the replay tileset now, while the loading screen
+    // still owns the window. The view loop would otherwise create it on its
+    // first tile frame — multi seconds with the stale main-menu frame
+    // sitting on the glass. create() is idempotent (shared instance).
+    if( netplay::client_is_connected() ) {
+        netplay::tiles_backend_create();
+    }
+#endif
 
     run_view_loop();
     netplay::client_disconnect();
@@ -303,6 +328,9 @@ void run_view_loop()
     // Diagnostics trace for the tileset replay renderer. Written next to the
     // exe when the game is launched without a changed working dir.
     static auto mp_tlog = []( const std::string & msg ) {
+        if( !mp_netplay_diag ) {
+            return;
+        }
         try {
             std::ofstream f( "netplay_tiles.log", std::ios::app );
             if( f ) {
@@ -334,6 +362,11 @@ void run_view_loop()
 
     // Guard against garbage frames: no sane session needs more than this.
     constexpr int SNAP_MAX = 400;
+    // DDA MP v3.9: the ASCII replay grid is now a debug feature. The client
+    // renders the tileset sprites as soon as a snapshot arrives; flip this to
+    // true in code (then rebuild) to also paint the legacy ASCII grid/border
+    // under the tile canvas.
+    constexpr bool mp_ascii_debug = false;
 
 #if defined(TILES)
     // Tileset replay backend (optional; kept across frames, freed on exit).
@@ -347,6 +380,24 @@ void run_view_loop()
         }
     };
 #endif
+
+    // DDA MP v3.9: the host streams snapshots only on its own turn, so an
+    // idle host would leave this loop without a single frame until somebody
+    // pressed a key (the menu persisted). Ask for the current picture right
+    // after the load and re-ask every second until the first one arrives.
+    bool mp_have_picture = false;
+    uint32_t mp_last_pic_request = 0;
+    auto mp_request_picture = [&]() {
+        if( mp_have_picture ) {
+            return;
+        }
+        const uint32_t now = GetTicks();
+        if( mp_last_pic_request != 0 && now - mp_last_pic_request < 1000 ) {
+            return;
+        }
+        mp_last_pic_request = now;
+        netplay::client_request_snapshot();
+    };
 
     int cur_w = -1;
     int cur_h = -1;
@@ -372,39 +423,63 @@ void run_view_loop()
 
         while( client_is_connected() ) {
 #if defined(TILES)
+            // DDA MP v3.9: service any queued renderer-recovery work before
+            // drawing. The game's own loop does this per tick and inside the
+            // input pump; the view loop previously relied on the input pump
+            // alone, so frames queued during the fat-client load stayed
+            // undelivered until the first keypress.
+            drain_renderer_recovery();
             // Clear stale UI remnants (e.g. debug-prompt text no window
             // repaints) before the windows redraw into a clean buffer.
             if( tiles_backend != nullptr && netplay::tiles_replay_enabled() ) {
                 netplay::tiles_backend_clear_screen( tiles_backend );
             }
 #endif
+            // Ask for the current picture until the host answers once.
+            mp_request_picture();
+
+            // DDA MP v3.9: redraw() MUST run every iteration. The per-frame
+            // clear_screen bumps the curses render epoch and invalidates all
+            // ui adaptors; redraw() regenerates the registered windows here,
+            // right before the tileset canvas stamps over them (that covered
+            // form is proven stable). Removing it made the invalidated
+            // windows repaint at random moments inside the input pump —
+            // the screen alternated between stamped tiles and the cleared
+            // black buffer (the observed flicker).
             ui_manager::redraw();
 
+            bool mp_canvas_ok = false;
             snapshot snap;
             if( client_receive( snap ) && snap.width > 0 && snap.height > 0
                 && snap.width <= SNAP_MAX && snap.height <= SNAP_MAX
                 && snap.cells.size() == static_cast<size_t>( snap.width ) * snap.height ) {
+                // Dimensions feed the canvas centering below even without the
+                // ASCII window. A valid picture also stops the snapshot
+                // request loop above.
+                mp_have_picture = true;
                 ensure_window( snap.width, snap.height );
-                werase( win );
-                draw_border( win, c_white, _( "Cata server" ) );
+                if( mp_ascii_debug ) {
+                    werase( win );
+                    draw_border( win, c_white, _( "Cata server" ) );
 
-                for( int y = 0; y < snap.height; y++ ) {
-                    for( int x = 0; x < snap.width; x++ ) {
-                        const cell &c = snap.cells[y * snap.width + x];
-                        mvwputch( win, point( 1 + x, 1 + y ),
-                                  decode_cell_color( c.color ),
-                                  static_cast<int>( c.glyph ) );
+                    for( int y = 0; y < snap.height; y++ ) {
+                        for( int x = 0; x < snap.width; x++ ) {
+                            const cell &c = snap.cells[y * snap.width + x];
+                            mvwputch( win, point( 1 + x, 1 + y ),
+                                      decode_cell_color( c.color ),
+                                      static_cast<int>( c.glyph ) );
+                        }
                     }
-                }
-                // Status line rides the bottom border row.
-                if( !snap.status_line.empty() ) {
-                    std::string s = snap.status_line;
-                    if( static_cast<int>( s.size() ) > cur_w ) {
-                        s.resize( cur_w );
+                    // Status line rides the bottom border row.
+                    if( !snap.status_line.empty() ) {
+                        std::string s = snap.status_line;
+                        if( static_cast<int>( s.size() ) > cur_w ) {
+                            s.resize( cur_w );
+                        }
+                        mvwprintz( win, point( 1, cur_h + 1 ), c_yellow, s );
                     }
-                    mvwprintz( win, point( 1, cur_h + 1 ), c_yellow, s );
+                    wnoutrefresh( win );
                 }
-                wnoutrefresh( win );
 
 #if defined(TILES)
                 // Tileset replay: draw the sprite payload on top of the fresh
@@ -449,6 +524,7 @@ void run_view_loop()
                             constexpr int PIVOT = 32; // inside the 48-tile bubble
                             if( netplay::tiles_backend_begin( tiles_backend, dest_x, dest_y,
                                                               canvas_w, canvas_h, PIVOT, PIVOT ) ) {
+                                mp_canvas_ok = true;
                                 mp_frame_trace( "begin ok" );
                                 // DDA MP debug: sizes of the snapshot feeding
                                 // this frame (the light prepass and the draw
@@ -703,6 +779,16 @@ void run_view_loop()
                     }
                 }
 #endif
+            } else {
+                // DDA MP v3.9: no valid picture yet — hold a quiet
+                // placeholder over the menu instead of flashing it. redraw()
+                // above already regenerated the registered windows; the
+                // stdscr paint wraps them into the neutral wait screen. Safe
+                // here: this iteration paints no tileset canvas.
+                werase( catacurses::stdscr );
+                mvwprintz( catacurses::stdscr, point( 1, 1 ), c_light_gray,
+                           _( "Waiting for the host picture..." ) );
+                wnoutrefresh( catacurses::stdscr );
             }
 
             // Present the freshly drawn frame. The game's own main loop calls
@@ -710,6 +796,21 @@ void run_view_loop()
             // not a reliable present trigger, so the first frame would sit
             // in the buffer until the first keypress without this.
             refresh_display();
+
+            // DDA MP v3.9 probe: first iterations with ticks/snap facts, so a
+            // "menu until first input" phase can be pinned to a present-gate
+            // rejection (see the "present #N [client]" lines around it).
+            {
+                static int mp_view_probe = 0;
+                if( mp_view_probe < 200 ) {
+                    ++mp_view_probe;
+                    mp_tlog( string_format(
+                                 "view it=%d t=%u recv=%zu canvas=%d ph=%d",
+                                 mp_view_probe, GetTicks(),
+                                 snap.cells.size(), mp_canvas_ok ? 1 : 0,
+                                 mp_have_picture ? 0 : 1 ) );
+                }
+            }
 
             const std::string action = ctxt.handle_input();
             if( action == "QUIT" ) {
