@@ -370,10 +370,11 @@ static void join_save_prefs( const std::string &addr, const std::string &nick )
     } catch( ... ) { }
 }
 
-/* The join screen: host address and client nickname on one screen.
- * ENTER moves from the address field to the nickname field and connects
- * from there; ESC cancels. The STRING_INPUT context category reuses the
- * engine's default text-editing bindings (ENTER/ESC/BACKSPACE). */
+/* The join screen: host address, client nickname and a Connect item on one
+ * screen. UP/DOWN moves the selection, typing edits the selected field and
+ * ENTER on Connect starts the session; ESC cancels. The STRING_INPUT context
+ * category reuses the engine's default text-editing bindings (ENTER/ESC/
+ * BACKSPACE/UP/DOWN arrive from the default keybindings of that category). */
 static bool join_fields_dialog( std::string &addr, std::string &nick )
 {
     const int height = 11;
@@ -381,14 +382,18 @@ static bool join_fields_dialog( std::string &addr, std::string &nick )
     const int x_start = std::max( 0, ( TERMX - width ) / 2 );
     const int y_start = std::max( 0, ( TERMY - height ) / 2 );
 
+    enum { SEL_ADDR = 0, SEL_NICK = 1, SEL_CONNECT = 2 };
+
     std::string fields[2] = { addr, nick };
-    int sel = 0;
+    int sel = SEL_ADDR;
 
     input_context ctxt( "STRING_INPUT", keyboard_mode::keychar );
     ctxt.register_action( "TEXT.QUIT" );
     ctxt.register_action( "TEXT.CONFIRM" );
     ctxt.register_action( "TEXT.BACKSPACE" );
     ctxt.register_action( "TEXT.CLEAR" );
+    ctxt.register_action( "UP" );
+    ctxt.register_action( "DOWN" );
     ctxt.register_action( "ANY_INPUT" );
 
     while( true ) {
@@ -400,13 +405,16 @@ static bool join_fields_dialog( std::string &addr, std::string &nick )
         draw_border( win, c_white, _( "Join by IP" ) );
 
         mvwprintw( win, point( 2, 2 ), "%s%s",
-                   sel == 0 ? "> " : "  ", _( "Host address:" ) );
+                   sel == SEL_ADDR ? "> " : "  ", _( "Host address:" ) );
         mvwprintw( win, point( 20, 2 ), "%s", fields[0].c_str() );
-        mvwprintw( win, point( 2, 5 ), "%s%s",
-                   sel == 1 ? "> " : "  ", _( "Your nickname:" ) );
-        mvwprintw( win, point( 20, 5 ), "%s", fields[1].c_str() );
+        mvwprintw( win, point( 2, 4 ), "%s%s",
+                   sel == SEL_NICK ? "> " : "  ", _( "Your nickname:" ) );
+        mvwprintw( win, point( 20, 4 ), "%s", fields[1].c_str() );
+        // the connect button, as its own selectable item
+        mvwprintw( win, point( 2, 7 ), "%s",
+                   sel == SEL_CONNECT ? "> [ Connect ] <" : "  [ Connect ]" );
         mvwprintw( win, point( 2, height - 2 ),
-                   _( "<ENTER>: next field / connect   <ESC>: cancel" ) );
+                   _( "<UP>/<DOWN>: select   <ENTER>: connect   <ESC>: cancel" ) );
 
         wnoutrefresh( win );
 
@@ -415,15 +423,16 @@ static bool join_fields_dialog( std::string &addr, std::string &nick )
         if( action == "TEXT.QUIT" ) {
             return false;
         }
+        if( action == "UP" ) {
+            // wrap upward: 0 -> 2, otherwise sel - 1
+            sel = ( sel + 3 - 1 ) % 3;
+            continue;
+        }
+        if( action == "DOWN" ) {
+            sel = ( sel + 1 ) % 3;
+            continue;
+        }
         if( action == "TEXT.CONFIRM" ) {
-            if( sel == 0 ) {
-                if( fields[0].empty() ) {
-                    popup( _( "The host address can not be empty." ) );
-                    continue;
-                }
-                sel = 1;
-                continue;
-            }
             if( fields[0].empty() ) {
                 popup( _( "The host address can not be empty." ) );
                 continue;
@@ -431,6 +440,10 @@ static bool join_fields_dialog( std::string &addr, std::string &nick )
             addr = fields[0];
             nick = fields[1].empty() ? std::string( "player" ) : fields[1];
             return true;
+        }
+        if( sel == SEL_CONNECT ) {
+            // editing keys do nothing while the connect button is selected
+            continue;
         }
         if( action == "TEXT.BACKSPACE" ) {
             std::string &f = fields[sel];
