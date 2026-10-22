@@ -21,16 +21,21 @@
 #include "color.h"
 #include "creature.h"
 #include "creature_tracker.h"
+#include "effect.h"
 #include "game.h"
 #include "item.h"
 #include "itype.h"
+#include "json.h"
+#include "json_loader.h"
 #include "lightmap.h"
 #include "map.h"
 #include "map_memory.h"
+#include "memory_fast.h"
 #include "monster.h"
 #include "mtype.h"
 #include "npc.h"
 #include "output.h"
+#include "messages.h"
 #include "cata_utility.h"
 #include "string_formatter.h"
 #include "smooth_lighting.h"
@@ -38,6 +43,10 @@
 #include "translations.h"
 #include "trap.h"
 #include "weather.h"
+#include "overmapbuffer.h"
+#include "worldfactory.h"
+
+#include <cstdlib>
 
 #if defined(TILES)
 #   include "cached_options.h"
@@ -657,6 +666,307 @@ bool host_pop_action( std::string &action )
             return false;
     }
     return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* DDA MP v4.0: per-session avatars                                    */
+/* ------------------------------------------------------------------ */
+
+namespace {
+
+static const efftype_id effect_sleep( "sleep" );
+
+/* one netplay-controlled avatar in the host's world: we only need its
+ * display name (the key clients use to resume) and the character_id of
+ * the world npc that carries the avatar */
+struct av_rec {
+    std::string name;
+    int npc_id = 0;
+};
+
+bool av_registry_path( cata_path &out )
+{
+    if( world_generator == nullptr || world_generator->active_world == nullptr ) {
+        return false;
+    }
+    out = world_generator->active_world->folder_path() / "netplay_avatars.json";
+    return true;
+}
+
+shared_ptr_fast<npc> av_find_npc( int npc_id )
+{
+    if( npc_id <= 0 ) {
+        return nullptr;
+    }
+    return overmap_buffer.find_npc( character_id( npc_id ) );
+}
+
+bool av_npc_alive( const shared_ptr_fast<npc> &p )
+{
+    return p && !p->is_dead();
+}
+
+/* The registry stores npc ids, but a restarted host resets its id counter
+ * and ids in the file can go stale. Every avatar npc carries the world
+ * marker "netplay_avatar:<nick>", which is the real source of truth. */
+shared_ptr_fast<npc> av_find_marked_npc( const std::string &nick )
+{
+    const std::string marker = "netplay_avatar:" + nick;
+    for( auto &elem : overmap_buffer.get_npcs_near_player( 600 ) ) {
+        if( elem && av_npc_alive( elem ) && elem->get_unique_id() == marker ) {
+            return elem;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<av_rec> av_registry_load();
+void av_registry_save( const std::vector<av_rec> &recs );
+
+std::vector<av_rec> av_registry_load()
+{
+    std::vector<av_rec> out;
+    cata_path path;
+    if( !av_registry_path( path ) ) {
+        return out;
+    }
+    std::string text;
+    // optional: a fresh world has no registry yet and that is not an error —
+    // a blocking debug error panel here freezes the host main loop and makes
+    // the connecting client miss its avatar answer.
+    read_from_file_optional( path, [&]( std::istream &is ) {
+        try {
+            std::ostringstream ss;
+            ss << is.rdbuf();
+            JsonValue jsin = json_loader::from_string( ss.str() );
+            JsonArray arr = jsin.get_array();
+            while( arr.has_more() ) {
+                JsonObject jo = arr.next_object();
+                av_rec rec;
+                jo.read( "name", rec.name );
+                jo.read( "npc_id", rec.npc_id );
+                if( rec.name.empty() || rec.npc_id <= 0 ) {
+                    continue;
+                }
+                // older hosts restarted with a reset id counter and could
+                // save several entries pointing at the same npc id; the
+                // first wins, the rest are duplicates
+                bool dup = false;
+                for( const av_rec &prev : out ) {
+                    if( prev.npc_id == rec.npc_id ) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if( dup ) {
+                    continue;
+                }
+                out.push_back( rec );
+            }
+        } catch( const JsonError & ) {
+            // corrupt registry: treat as empty, it will be rewritten on save
+        }
+    } );
+    // v4.0a-1: prune entries whose world npc no longer exists or is dead (a
+    // restarted host with a reset id counter would keep stale ids forever).
+    std::vector<av_rec> live;
+    for( const av_rec &rec : out ) {
+        if( av_npc_alive( av_find_npc( rec.npc_id ) ) ) {
+            live.push_back( rec );
+        }
+    }
+    if( live.size() != out.size() ) {
+        av_registry_save( live );
+    }
+    return live;
+}
+
+void av_registry_save( const std::vector<av_rec> &recs )
+{
+    cata_path path;
+    if( !av_registry_path( path ) ) {
+        return;
+    }
+    write_to_file( path, [&]( std::ostream &os ) {
+        JsonOut json( os );
+        json.start_array();
+        for( const av_rec &rec : recs ) {
+            json.start_object();
+            json.member( "name", rec.name );
+            json.member( "npc_id", rec.npc_id );
+            json.end_object();
+        }
+        json.end_array();
+    } );
+}
+
+void av_reply_deny( int sid, const std::string &why )
+{
+    host_send_avatar_reply( sid, frame::AVATAR_DENIED, encode_avatar_text( why ) );
+}
+
+} // namespace
+
+static void host_handle_one_avatar_op( const avatar_op &op )
+{
+    // The host must actually be running a game to add an avatar to the world.
+    map &here = get_map();
+    avatar &host = get_avatar();
+    if( !here.inbounds( host.pos_bub() ) ) {
+        av_reply_deny( op.sid, _( "Host is not running a game yet." ) );
+        return;
+    }
+
+    std::vector<av_rec> recs = av_registry_load();
+
+    if( op.kind == 1 ) {
+        // Announce the join in the host's message log: "{Name} connected".
+        // The list request arrives exactly once per connect, right after
+        // the client finished loading the host's world data.
+        add_msg( _( "%s connected." ), op.nick );
+
+        // list request: report the avatar owned by the requesting nick. This
+        // is also the self-heal point: if the registry's npc id went stale
+        // but a marked npc exists, re-point the registry entry at it.
+        std::vector<avatar_entry> list;
+        for( const av_rec &rec : recs ) {
+            if( rec.name != op.nick ) {
+                continue;
+            }
+            shared_ptr_fast<npc> npc_ptr = av_find_npc( rec.npc_id );
+            if( !av_npc_alive( npc_ptr ) ) {
+                npc_ptr = av_find_marked_npc( op.nick );
+                if( npc_ptr ) {
+                    // heal the registry file (the resume/creates read it
+                    // again below)
+                    for( av_rec &fix : recs ) {
+                        if( &fix == &rec ) {
+                            fix.npc_id = npc_ptr->getID().get_value();
+                        }
+                    }
+                    av_registry_save( recs );
+                }
+            }
+            avatar_entry e;
+            e.name = rec.name;
+            e.alive = av_npc_alive( npc_ptr );
+            // v4.0a-1: session ownership is not tracked yet; the host serves
+            // one client at a time (the accept loop holds a single session).
+            e.in_session = false;
+            list.push_back( e );
+        }
+        host_send_avatar_reply( op.sid, frame::AVATAR_LIST, encode_avatar_list( list ) );
+        return;
+    }
+
+    if( op.kind == 2 ) {
+        // resume: bind this session to an existing living avatar owned by
+        // this nick
+        const av_rec *found = nullptr;
+        for( const av_rec &rec : recs ) {
+            if( rec.name == op.nick ) {
+                found = &rec;
+                break;
+            }
+        }
+        const shared_ptr_fast<npc> npc_ptr = found ? av_find_npc( found->npc_id ) : nullptr;
+        if( found == nullptr || !av_npc_alive( npc_ptr ) ) {
+            av_reply_deny( op.sid,
+                           string_format( _( "No living avatar for nick \"%s\"." ),
+                                          op.nick ) );
+            return;
+        }
+        host_send_avatar_reply( op.sid, frame::AVATAR_OK, encode_avatar_text( found->name ) );
+        return;
+    }
+
+    if( op.kind == 3 ) {
+        // create: one avatar per nick; a client that owns a live avatar must
+        // resume it instead of recreating.
+        if( op.nick.empty() || op.nick.size() > 40 ) {
+            av_reply_deny( op.sid, _( "Invalid nickname." ) );
+            return;
+        }
+        for( const av_rec &rec : recs ) {
+            if( rec.name == op.nick && av_npc_alive( av_find_npc( rec.npc_id ) ) ) {
+                av_reply_deny( op.sid,
+                               _( "This nickname already owns a live avatar. "
+                                  "Reconnect to resume it instead of creating a new one." ) );
+                return;
+            }
+        }
+        // rebuild the npc from the profile json (avatar::serialize output)
+        shared_ptr_fast<npc> npc_ptr;
+        try {
+            JsonValue jv = json_loader::from_string( op.json );
+            JsonObject jo = jv.get_object();
+            // The profile was serialized from the client's avatar and carries
+            // avatar-specific members npc::load never reads (profession and
+            // friends); allow them to remain unconsumed.
+            jo.allow_omitted_members();
+            npc_ptr = make_shared_fast<npc>();
+            npc_ptr->deserialize( jo );
+            if( !npc_ptr->get_fac_id().str().empty() ) {
+                npc_ptr->set_fac( npc_ptr->get_fac_id() );
+            }
+        } catch( const JsonError &e ) {
+            npc_ptr = nullptr;
+            av_reply_deny( op.sid, string_format( _( "Bad avatar profile: %s" ), e.what() ) );
+            return;
+        }
+        // find a free passable tile on a ring around the host avatar
+        bool ok = false;
+        tripoint_bub_ms spot;
+        const tripoint_bub_ms hp = host.pos_bub();
+        for( int r = 1; r <= 6 && !ok; ++r ) {
+            for( int dy = -r; dy <= r && !ok; ++dy ) {
+                for( int dx = -r; dx <= r && !ok; ++dx ) {
+                    if( std::abs( dx ) != r && std::abs( dy ) != r ) {
+                        continue; // walk the ring only
+                    }
+                    const tripoint_bub_ms cand( hp.x() + dx, hp.y() + dy, hp.z() );
+                    if( !here.inbounds( cand ) || !here.passable( cand ) ||
+                        get_creature_tracker().creature_at( cand, true ) ) {
+                        continue;
+                    }
+                    spot = cand;
+                    ok = true;
+                }
+            }
+        }
+        if( !ok ) {
+            av_reply_deny( op.sid, _( "No free tile near the host avatar to spawn in." ) );
+            return;
+        }
+        character_id new_id = g->assign_npc_id();
+        // Protect against a reset id counter across host restarts: an npc
+        // with this id may already be loaded in the overmap, keep drawing
+        // until a free id shows up.
+        while( av_find_npc( new_id.get_value() ) != nullptr ) {
+            new_id = g->assign_npc_id();
+        }
+        npc_ptr->setID( new_id, true );
+        npc_ptr->set_unique_id( "netplay_avatar:" + op.nick );
+        // v4.0a-1: the avatar rests while its player is away; the a2 step
+        // wakes it when the owning client actually drives it.
+        npc_ptr->add_effect( effect_sleep, time_duration::from_days( 3000 ) );
+        npc_ptr->spawn_at_precise( here.get_abs( spot ) );
+        overmap_buffer.insert_npc( npc_ptr );
+        g->load_npcs();
+        recs.push_back( av_rec{ op.nick, new_id.get_value() } );
+        av_registry_save( recs );
+        host_send_avatar_reply( op.sid, frame::AVATAR_OK, encode_avatar_text( op.nick ) );
+        return;
+    }
+}
+
+void host_pump_avatar_ops()
+{
+    avatar_op op;
+    int budget = 16;
+    while( budget-- > 0 && host_pop_avatar_op( op ) ) {
+        host_handle_one_avatar_op( op );
+    }
 }
 
 } // namespace netplay

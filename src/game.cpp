@@ -2466,6 +2466,11 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
         // loop runs on timeouts even when the host player idles, so a
         // freshly-loaded client gets its first picture without any keypress.
         netplay::host_pump_snapshot_requests();
+        // DDA MP v4.0: avatar ops (list / resume / create) are pumped on the
+        // same idle hook so they are answered even when the host idles.
+        if( netplay::host_is_running() ) {
+            netplay::host_pump_avatar_ops();
+        }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
                     ter_view_p.raw().xy(),
@@ -5303,6 +5308,13 @@ void game::control_vehicle( const std::optional<tripoint_bub_ms> &p )
 
 bool game::npc_menu( npc &who )
 {
+    // DDA MP v4.0: netplay avatars are remote players' sleeping characters;
+    // the host must not interact with them (talk/trade would poke at a
+    // half-initialized npc and error out).
+    if( who.get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ) {
+        add_msg( _( "%s is a remote player's avatar." ), who.get_name() );
+        return false;
+    }
     enum choices : int {
         talk = 0,
         swap_pos,

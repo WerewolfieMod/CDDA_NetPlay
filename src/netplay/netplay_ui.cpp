@@ -10,11 +10,16 @@
 #include <string>
 
 #include "cursesdef.h"
+#include "avatar.h"      // get_avatar (native character creation)
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
 #include "debug.h"       // debug_suppress_prompts (fat client load)
+#include "init.h"        // DynamicDataLoader (fat client finalize guard)
+#include "json.h"        // JsonOut (avatar profile serialization)
+#include "json_loader.h" // profile/json cfg parsing
+#include "cata_utility.h" // write_to_file / read_from_file_optional (client prefs)
+#include "path_info.h"   // PATH_INFO::config_dir (client prefs)
 #include "sdl_wrappers.h" // GetTicks (view probe timestamps)
 #include "game.h"        // g (fat client world data load)
-#include "init.h"        // DynamicDataLoader (fat client finalize guard)
 #include "lightmap.h"    // lit_level (client light overlay)
 #include "input_context.h"
 #include "loading_ui.h"  // loading_ui::done (releases the splash adaptors)
@@ -25,11 +30,13 @@
 
 #include "string_input_popup.h"
 #include "catacharset.h"
+#include "wcwidth.h"
 #include "color.h"
 #include "string_formatter.h"
 #include "translations.h"
 
 #include <fstream>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -192,20 +199,277 @@ static void fat_client_load_data()
 }
 
 /* ------------------------------------------------------------------ */
+/* DDA MP v4.0: avatar bind flow                                       */
+/* ------------------------------------------------------------------ */
+
+/* Wait for the host's answer to a resume/profile request. Returns the
+ * final bind state: 0 = connection dropped, 2 = accepted, 3 = denied,
+ * -1 = timed out. */
+static int avatar_wait_answer( int timeout_seconds )
+{
+    for( int i = 0; i < timeout_seconds * 10; ++i ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+        const int st = netplay::client_avatar_bind_state();
+        if( st == 2 || st == 3 ) {
+            return st;
+        }
+        if( !netplay::client_is_connected() ) {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Build a freshly created avatar on this machine through the native
+ * character creation UI, then offer its profile to the host. Returns
+ * true when the host accepted the avatar. */
+static bool avatar_create_flow( const std::string &nick )
+{
+    // Character creation needs the host's world data: the fat client
+    // loaded it exactly when DynamicDataLoader finalized and the host's
+    // world is the active one.
+    const std::string wname = netplay::client_host_world_name();
+    WORLD *w = world_generator ? world_generator->get_world( wname ) : nullptr;
+    if( w == nullptr || world_generator->active_world != w ) {
+        popup( _( "The host world '%s' is not available on this machine, "
+                  "so a new avatar cannot be created here (watch mode only)." ), wname );
+        return false;
+    }
+    if( !DynamicDataLoader::get_instance().is_data_finalized() ) {
+        popup( _( "The host world data is not loaded on this machine, "
+                  "so a new avatar cannot be created here (watch mode only)." ) );
+        return false;
+    }
+
+    avatar &pc = get_avatar();
+    if( !pc.create( character_type::CUSTOM ) ) {
+        // the user aborted the native creator, or the name clash prompt
+        // was declined
+        return false;
+    }
+    pc.add_profession_items();
+    std::ostringstream os;
+    JsonOut jo( os );
+    pc.serialize( jo );
+    netplay::client_send_avatar_profile( nick, os.str() );
+
+    const int st = avatar_wait_answer( 30 );
+    if( st == 2 ) {
+        return true;
+    }
+    if( st == 3 ) {
+        popup( _( "The host refused the avatar: %s" ), netplay::client_avatar_error() );
+    } else if( st == 0 ) {
+        popup( _( "The host disconnected." ) );
+    } else {
+        popup( _( "The host did not answer the avatar profile." ) );
+    }
+    return false;
+}
+
+/* The client's own avatar join flow, run after the fat client loaded the
+ * host's world data. The nickname comes from the join dialog (and is kept
+ * between restarts in the client prefs). Asks the host for the avatar
+ * registry, resumes an alive avatar (auto-picked when there is exactly one)
+ * or goes straight to a fresh creation through the native creator UI. */
+static void run_avatar_join_flow( const std::string &use_nick )
+{
+    netplay::client_send_avatar_list_req( use_nick );
+    for( int i = 0; i < 150; ++i ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+        if( !netplay::client_is_connected() ) {
+            popup( _( "The host disconnected." ) );
+            return;
+        }
+        if( netplay::client_avatar_list_ready() ||
+            netplay::client_avatar_bind_state() == 3 ) {
+            break;
+        }
+        // the wait now ends as soon as the host answers the list request,
+        // even when the world has no avatars at all (treated as "create")
+    }
+    if( !netplay::client_is_connected() ) {
+        popup( _( "The host disconnected." ) );
+        return;
+    }
+    if( netplay::client_avatar_bind_state() == 3 ) {
+        popup( _( "The host cut the avatar exchange short: %s" ),
+               netplay::client_avatar_error() );
+    }
+
+    std::vector<const netplay::avatar_entry *> alive;
+    for( const netplay::avatar_entry &e : netplay::client_avatar_list() ) {
+        if( e.alive ) {
+            alive.push_back( &e );
+        }
+    }
+
+    if( alive.empty() ) {
+        // v4.0a-1: no live avatar for this nick goes straight to creation
+        avatar_create_flow( use_nick );
+        return;
+    }
+
+    // v4.0a-1: the host keeps one avatar per nick, so the client resumes
+    // the first (only) living entry automatically — no choice is offered.
+    netplay::client_send_avatar_resume( use_nick );
+
+    const int st = avatar_wait_answer( 10 );
+    if( st != 2 ) {
+        if( st == 3 ) {
+            popup( _( "Bind refused: %s" ), netplay::client_avatar_error() );
+        } else if( st == 0 ) {
+            popup( _( "The host disconnected." ) );
+        } else {
+            popup( _( "The host did not answer the avatar bind." ) );
+        }
+        // fall through into plain watch mode
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* join dialogs                                                        */
 /* ------------------------------------------------------------------ */
 
+/* client prefs: last host address + nickname, kept between game restarts */
+static void join_load_prefs( std::string &addr, std::string &nick )
+{
+    try {
+        std::string text;
+        // PATH_INFO::config_dir() already ends with a slash
+        const std::string cfg_path = PATH_INFO::config_dir() + "netplay_client.cfg";
+        read_from_file_optional( cfg_path, [&]( std::istream &is ) {
+            std::ostringstream ss;
+            ss << is.rdbuf();
+            text = ss.str();
+        } );
+        if( text.empty() ) {
+            return;
+        }
+        JsonValue jsin = json_loader::from_string( text );
+        JsonObject jo = jsin.get_object();
+        jo.read( "address", addr );
+        jo.read( "nick", nick );
+    } catch( ... ) {
+        // missing/broken prefs: fall back to the defaults — never block joining
+    }
+}
+
+static void join_save_prefs( const std::string &addr, const std::string &nick )
+{
+    try {
+        // PATH_INFO::config_dir() already ends with a slash
+        const std::string cfg_path = PATH_INFO::config_dir() + "netplay_client.cfg";
+        write_to_file( cfg_path, [&]( std::ostream &os ) {
+            JsonOut json( os );
+            json.start_object();
+            json.member( "address", addr );
+            json.member( "nick", nick );
+            json.end_object();
+        } );
+    } catch( ... ) { }
+}
+
+/* The join screen: host address and client nickname on one screen.
+ * ENTER moves from the address field to the nickname field and connects
+ * from there; ESC cancels. The STRING_INPUT context category reuses the
+ * engine's default text-editing bindings (ENTER/ESC/BACKSPACE). */
+static bool join_fields_dialog( std::string &addr, std::string &nick )
+{
+    const int height = 11;
+    const int width = 62;
+    const int x_start = std::max( 0, ( TERMX - width ) / 2 );
+    const int y_start = std::max( 0, ( TERMY - height ) / 2 );
+
+    std::string fields[2] = { addr, nick };
+    int sel = 0;
+
+    input_context ctxt( "STRING_INPUT", keyboard_mode::keychar );
+    ctxt.register_action( "TEXT.QUIT" );
+    ctxt.register_action( "TEXT.CONFIRM" );
+    ctxt.register_action( "TEXT.BACKSPACE" );
+    ctxt.register_action( "TEXT.CLEAR" );
+    ctxt.register_action( "ANY_INPUT" );
+
+    while( true ) {
+        ui_manager::redraw();
+
+        catacurses::window win =
+            catacurses::newwin( height, width, point( x_start, y_start ) );
+        werase( win );
+        draw_border( win, c_white, _( "Join by IP" ) );
+
+        mvwprintw( win, point( 2, 2 ), "%s%s",
+                   sel == 0 ? "> " : "  ", _( "Host address:" ) );
+        mvwprintw( win, point( 20, 2 ), "%s", fields[0].c_str() );
+        mvwprintw( win, point( 2, 5 ), "%s%s",
+                   sel == 1 ? "> " : "  ", _( "Your nickname:" ) );
+        mvwprintw( win, point( 20, 5 ), "%s", fields[1].c_str() );
+        mvwprintw( win, point( 2, height - 2 ),
+                   _( "<ENTER>: next field / connect   <ESC>: cancel" ) );
+
+        wnoutrefresh( win );
+
+        const std::string action = ctxt.handle_input();
+        const input_event ev = ctxt.get_raw_input();
+        if( action == "TEXT.QUIT" ) {
+            return false;
+        }
+        if( action == "TEXT.CONFIRM" ) {
+            if( sel == 0 ) {
+                if( fields[0].empty() ) {
+                    popup( _( "The host address can not be empty." ) );
+                    continue;
+                }
+                sel = 1;
+                continue;
+            }
+            if( fields[0].empty() ) {
+                popup( _( "The host address can not be empty." ) );
+                continue;
+            }
+            addr = fields[0];
+            nick = fields[1].empty() ? std::string( "player" ) : fields[1];
+            return true;
+        }
+        if( action == "TEXT.BACKSPACE" ) {
+            std::string &f = fields[sel];
+            if( !f.empty() ) {
+                f.pop_back();
+            }
+            continue;
+        }
+        if( action == "TEXT.CLEAR" ) {
+            fields[sel].clear();
+            continue;
+        }
+        if( action == "ANY_INPUT" && !ev.text.empty() ) {
+            std::string &f = fields[sel];
+            const char *str = ev.text.c_str();
+            int len = static_cast<int>( ev.text.length() );
+            while( len > 0 ) {
+                const uint32_t ch = UTF8_getch( &str, &len );
+                // mk_wcwidth filters out control characters
+                if( mk_wcwidth( ch ) >= 0 && f.size() < 40 ) {
+                    f += utf32_to_utf8( ch );
+                }
+            }
+            continue;
+        }
+    }
+}
+
 void show_join_dialog()
 {
-    const std::string addr = string_input_popup()
-        .title( _( "Host address (like 127.0.0.1 or 192.168.1.5:25565)" ) )
-        .text( "127.0.0.1" )
-        .width( 40 )
-        .query_string();
+    std::string addr = "127.0.0.1";
+    std::string nick = "player";
+    join_load_prefs( addr, nick );
 
-    if( addr.empty() ) {
-        return;
+    if( !join_fields_dialog( addr, nick ) ) {
+        return; // cancelled
     }
+    join_save_prefs( addr, nick );
+
     if( !netplay::client_connect( addr ) ) {
         popup( _( "Could not connect: the host rejected the connection." ) );
         return;
@@ -237,6 +501,11 @@ void show_join_dialog()
     // starts immediately upon the user's join confirmation, not after the
     // first input is pumped in the view loop.
     fat_client_load_data();
+
+    // DDA MP v4.0: the client binds to its own avatar (resume an existing
+    // one or create a fresh one through the native creator UI) before the
+    // fullscreen view session starts.
+    run_avatar_join_flow( nick );
 
 #if defined(TILES)
     // DDA MP v3.9: load the replay tileset now, while the loading screen

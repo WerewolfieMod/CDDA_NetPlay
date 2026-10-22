@@ -312,10 +312,24 @@ struct netplay_state {
     /* world the host announced in WELCOME (fat client) */
     std::string host_world_name;
     std::string client_last_host_world;
+    /* DDA MP v4.0: our session id from WELCOME (avatar binding identity). */
+    int client_sid = -1;
+    /* DDA MP v4.0 avatar flow, guarded by avatar_mutex; the ready flag is a
+     * plain atomic because it flips without payload access. */
+    std::mutex avatar_mutex;
+    std::vector<avatar_entry> avatar_list;
+    std::atomic<int> avatar_bind_state = 0;   /* 0 idle, 1 wait, 2 ok, 3 denied */
+    std::atomic<bool> avatar_list_ready = false;
+    std::string avatar_deny_reason;
     snapshot latest;
     bool have_latest = false;
     std::vector<std::vector<char>> client_out;
     std::mutex client_out_mutex;
+
+    /* DDA MP v4.0: avatar ops queued by session reader threads, consumed on
+     * the host main thread (game glue may not run off the main thread). */
+    std::mutex avatar_ops_mutex;
+    std::deque<avatar_op> avatar_ops;
 };
 
 void netplay_state::stop_host()
@@ -567,6 +581,10 @@ void shutdown()
 /* host                                                                */
 /* ------------------------------------------------------------------ */
 
+/* compression lives below the reader threads; declare the pieces they use */
+static std::vector<char> maybe_compress( const std::vector<char> &raw );
+static std::vector<char> maybe_decompress( const char *data, size_t size );
+
 static void host_session_reader( int sid, socket_t sock )
 {
     while( true ) {
@@ -595,6 +613,41 @@ static void host_session_reader( int sid, socket_t sock )
             // Empty payload: "the client finished loading, send the current
             // picture". Consumed on the host main thread (game loop pump).
             state.snap_request_pending = true;
+        } else if( op == frame::AVATAR_LIST_REQ || op == frame::AVATAR_RESUME ||
+                   op == frame::AVATAR_PROFILE ) {
+            // DDA MP v4.0: queue the avatar op for the host main thread with
+            // the session id of the sender. Reader threads never touch the
+            // game / world state.
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            avatar_op avop;
+            avop.sid = sid;
+            avop.kind = op == frame::AVATAR_LIST_REQ ? 1 :
+                        ( op == frame::AVATAR_RESUME ? 2 : 3 );
+            // [str nick] on every op; AVATAR_PROFILE adds [u32 len][json]
+            avop.nick = r.get_str();
+            if( op == frame::AVATAR_PROFILE && r.ok ) {
+                const uint32_t dlen = r.get_u32();
+                if( r.ok && static_cast<size_t>( dlen ) <= r.size - r.off ) {
+                    std::vector<char> raw( r.data + r.off, r.data + r.off + dlen );
+                    r.off += dlen;
+                    if( raw.size() > 512 ) {
+                        raw = maybe_decompress( raw.data(), raw.size() );
+                    }
+                    avop.json.assign( raw.begin(), raw.end() );
+                }
+            }
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.avatar_ops_mutex );
+                if( state.avatar_ops.size() < 8 ) {
+                    state.avatar_ops.push_back( std::move( avop ) );
+                } else {
+                    std::vector<char> d;
+                    put_str( d, "Server busy, avatar request dropped. Try again." );
+                    send_all( sock, encode_frame( frame::AVATAR_DENIED, d ) );
+                }
+            }
         } else if( op == frame::BYE ) {
             break;
         }
@@ -1123,10 +1176,44 @@ static void client_run( socket_t sock )
             r.data = payload.data();
             r.size = payload.size();
             r.get_u16();
-            r.get_u32();
+            const uint32_t sid = r.get_u32();
             if( r.ok ) {
                 state.client_last_host_world = r.get_str();
+                state.client_sid = static_cast<int>( sid );
             }
+        } else if( op == frame::AVATAR_LIST ) {
+            // DDA MP v4.0: [u16 n][str name + u8 alive + u8 in_session]*
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const uint16_t n = r.get_u16();
+            std::vector<avatar_entry> list;
+            for( uint16_t i = 0; i < n && r.ok; ++i ) {
+                avatar_entry e;
+                e.name = r.get_str();
+                e.alive = r.get_u8() != 0;
+                e.in_session = r.get_u8() != 0;
+                if( r.ok ) {
+                    list.push_back( std::move( e ) );
+                }
+            }
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.avatar_mutex );
+                state.avatar_list = std::move( list );
+                state.avatar_bind_state = 1; // list ready / waiting for the bind result
+                state.avatar_list_ready = true;
+            }
+        } else if( op == frame::AVATAR_OK ) {
+            state.avatar_bind_state = 2;
+        } else if( op == frame::AVATAR_DENIED ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            {
+                std::lock_guard<std::mutex> lk( state.avatar_mutex );
+                state.avatar_deny_reason = r.get_str();
+            }
+            state.avatar_bind_state = 3;
         } else if( op == frame::DENY ) {
             reader r;
             r.data = payload.data();
@@ -1289,6 +1376,147 @@ void client_request_snapshot()
 void client_pump()
 {
     // No-op: receiving happens on the background thread.
+}
+
+/* ------------------------------------------------------------------ */
+/* DDA MP v4.0 avatar protocol                                         */
+/* ------------------------------------------------------------------ */
+
+/* payload encoders shared with the game glue (netplay_world.cpp), which
+ * has no access to the transport-local put_* helpers. */
+std::vector<char> encode_avatar_list( const std::vector<avatar_entry> &list )
+{
+    std::vector<char> p;
+    const size_t take = std::min<size_t>( list.size(), 0xFFFF );
+    put_u16( p, static_cast<uint16_t>( take ) );
+    for( size_t i = 0; i < take; ++i ) {
+        const avatar_entry &e = list[i];
+        put_str( p, e.name );
+        p.push_back( static_cast<char>( e.alive ? 1 : 0 ) );
+        p.push_back( static_cast<char>( e.in_session ? 1 : 0 ) );
+    }
+    return p;
+}
+
+std::vector<char> encode_avatar_text( const std::string &text )
+{
+    std::vector<char> p;
+    put_str( p, text );
+    return p;
+}
+
+/* client side: the join flow sends one request and polls bind_state until
+ * the host answers (2 = bound, 3 = denied). The bind_state re-arms to 1
+ * ("waiting") in every sender so stale results from a previous exchange
+ * cannot be mistaken for answers. */
+void client_send_avatar_list_req( const std::string &nick )
+{
+    if( !state.connected ) {
+        return;
+    }
+    state.avatar_bind_state = 1;
+    state.avatar_list_ready = false;
+    {
+        std::lock_guard<std::mutex> alk( state.avatar_mutex );
+        state.avatar_list.clear();
+        state.avatar_deny_reason.clear();
+    }
+    std::vector<char> p;
+    put_str( p, nick );
+    if( !send_all( state.client_sock, encode_frame( frame::AVATAR_LIST_REQ, p ) ) ) {
+        state.stop_client();
+        state.avatar_bind_state = 0;
+    }
+}
+
+void client_send_avatar_resume( const std::string &nick )
+{
+    if( !state.connected ) {
+        return;
+    }
+    state.avatar_bind_state = 1;
+    std::vector<char> p;
+    put_str( p, nick );
+    if( !send_all( state.client_sock, encode_frame( frame::AVATAR_RESUME, p ) ) ) {
+        state.stop_client();
+        state.avatar_bind_state = 0;
+    }
+}
+
+void client_send_avatar_profile( const std::string &nick,
+                                 const std::string &profile_json )
+{
+    if( !state.connected ) {
+        return;
+    }
+    state.avatar_bind_state = 1;
+    std::vector<char> p;
+    put_str( p, nick );
+    // [u32 len][json bytes]; possibly zstd-compressed (the host reverses it)
+    if( profile_json.size() > 512 ) {
+        const std::vector<char> rawv( profile_json.begin(), profile_json.end() );
+        const std::vector<char> zip = maybe_compress( rawv );
+        put_u32( p, static_cast<uint32_t>( zip.size() ) );
+        p.insert( p.end(), zip.begin(), zip.end() );
+    } else {
+        put_u32( p, static_cast<uint32_t>( profile_json.size() ) );
+        p.insert( p.end(), profile_json.begin(), profile_json.end() );
+    }
+    if( !send_all( state.client_sock, encode_frame( frame::AVATAR_PROFILE, p ) ) ) {
+        state.stop_client();
+        state.avatar_bind_state = 0;
+    }
+}
+
+int client_avatar_bind_state()
+{
+    return state.avatar_bind_state;
+}
+
+std::vector<avatar_entry> client_avatar_list()
+{
+    std::lock_guard<std::mutex> lk( state.avatar_mutex );
+    return state.avatar_list;
+}
+
+bool client_avatar_list_ready()
+{
+    return state.avatar_list_ready;
+}
+
+std::string client_avatar_error()
+{
+    std::lock_guard<std::mutex> lk( state.avatar_mutex );
+    return state.avatar_deny_reason;
+}
+
+/* host side: one-session reply + main-thread op consumption. The game glue
+ * (netplay_world.cpp) runs on the host main thread, so ops must be queued
+ * by session readers and popped here. */
+void host_send_avatar_reply( int sid, frame op, const std::vector<char> &payload )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return;
+    }
+    if( !send_all( it->second, encode_frame( op, payload ) ) ) {
+        // dead session: drop its socket like the broadcast path does
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+    }
+}
+
+bool host_pop_avatar_op( avatar_op &out )
+{
+    std::lock_guard<std::mutex> lk( state.avatar_ops_mutex );
+    if( state.avatar_ops.empty() ) {
+        return false;
+    }
+    out = std::move( state.avatar_ops.front() );
+    state.avatar_ops.pop_front();
+    return true;
 }
 
 } // namespace netplay

@@ -419,6 +419,13 @@ void monmove()
 
     // Now, do active NPCs.
     for( npc &guy : g->all_npcs() ) {
+        // DDA MP v4.0: netplay avatars are frozen while their players are
+        // away (the a2 step drives them directly from the client); no AI may
+        // move them, and their sleep effect stays as it is.
+        if( guy.get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ) {
+            m.creature_in_field( guy );
+            continue;
+        }
         process_npc_turn( m, guy );
     }
     g->cleanup_dead();

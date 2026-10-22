@@ -39,6 +39,14 @@ enum class frame : int {
     PONG = 8,
     BYE = 9,        ///< either side: graceful close
     SNAP_REQ = 10,  ///< client -> host: "send me the current picture now"
+    /// DDA MP v4.0: per-player avatars. All av frames travel to/from a
+    /// single session; the host tracks an avatar per connected sid.
+    AVATAR_LIST_REQ = 20,   ///< client -> host: "which avatars exist" (empty)
+    AVATAR_LIST = 21,       ///< host -> client: [n][str name + u8 alive]*
+    AVATAR_RESUME = 22,     ///< client -> host: bind me to an existing avatar
+    AVATAR_PROFILE = 23,    ///< client -> host: a freshly created avatar (json)
+    AVATAR_OK = 24,         ///< host -> client: bind/creation accepted
+    AVATAR_DENIED = 25,     ///< host -> client: bind/creation rejected (text)
 };
 
 /// DDA MP v3.9.1: one item-layer sprite the host's tileset draws on a cell
@@ -146,6 +154,15 @@ struct key_event {
     int32_t mods = 0;
 };
 
+/// DDA MP v4.0: one netplay-controlled avatar in the host's world, as the
+/// host reports it to a connecting client. `alive` = the avatar's npc is
+/// still present and not dead in the host's save.
+struct avatar_entry {
+    std::string name;
+    bool alive = false;        ///< npc exists in the host world and !dead
+    bool in_session = false;   ///< currently driven by a live client session
+};
+
 class netplay_error : public std::runtime_error
 {
     public:
@@ -186,6 +203,57 @@ bool host_pop_key( uint32_t &code );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
+
+/* ---- DDA MP v4.0 avatar protocol (game glue in netplay_world.cpp) ---- */
+
+/// One queued avatar operation from a session's reader thread; consumed on
+/// the host main thread (whatever the host is doing — the UI mirrors and
+/// dialogs all pump this).
+struct avatar_op {
+    int sid = 0;    ///< the requesting session
+    int kind = 0;   ///< 1 = list request, 2 = resume(nick), 3 = profile(nick)
+    std::string nick;
+    std::string json; ///< avatar::serialize() profile (kind 3 only)
+};
+
+/// Pop one queued avatar op. False = nothing queued.
+bool host_pop_avatar_op( avatar_op &out );
+
+/// Send an encoded avatar frame to exactly one session (thread-safe).
+void host_send_avatar_reply( int sid, frame op,
+                             const std::vector<char> &payload );
+
+/// Encode an AVATAR_LIST payload ([u16 n][str name + u8 alive + u8 busy]*).
+std::vector<char> encode_avatar_list( const std::vector<avatar_entry> &list );
+/// Text payload for AVATAR_DENIED (utf-8 reason); AVATAR_OK uses "{}".
+std::vector<char> encode_avatar_text( const std::string &text );
+
+/// Pump queued avatar ops on the host main thread; called from the game
+/// loop (next to the snapshot request pump).
+void host_pump_avatar_ops();
+
+/* ---- client avatar bindings ---- */
+
+/// Ask the host for the avatar owned by `nick` (must be connected). Also
+/// re-arms the client's bind state to "waiting" so the join UI can poll.
+void client_send_avatar_list_req( const std::string &nick );
+/// Request to be bound to an existing (alive) avatar owned by `nick`.
+void client_send_avatar_resume( const std::string &nick );
+/// Offer a freshly created avatar profile; the host spawns it near its own
+/// avatar and binds it to `nick`.
+void client_send_avatar_profile( const std::string &nick,
+                                 const std::string &profile_json );
+/// Client-side avatar flow status, polled by the join UI:
+/// 0 = idle (no exchange in progress), 1 = waiting for the host,
+/// 2 = bound / accepted, 3 = denied (see client_avatar_error()).
+int client_avatar_bind_state();
+/// Copy of the last received avatar list (valid when bind state != 0).
+std::vector<avatar_entry> client_avatar_list();
+/// True once the host answered the list request (the list itself may be
+/// empty — a fresh world simply has no avatars yet).
+bool client_avatar_list_ready();
+/// Last denial reason from the host (bind state 3).
+std::string client_avatar_error();
 
 /* ---- host game glue (netplay_world.cpp; needs game internals) ---- */
 
