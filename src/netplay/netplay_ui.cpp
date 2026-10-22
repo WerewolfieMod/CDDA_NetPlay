@@ -642,11 +642,28 @@ void run_view_loop()
                                                         static_cast<int>( t.furn_rot ) );
                                             }
                                         }
-                                        if( !t.item.empty() ) {
+                                        // DDA MP v3.9.1: tileset item-layer
+                                        // sprites first - draw_field_or_item
+                                        // draws the "layering.json" layers
+                                        // (sink dishes, cupboard clutter...)
+                                        // before the plain top item.
+                                        for( const tile_item_layer &l : t.item_layers ) {
+                                            trace_draw( 2, l.sprite.c_str() );
+                                            netplay::tiles_backend_draw( tiles_backend, 2,
+                                                    l.sprite.c_str(), "", x - snap.width / 2,
+                                                    y - snap.height / 2, mp_lit, 0, 0, false,
+                                                    l.variant.c_str(),
+                                                    static_cast<int>( l.dx ),
+                                                    static_cast<int>( l.dy ) );
+                                        }
+                                        if( !t.item.empty() && !t.item_skip_top ) {
                                             trace_draw( 2, t.item.c_str() );
+                                            // v3.9.1: the itype variant the host
+                                            // drew this item with (see tile_cell).
                                             netplay::tiles_backend_draw( tiles_backend, 2,
                                                     t.item.c_str(), "", x - snap.width / 2,
-                                                    y - snap.height / 2, mp_lit, 0, 0 );
+                                                    y - snap.height / 2, mp_lit, 0, 0,
+                                                    false, t.item_variant.c_str() );
                                         }
                                         if( !t.vpart.empty() ) {
                                             // Tileset id keeps the variant in

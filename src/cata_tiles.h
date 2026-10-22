@@ -966,6 +966,25 @@ class cata_tiles
         void netplay_probe_terrain( const tripoint_bub_ms &p, int &subtile, int &rota );
         void netplay_probe_furniture( const tripoint_bub_ms &p, int &subtile, int &rota );
 
+        /// DDA MP v3.9.1: one resolved item-layer sprite (layering.json
+        /// item_variants): the sprite id + the variant string the draw
+        /// receives + the pixel offset the tileset applies.
+        struct netplay_item_layer_draw {
+            std::string sprite;
+            std::string variant;
+            int dx = 0;
+            int dy = 0;
+        };
+
+        /* DDA MP v3.9.1: resolve the item-layer draws for a cell the same way
+         * draw_field_or_item would (furniture id -> furniture flags -> terrain
+         * id -> terrain flags chain, sprite rolled by item seed, shared
+         * variant accumulation). Also reports whether the layer consumed the
+         * uppermost item (drawtop=false: the plain item draw is skipped).
+         * Pure tileset lookups, no drawing. */
+        void netplay_probe_item_layers( const tripoint_bub_ms &p, bool &drawtop,
+                                        std::vector<netplay_item_layer_draw> &out );
+
         /* DDA MP v3.8: exact appearance facts of a character the host's own
          * draw_entity_with_overlays would draw: the base sprite id honoring
          * override-look mutations, the facing flip (0 = right, -1 = left,

@@ -895,6 +895,20 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             p.push_back( static_cast<char>( t.critter_rot ) );
             p.push_back( static_cast<char>( t.critter_badge ) );
             put_str( p, t.critter_overlays );
+            // v3.9.1: item itype variant (draw_item draws items with
+            // itype_variant().id; tilesets resolve "id_var_<variant>").
+            put_str8( p, t.item_variant );
+            // v3.9.1: item-layer sprites the tileset draws on this cell
+            // ("layering.json" contexts; the skip-top-item fact rides on
+            // flags bit 6 with the other flags).
+            p.push_back( static_cast<char>(
+                             t.item_layers.size() < 255 ? t.item_layers.size() : 255 ) );
+            for( const tile_item_layer &l : t.item_layers ) {
+                put_str8( p, l.sprite );
+                put_str8( p, l.variant );
+                p.push_back( static_cast<char>( l.dx ) );
+                p.push_back( static_cast<char>( l.dy ) );
+            }
         }
     }
     return p;
@@ -1026,6 +1040,22 @@ static void client_run( socket_t sock )
                                         t.critter_badge = rr.get_u8();
                                         t.critter_overlays = rr.get_str();
                                     }
+                                    if( extras >= 14 ) {
+                                        t.item_variant = rr.get_str8();
+                                    }
+                                    if( extras >= 15 ) {
+                                        const uint8_t nl = rr.get_u8();
+                                        t.item_layers.reserve( nl );
+                                        for( uint8_t li = 0; li < nl && rr.ok; ++li ) {
+                                            tile_item_layer l;
+                                            l.sprite = rr.get_str8();
+                                            l.variant = rr.get_str8();
+                                            l.dx = static_cast<int8_t>( rr.get_u8() );
+                                            l.dy = static_cast<int8_t>( rr.get_u8() );
+                                            t.item_layers.push_back( std::move( l ) );
+                                        }
+                                        t.item_skip_top = ( t.flags & 64 ) != 0;
+                                    }
                                     out.push_back( std::move( t ) );
                                 }
                                 // exact fit decides which layout ran
@@ -1035,7 +1065,13 @@ static void client_run( socket_t sock )
                                 }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 13 );
+                            std::vector<tile_cell> parsed = try_decode( 15 );
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 14 );
+                            }
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 13 );
+                            }
                             if( parsed.empty() ) {
                                 parsed = try_decode( 10 );
                             }

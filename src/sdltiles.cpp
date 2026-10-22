@@ -7994,7 +7994,8 @@ bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
 }
 
 void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub,
-                         int dx, int dy, int lit, int subtile, int rota, bool mp_fixed )
+                         int dx, int dy, int lit, int subtile, int rota, bool mp_fixed,
+                         const char *mp_item_variant, int off_x, int off_y )
 {
     static std::array<int, 7> heights = { { 0, 0, 0, 0, 0, 0, 0 } };
     netplay_tile_backend *b = netplay_backend_cast( handle );
@@ -8008,38 +8009,37 @@ void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub
     };
     static const std::string empty_sub;
     const std::string &subcat = ( sub == nullptr || sub[0] == '\0' ) ? empty_sub : sub;
+    const std::string &it_variant = ( mp_item_variant == nullptr || mp_item_variant[0] == '\0' )
+                                    ? empty_sub : std::string( mp_item_variant );
     // Missing tile -> base-class fallback; for ITEM that path constructs an
     // `item` which asserts on Item_factory::frozen (unfinalized in a client).
     // Skip instead of falling in. (DDA MP: item misses go to the diag log.)
     std::string mp_item_id;
     if( kind == 2 ) {
-        if( !b->tiles->replay_has_tile( id ) ) {
-            // Mirror the cata_tiles fallback for items: direct id, then the
-            // itype `looks_like` chain, then the "corpse" alias. This is a pure
-            // tileset/type lookup, no runtime `item` construction (safe before
-            // Item_factory finalization).
-            std::optional<tile_lookup_res> res = b->tiles->replay_find_tile_looks_like(
-                    id, TILE_CATEGORY::ITEM, empty_sub );
-            if( res ) {
-                mp_item_id = res->id();
+        // DDA MP v3.9.1: variant-aware item tile lookup, mirroring draw_item
+        // (draw_item passes itype_variant().id; find_tile_looks_like tries
+        // "id_var_<variant>" before the base id). Without it a variant item
+        // drew its base sprite or fell out entirely.
+        std::optional<tile_lookup_res> res = b->tiles->replay_find_tile_looks_like(
+                id, TILE_CATEGORY::ITEM, it_variant );
+        if( !res ) {
+            // find_tile_looks_like already tried the variant sprite, the bare
+            // id and the itype `looks_like` chain, so this is a real miss.
+            static int mp_item_miss = 0;
+            if( mp_netplay_diag && mp_item_miss < 40 ) {
+                ++mp_item_miss;
+                std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+                if( f ) {
+                    std::fprintf( f, "tiles: missing item tile '%s'\n", id );
+                    std::fclose( f );
+                }
+            }
+            // The game's last resort paints the generic "missing" tile.
+            if( b->tiles->replay_has_tile( "missing" ) ) {
+                mp_item_id = "missing";
                 id = mp_item_id.c_str();
             } else {
-                static int mp_item_miss = 0;
-                if( mp_netplay_diag && mp_item_miss < 40 ) {
-                    ++mp_item_miss;
-                    std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
-                    if( f ) {
-                        std::fprintf( f, "tiles: missing item tile '%s'\n", id );
-                        std::fclose( f );
-                    }
-                }
-                // The game's last resort paints the generic "missing" tile.
-                if( b->tiles->replay_has_tile( "missing" ) ) {
-                    mp_item_id = "missing";
-                    id = mp_item_id.c_str();
-                } else {
-                    return;
-                }
+                return;
             }
         }
     } else if( kind == 6 ) {
@@ -8063,6 +8063,17 @@ void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub
         b->tiles->draw_from_id_string( id, kinds[4], empty_sub, p, subtile, rota,
                                        static_cast<lit_level>( lit ), false,
                                        heights[4], 0, subcat );
+        return;
+    }
+    if( kind == 2 && ( !it_variant.empty() || off_x != 0 || off_y != 0 ) ) {
+        // DDA MP v3.9.1: item variant rides into the tile lookup the same way
+        // draw_item passes itype_variant().id (find_tile_looks_like tries
+        // "id_var_<variant>" first). Same variant + same base id = the same
+        // sprite as on the host. Also draws the tileset's item-layer sprites
+        // ("layering.json" contexts) with their pixel offsets.
+        b->tiles->draw_from_id_string( id, kinds[2], subcat, p, subtile, rota,
+                                       static_cast<lit_level>( lit ), false,
+                                       heights[2], 0, it_variant, point( off_x, off_y ) );
         return;
     }
     b->tiles->draw_from_id_string( id, kinds[kind], subcat, p, subtile, rota,

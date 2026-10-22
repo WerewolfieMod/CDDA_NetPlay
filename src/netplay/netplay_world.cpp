@@ -367,9 +367,18 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                         t.critter = u.male ? "player_male" : "player_female";
 #endif
                     }
-                    if( here.sees_some_items( p, u ) ) {
+                    {
                         const maptile &tile = here.maptile_at( p );
-                        if( tile.get_item_count() > 0 ) {
+                    if( tile.get_item_count() > 0
+                        && here.field_at( p ).displayed_field_type().obj().display_items ) {
+                        // DDA MP v3.9.1: the tileset's item-layer sprites (the
+                        // "layering.json" contexts) draw for ANY rendered cell
+                        // with matching items - draw_field_or_item gates the
+                        // layers on plain cell visibility only. Items seen as
+                        // plain sprites need the stricter sees_some_items
+                        // radius (that is why the host shows the dish rack
+                        // content from farther away than the item itself).
+                        if( here.sees_some_items( p, u ) ) {
                             // DDA MP: the game would also paint the
                             // highlight_item marker here; stream that fact.
                             t.flags |= 1;
@@ -381,7 +390,32 @@ static void mine_tiles( snapshot &out, avatar &u, map &here,
                             t.item = ( itm.typeId() == itype_corpse && mon != nullptr )
                                      ? "corpse_" + mon->id.str()
                                      : itm.typeId().str();
+                            // DDA MP v3.9.1: the variant the host renderer
+                            // draws this item with (draw_item passes
+                            // itype_variant().id into the tile lookup).
+                            t.item_variant = itm.has_itype_variant()
+                                             ? itm.itype_variant().id : "";
                         }
+                        // DDA MP v3.9.1: stream the layer draws resolved + the
+                        // skip-top fact for the seen-item case.
+                        bool drawtop = true;
+                        std::vector<cata_tiles::netplay_item_layer_draw> layers;
+                        tilecontext->netplay_probe_item_layers( p, drawtop, layers );
+                        for( const auto &d : layers ) {
+                            if( t.item_layers.size() >= 255 ) {
+                                break;
+                            }
+                            tile_item_layer l;
+                            l.sprite = d.sprite;
+                            l.variant = d.variant;
+                            l.dx = static_cast<int8_t>( d.dx );
+                            l.dy = static_cast<int8_t>( d.dy );
+                            t.item_layers.push_back( l );
+                        }
+                        if( !drawtop ) {
+                            t.flags |= 64;
+                        }
+                    }
                     }
                     // DDA MP v3.3: vehicle part on top of everything else.
                     // Mirrors cata_tiles::draw_vpart: display part of the tile,

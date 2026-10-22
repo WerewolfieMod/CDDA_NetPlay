@@ -4125,6 +4125,73 @@ void cata_tiles::netplay_probe_furniture( const tripoint_bub_ms &p, int &subtile
     }
 }
 
+/* DDA MP v3.9.1: mirrors draw_field_or_item's item-layer path (4461-4477 and
+ * its draw_layer_item lambda) as a pure lookup: the context chain (furniture
+ * id -> furniture flags -> terrain id -> terrain flags), the layer's sprite
+ * roll by item seed, the shared variant accumulation, and the drawtop fact. */
+void cata_tiles::netplay_probe_item_layers( const tripoint_bub_ms &p, bool &drawtop,
+        std::vector<netplay_item_layer_draw> &out )
+{
+    drawtop = true;
+    map &here = get_map();
+    const maptile &tile = here.maptile_at( p );
+    std::string variant;
+    auto probe_layer = [&]( const std::string & terfurn_key, const maptile & tile )->bool {
+        auto itt = tileset_ptr->item_layer_data.find( terfurn_key );
+        if( itt == tileset_ptr->item_layer_data.end() ) {
+            return false;
+        }
+        for( const layer_context_sprites &layer_var : itt->second ) {
+            for( const item &i : tile.get_items() ) {
+                if( i.typeId().str() == layer_var.id ) {
+                    // same roll draw_layer_item uses, seeded by the item so
+                    // the host and any replay look identical frame to frame
+                    int roll = i.seed % layer_var.total_weight;
+                    std::string sprite_to_draw;
+                    for( const auto &sprite_list : layer_var.sprite ) {
+                        roll = roll - sprite_list.second;
+                        if( roll < 0 ) {
+                            sprite_to_draw = sprite_list.first;
+                            break;
+                        }
+                    }
+                    if( i.has_itype_variant() ) {
+                        variant = i.itype_variant().id;
+                    }
+                    if( !layer_var.append_suffix.empty() ) {
+                        variant += layer_var.append_suffix;
+                    }
+                    netplay_item_layer_draw d;
+                    d.sprite = sprite_to_draw;
+                    d.variant = variant;
+                    d.dx = layer_var.offset.x;
+                    d.dy = layer_var.offset.y;
+                    out.push_back( d );
+                    if( i.typeId() == tile.get_uppermost_item().typeId() ) {
+                        drawtop = false;
+                    }
+                    break;
+                }
+            }
+        }
+        return true;
+    };
+    bool has_drawn_item = probe_layer( tile.get_furn_t().id.str(), tile );
+    if( !has_drawn_item ) {
+        for( const std::string &f : tile.get_furn_t().get_flags() ) {
+            has_drawn_item |= probe_layer( f, tile );
+        }
+        if( !has_drawn_item ) {
+            has_drawn_item = probe_layer( tile.get_ter_t().id.str(), tile );
+            if( !has_drawn_item ) {
+                for( const std::string &f : tile.get_ter_t().get_flags() ) {
+                    probe_layer( f, tile );
+                }
+            }
+        }
+    }
+}
+
 bool cata_tiles::draw_trap( const tripoint_bub_ms &p, const lit_level ll, int &height_3d,
                             const std::array<bool, 5> &invisible, const bool memorize_only )
 {

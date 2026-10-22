@@ -41,6 +41,17 @@ enum class frame : int {
     SNAP_REQ = 10,  ///< client -> host: "send me the current picture now"
 };
 
+/// DDA MP v3.9.1: one item-layer sprite the host's tileset draws on a cell
+/// (tileset "layering.json" item_variants: a furniture/terrain context makes
+/// the renderer draw its own sprite, e.g. the sink dishes, at a pixel
+/// offset, instead of the plain item sprite).
+struct tile_item_layer {
+    std::string sprite;   ///< tileset sprite id the host rolled
+    std::string variant;  ///< variant string the layer draw received
+    int8_t dx = 0;        ///< pixel offset the tileset applies
+    int8_t dy = 0;
+};
+
 /// One screen cell as streamed in SNAPSHOT frames.
 struct cell {
     int glyph;      ///< unicode codepoint
@@ -57,6 +68,10 @@ struct tile_cell {
     std::string trap;       ///< trap id
     std::string critter;    ///< monster type id
     std::string item;       ///< uppermost ground item type id
+    /// DDA MP v3.9.1 item appearance: the itype variant the host renderer
+    /// draws items with (draw_item passes itype_variant().id; tilesets
+    /// resolve e.g. "mug" -> "mug_var_<blue>"). Empty = no variant.
+    std::string item_variant;
     /// Vehicle part tileset id as resolved by the host renderer
     /// ("vp_{id}" or "vp_{id}_#{variant}"), empty = no vehicle here.
     std::string vpart;
@@ -80,7 +95,9 @@ struct tile_cell {
     ///        detail bit (same renderer state the color bytes came from;
     ///        deriving visibility from the lit_level byte races the
     ///        renderer's light map turn and paints lit path blue over
-    ///        empty texels)
+    ///        empty texels),
+    /// bit6 = the tileset item layer consumed the uppermost item; the
+    ///        plain item draw is skipped for this cell (drawtop=false)
     uint8_t flags = 0;
     /// Smooth-lighting light texel color when flags & 16: r = light 0..255,
     /// g/b = hue shares. The client's smooth filter and lit shader consume
@@ -103,6 +120,13 @@ struct tile_cell {
     /// sees_player bit already folds the host viewer's INATTENTIVE check.
     /// Drawn as a fixed-lit sprite ("overlay_<attitude>[_sees_player]").
     uint8_t critter_badge = 0;
+    /// DDA MP v3.9.1 item-layer draws for this cell (see tile_item_layer).
+    /// Empty = no tileset layer sprites on this cell.
+    std::vector<tile_item_layer> item_layers;
+    /// DDA MP v3.9.1: the tileset layer consumed the uppermost item, so the
+    /// host skips the plain item draw (draw_field_or_item's drawtop=false).
+    /// Streamed as flags bit 6.
+    bool item_skip_top = false;
 };
 
 /// Full screen frame for a remote session.
@@ -237,7 +261,8 @@ bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
 /// is (highlight badges etc., like the host's draw_light::fixed draws).
 void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub,
                          int dx, int dy, int lit, int subtile, int rota,
-                         bool mp_fixed = false );
+                         bool mp_fixed = false, const char *mp_item_variant = "",
+                         int off_x = 0, int off_y = 0 );
 // DDA MP: multiply-blend a per-cell light overlay that replicates the host's
 // lightmap gradient (the client has no lightmap). DARK/LOW/BRIGHT_ONLY and
 // MEMORIZED cells get a dimming diamond (iso) or rect; LIT+ stays untouched.
