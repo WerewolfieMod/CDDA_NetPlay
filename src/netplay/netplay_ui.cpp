@@ -1063,6 +1063,24 @@ void run_view_loop()
                                                     static_cast<int>( lit_level::LIT ), 0, 0,
                                                     true );
                                         }
+                                        if( t.marker != 0 ) {
+                                            // DDA MP v4.0a-2: the avatar's own
+                                            // heard-sound "?" — the host places
+                                            // it (deterministically) and
+                                            // streams the overlay id; drawn
+                                            // exactly like the game's own
+                                            // draw_footsteps_frame, fixed light
+                                            // so it stays readable in the dark.
+                                            const std::string mid = t.marker == 2 ? "footstep_above" :
+                                                                    t.marker == 3 ? "footstep_below" :
+                                                                    "footstep";
+                                            trace_draw( 6, mid.c_str() );
+                                            netplay::tiles_backend_draw( tiles_backend, 6,
+                                                    mid.c_str(), "",
+                                                    x - snap.width / 2, y - snap.height / 2,
+                                                    static_cast<int>( lit_level::LIT ), 0, 0,
+                                                    true );
+                                        }
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );

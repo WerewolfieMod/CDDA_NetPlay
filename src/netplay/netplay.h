@@ -128,6 +128,12 @@ struct tile_cell {
     /// sees_player bit already folds the host viewer's INATTENTIVE check.
     /// Drawn as a fixed-lit sprite ("overlay_<attitude>[_sees_player]").
     uint8_t critter_badge = 0;
+    /// DDA MP v4.0a-2: avatar's own heard-sound marker on this cell
+    /// (sounds::process_avatar_markers on the host, drawn as overlay on the
+    /// client exactly like cata_tiles::draw_footsteps_frame): 0 = none,
+    /// 1 = "footstep" ("?"), 2 = "footstep_above" ("^"), 3 =
+    /// "footstep_below" ("v"). Fixed-lit sprite, drawn last.
+    uint8_t marker = 0;
     /// DDA MP v3.9.1 item-layer draws for this cell (see tile_item_layer).
     /// Empty = no tileset layer sprites on this cell.
     std::vector<tile_item_layer> item_layers;
@@ -249,6 +255,10 @@ struct sid_key {
 
 /// Pop one queued per-session key event (thread-safe). False when empty.
 bool host_pop_sid_key( sid_key &out );
+/* DDA MP v4.0a-2: return an inspected-but-not-executed key (its session's
+ * move pool was exhausted): the action waits for the next world turn
+ * instead of being eaten by the pump. */
+void host_put_back_sid_key( const sid_key &in );
 /* DDA MP v4.0a-2: true while the client key queue still holds steps. */
 bool host_avatar_keys_pending();
 

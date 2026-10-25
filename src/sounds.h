@@ -76,11 +76,29 @@ void add_footstep( const tripoint_bub_ms &p, int volume, int distance, monster *
 void reset_sounds();
 void reset_markers();
 
-// Methods for processing sound events, these
-// process_sounds() applies the sounds since the last turn to monster AI,
+/* Methods for processing sound events, these
+ * process_sounds() applies the sounds since the last turn to monster AI,
+ */
 void process_sounds();
 // process_sound_markers applies sound events to the player and records them for display.
 void process_sound_markers( Character *you );
+
+/* DDA MP v4.0a-2: the reality bubble re-anchors around a roaming netplay
+ * avatar, which shifts the meaning of stored bub coordinates the same way
+ * the vanilla player-anchor map shift does. Correct every pending sound
+ * position (queue + drawn markers, monster AI feed included) the same way
+ * Character::shift_destination is corrected in game::update_map, so the
+ * player's own sounds keep being recognized as their own. Same convention:
+ * pass the same shift value update_map / mp_anchor_map_on computed. */
+void mp_shift_bubble_positions( const point_rel_ms &shift );
+
+/* DDA MP v4.0a-2: display markers of the sounds an avatar NPC heard,
+ * computed purely for display — the shared marker maps, the pending sound
+ * queue and the character's own state (deafness, sleep, AI) are not
+ * touched. Marker positions are derived deterministically from the sound,
+ * so repeated snapshots draw the same "?" while the same pending sound
+ * event is re-processed. out: bub positions to draw. */
+void process_avatar_markers( Character *avatar, std::vector<tripoint_bub_ms> &out );
 
 // Return list of points that have sound events the player can hear.
 std::vector<tripoint_bub_ms> get_footstep_markers();

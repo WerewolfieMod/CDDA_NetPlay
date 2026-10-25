@@ -787,6 +787,117 @@ void sounds::process_sound_markers( Character *you )
     }
 }
 
+/* DDA MP v4.0a-2: keep the pending sound events and the drawn markers
+ * pointing at the same world tiles across a bubble re-anchor. Same
+ * convention as Character::shift_destination in game::update_map: stored
+ * bub coordinates are moved against the map shift. Without this, every
+ * avatar-anchored shift silently relocated the host player's own sounds to
+ * other tiles, which they then showed as strangers' noise markers. */
+void sounds::mp_shift_bubble_positions( const point_rel_ms &shift )
+{
+    if( shift.x() == 0 && shift.y() == 0 ) {
+        return;
+    }
+    const auto shift_pos = [ &shift ]( tripoint_bub_ms &p ) {
+        p = tripoint_bub_ms( p.x() - shift.x(), p.y() - shift.y(), p.z() );
+    };
+    for( auto &snd : recent_sounds ) {
+        shift_pos( snd.first );
+    }
+    for( auto &snd : sounds_since_last_turn ) {
+        shift_pos( snd.first );
+    }
+    if( !sound_markers.empty() ) {
+        // keys of an unordered_map may not be mutated in place (buckets would
+        // go stale): rebuild instead
+        std::unordered_map<tripoint_bub_ms, sound_event> shifted;
+        shifted.reserve( sound_markers.size() );
+        for( const auto &mark : sound_markers ) {
+            tripoint_bub_ms p( mark.first );
+            shift_pos( p );
+            shifted.emplace( p, mark.second );
+        }
+        sound_markers.swap( shifted );
+    }
+}
+
+/* DDA MP v4.0a-2: vanilla error offset logic (how blurry the "?" position
+ * may be), derived deterministically so streamed snapshots don't re-roll
+ * the marker position every tick while the same event is still pending. */
+static int avatar_marker_err_offset( const sound_event &sound, const tripoint_bub_ms &pos,
+                                     int heard_volume, int distance_to_sound )
+{
+    if( distance_to_sound <= 0 ) {
+        return 0;
+    }
+    const int sharpness = ( heard_volume + distance_to_sound ) / distance_to_sound;
+    const int span = sound.category == sounds::sound_t::sensory ? ( sharpness < 2 ? 3 : sharpness < 3 ? 2 : 1 )
+                     : sharpness < 2 ? 3 : sharpness < 3 ? 2 : 1;
+    if( span <= 0 ) {
+        return 0;
+    }
+    // Tiny FNV-ish fold of position + description: stable per sound event.
+    uint32_t h = 2166136261u;
+    for( const char c : sound.description ) {
+        h = ( h ^ static_cast<uint8_t>( c ) ) * 16777619u;
+    }
+    h ^= static_cast<uint32_t>( pos.x() ) * 16777619u + static_cast<uint32_t>( pos.y() );
+    return static_cast<int>( h % static_cast<uint32_t>( span + 1 ) );
+}
+
+void sounds::process_avatar_markers( Character *avatar, std::vector<tripoint_bub_ms> &out )
+{
+    if( avatar == nullptr ) {
+        return;
+    }
+    const map &here = get_map();
+    // Deaf characters can't place a "?" from sound: vanilla skips the
+    // display path for them entirely.
+    if( avatar->is_deaf() ) {
+        return;
+    }
+    const float volume_multiplier = avatar->hearing_ability();
+    const int weather_vol = get_weather().weather_id->sound_attn;
+    const tripoint_bub_ms my_pos = avatar->pos_bub();
+    for( std::size_t i = 0; i < sounds_since_last_turn.size(); i++ ) {
+        // copy values, the queue may grow while we iterate (see
+        // process_sound_markers)
+        const tripoint_bub_ms pos = tripoint_bub_ms( sounds_since_last_turn[ i ].first );
+        const sound_event sound = sounds_since_last_turn[ i ].second;
+        const int distance_to_sound = sound_distance( my_pos, pos );
+        const int heard_volume = static_cast<int>( ( sound.volume - weather_vol ) *
+                                 std::min( 1.0f, volume_multiplier ) ) - distance_to_sound;
+        if( heard_volume <= 0 && pos != my_pos ) {
+            continue;
+        }
+        if( avatar->in_sleep_state() ) {
+            continue;
+        }
+        // Sources we can see don't get markers (sonar etc. still does), the
+        // own tile never does. Same as the player path.
+        const bool diff_z = pos.z() != my_pos.z();
+        if( pos == my_pos || ( !diff_z && sound.category != sound_t::sensory &&
+                               avatar->sees( here, pos ) ) ) {
+            continue;
+        }
+        const int err_offset = avatar_marker_err_offset( sound, pos, heard_volume, distance_to_sound );
+        std::vector<tripoint_bub_ms> unseen_points;
+        for( const tripoint_bub_ms &newp : here.points_in_radius( pos, err_offset ) ) {
+            if( diff_z || sound.category == sound_t::sensory || !avatar->sees( here, newp ) ) {
+                unseen_points.emplace_back( newp );
+            }
+        }
+        if( !unseen_points.empty() ) {
+            // deterministic pick: same sound draws the same "?" position on
+            // every snapshot until the event leaves the queue
+            const int pick = static_cast<int>( ( avatar_marker_err_offset( sound, pos,
+                                                heard_volume, distance_to_sound ) +
+                                                sound.volume ) % unseen_points.size() );
+            out.emplace_back( unseen_points[ pick ] );
+        }
+    }
+}
+
 void sounds::reset_sounds()
 {
     recent_sounds.clear();

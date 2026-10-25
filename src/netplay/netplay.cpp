@@ -300,8 +300,11 @@ struct netplay_state {
     /* DDA MP v4.0a-2: the same wire with the session id attached, so the
      * host glue can steer each client's own avatar instead of the host
      * player. Routed to the legacy queue by the main thread when the sid
-     * has no bound avatar (watchers keep v3.x behavior). */
-    std::deque<sid_key> avatar_keys;
+     * has no bound avatar (watchers keep v3.x behavior). One slot per
+     * session: a session may hold exactly one action in flight, newer
+     * keystrokes are dropped until the host pump executed the previous one
+     * (see the reader thread below). */
+    std::map<int, sid_key> avatar_keys;
 
     /* a client asked for the current picture (SNAP_REQ); consumed by the
      * host main thread — reader threads must not touch game state */
@@ -610,9 +613,13 @@ static void host_session_reader( int sid, socket_t sock )
                     break;
                 }
                 std::lock_guard<std::mutex> lk( state.keys_mutex );
-                if( state.avatar_keys.size() < 256 ) {
-                    state.avatar_keys.push_back( sid_key{ sid, code } );
-                }
+                // DDA MP v4.0a-2: strictly one action in flight per
+                // session. While the host pump has not executed the session's
+                // previous key, the slot stays occupied and newer keystrokes
+                // (key repeats included) are dropped: a client must not be
+                // able to stack a mountain of steps ahead of the world turns
+                // they belong to.
+                state.avatar_keys[sid] = sid_key{ sid, code };
             }
         } else if( op == frame::SNAP_REQ ) {
             // Empty payload: "the client finished loading, send the current
@@ -967,6 +974,10 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
                 p.push_back( static_cast<char>( l.dx ) );
                 p.push_back( static_cast<char>( l.dy ) );
             }
+            // v4.0a-2: the avatar's own heard-sound marker on this cell
+            // ("footstep" / "footstep_above" / "footstep_below" overlay id
+            // on the client; the ascii cells carry the same glyph anyway).
+            p.push_back( static_cast<char>( t.marker ) );
         }
     }
     return p;
@@ -996,9 +1007,20 @@ bool host_pop_sid_key( sid_key &out )
     if( state.avatar_keys.empty() ) {
         return false;
     }
-    out = state.avatar_keys.front();
-    state.avatar_keys.pop_front();
+    // lowest session id first: each session owns at most one slot, so this
+    // is just a stable drain order
+    out = state.avatar_keys.begin()->second;
+    state.avatar_keys.erase( state.avatar_keys.begin() );
     return true;
+}
+
+/* DDA MP v4.0a-2: return a key the pump inspected but did not execute (the
+ * session's move pool was exhausted). Drops the inspect step, does not
+ * regenerate it. */
+void host_put_back_sid_key( const sid_key &in )
+{
+    std::lock_guard<std::mutex> lk( state.keys_mutex );
+    state.avatar_keys.emplace( in.sid, in );
 }
 
 /* DDA MP v4.0a-2: whether the reader thread still holds avatar steps. The
@@ -1175,6 +1197,9 @@ static void client_run( socket_t sock )
                                         }
                                         t.item_skip_top = ( t.flags & 64 ) != 0;
                                     }
+                                    if( extras >= 16 ) {
+                                        t.marker = rr.get_u8();
+                                    }
                                     out.push_back( std::move( t ) );
                                 }
                                 // exact fit decides which layout ran
@@ -1184,7 +1209,10 @@ static void client_run( socket_t sock )
                                 }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 15 );
+                            std::vector<tile_cell> parsed = try_decode( 16 );
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 15 );
+                            }
                             if( parsed.empty() ) {
                                 parsed = try_decode( 14 );
                             }

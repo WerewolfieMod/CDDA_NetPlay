@@ -10322,6 +10322,10 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
     shift_monsters( { shift, 0 } );
     const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
     u.shift_destination( -shift_ms );
+    // DDA MP v4.0a-2: pending sound events and drawn "?" markers live in bub
+    // coordinates too; correct them against the shift, or the player's own
+    // (still queued) sounds get attributed to tiles they were never made on.
+    sounds::mp_shift_bubble_positions( shift_ms );
 
     // Shift NPCs
     for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {
@@ -10446,6 +10450,10 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
 
     const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
     u.shift_destination( -shift_ms );
+    // DDA MP v4.0a-2: pending sound events and drawn "?" markers live in bub
+    // coordinates too; correct them against the shift, or the player's own
+    // (still queued) sounds get attributed to tiles they were never made on.
+    sounds::mp_shift_bubble_positions( shift_ms );
     // Positions are absolute in this codebase, so the map shift already
     // recomputed every creature's bubble slot around the same world spot.
     // Re-assert the host player's bubble slot (no world movement), like

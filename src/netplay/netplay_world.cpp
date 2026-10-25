@@ -40,6 +40,7 @@
 #include "string_formatter.h"
 #include "smooth_lighting.h"
 #include "submap.h"
+#include "sounds.h"
 #include "translations.h"
 #include "trap.h"
 #include "weather.h"
@@ -618,6 +619,33 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     // The avatar itself is not tracked as a critter.
     mvwputch( win, point( FRAMEW / 2, FRAMEH / 2 ), c_white, '@' );
 
+    // DDA MP v4.0a-2: the avatar's own heard sounds ("Where is that noise
+    // coming from?" markers) — computed on the host from the same event
+    // queue the host player's "?" markers come from, but against the
+    // avatar's ears and eyes. Painted straight into the ascii frame and
+    // streamed as a per-cell overlay id for the tileset replay renderer
+    // (applied right after mine_tiles built the sprite payload below);
+    // positions are deterministic, so the marker does not jump between
+    // snapshots while the sound stays pending.
+    std::vector<std::pair<std::size_t, uint8_t>> av_tile_markers;
+    if( viewer != nullptr ) {
+        std::vector<tripoint_bub_ms> av_markers;
+        sounds::process_avatar_markers( viewer, av_markers );
+        for( const tripoint_bub_ms &mk : av_markers ) {
+            const tripoint_rel_ms rel = mk - center;
+            const int dx = rel.x() + FRAMEW / 2;
+            const int dy = rel.y() + FRAMEH / 2;
+            if( dx < 0 || dy < 0 || dx >= FRAMEW || dy >= FRAMEH ) {
+                continue;
+            }
+            const int glyph = mk.z() > center.z() ? '^' : mk.z() < center.z() ? 'v' : '?';
+            mvwputch( win, point( dx, dy ), c_yellow, glyph );
+            const std::size_t frame_idx = static_cast<std::size_t>( dy ) * FRAMEW + dx;
+            av_tile_markers.emplace_back( frame_idx, mk.z() > center.z() ? 2 :
+                                          mk.z() < center.z() ? 3 : 1 );
+        }
+    }
+
     // Read back the character grid.
     out.width = FRAMEW;
     out.height = FRAMEH;
@@ -641,6 +669,13 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     // the map/memory, independent of the ascii window above.
     if( tiles_replay_enabled() ) {
         mine_tiles( out, u, viewer, here, center );
+        // DDA MP v4.0a-2: stamp the heard-sound overlay ids on top of the
+        // freshly mined sprite payload.
+        if( out.tiles.size() == out.cells.size() ) {
+            for( const auto &mk : av_tile_markers ) {
+                out.tiles[mk.first].marker = mk.second;
+            }
+        }
     }
 #endif
 
@@ -1182,8 +1217,14 @@ void host_pump_avatar_keys()
             const bool diag = trigdist && pos.x() != dst.x() && pos.y() != dst.y();
             const int cost = npc_ptr->run_cost( here.combined_movecost( pos, dst ), diag );
             if( cost > npc_ptr->get_moves() ) {
-                // pool exhausted: the move waits for the next world turn
-                continue;
+                // pool exhausted: the move waits for the next world turn;
+                // the key is NOT eaten — the session keeps its single action
+                // in flight until the pool can pay for it. Break, not
+                // continue: the key is back at the front of its slot and
+                // would spin this pump forever otherwise; the next pump run
+                // (after the next world turn refills the pool) retries it.
+                netplay::host_put_back_sid_key( sk );
+                break;
             }
         }
         if( here.inbounds( dst ) && npc_ptr->can_move_to( dst ) ) {
