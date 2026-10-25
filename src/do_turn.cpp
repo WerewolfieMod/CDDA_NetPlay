@@ -424,6 +424,10 @@ void monmove()
         // move them, and their sleep effect stays as it is.
         if( guy.get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ) {
             m.creature_in_field( guy );
+            // DDA MP v4.0a-2: the frozen avatar still earns its move pool on
+            // every world turn (Creature::process_turn normally does this);
+            // the netplay key pump spends it on the client's steps.
+            guy.mod_moves( guy.get_speed() );
             continue;
         }
         process_npc_turn( m, guy );

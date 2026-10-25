@@ -574,15 +574,20 @@ class map
         };
         /** Helper function for light calculation; exposed here for map editor
          */
+        /* DDA MP v4.0a-2: optional viewer replaces the host player in the
+         * light facts (distance, unimpaired range); nullptr keeps the host. */
         static apparent_light_info apparent_light_helper( const level_cache &map_cache,
-                const tripoint_bub_ms &p );
+                const tripoint_bub_ms &p, const Character *viewer = nullptr );
         /** Determine the visible light level for a tile, based on light_at
          * for the tile, vision distance, etc
          *
          * @param p The tile on this map to draw.
          * @param cache Currently cached visibility parameters
+         * @param viewer DDA MP v4.0a-2: optional viewer replacing the host
+         *        player (a netplay client's avatar); nullptr keeps the host.
          */
-        lit_level apparent_light_at( const tripoint_bub_ms &p, const visibility_variables &cache ) const;
+        lit_level apparent_light_at( const tripoint_bub_ms &p, const visibility_variables &cache,
+                                     const Character *viewer = nullptr ) const;
         visibility_type get_visibility( lit_level ll,
                                         const visibility_variables &cache ) const;
 
@@ -1884,6 +1889,10 @@ class map
         // Note: in 3D mode, builds scene and view caches on ALL z-levels, and light
         // on zlev and the levels final visibility reads
         void build_map_cache( int zlev, bool skip_lightmap = false );
+        /* DDA MP v4.0a-2: rebuild the LOS/light caches from a specific
+         * viewer instead of the host player (a netplay client's avatar);
+         * nullptr keeps the host player, fully forward-compatible. */
+        void build_map_cache_for( int zlev, bool skip_lightmap, Character &viewer );
         // rebuilds every vision cache from nothing; incremental build of same
         // scene must match it
         void rebuild_vision_caches_from_scratch( int zlev );
@@ -2518,6 +2527,9 @@ class map
         void update_pathfinding_cache( int zlev ) const;
 
         void update_visibility_cache( int zlev );
+        /* DDA MP v4.0a-2: same pass but for a specific viewer (a netplay
+         * client's avatar NPC); defaults to the host player when nullptr. */
+        void update_visibility_cache( int zlev, Character *viewer_override );
         // no cast reaches the level and nothing else can light a tile of it
         bool level_reads_as_blank( int zlev, int clairvoyance ) const;
         void invalidate_visibility_cache();

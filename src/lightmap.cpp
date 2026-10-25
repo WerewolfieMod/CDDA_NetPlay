@@ -1022,9 +1022,11 @@ float map::light_transparency( const tripoint_bub_ms &p ) const
 // End of tile light/transparency
 
 map::apparent_light_info map::apparent_light_helper( const level_cache &map_cache,
-        const tripoint_bub_ms &p )
+        const tripoint_bub_ms &p, const Character *viewer )
 {
-    avatar const &u = get_avatar();
+    // DDA MP v4.0a-2: an optional viewer (a netplay client's avatar) replaces
+    // the host player here; nullptr keeps the host player.
+    const Character &u = viewer != nullptr ? *viewer : get_avatar();
     // static, so its callers' level caches are the reality bubble's
     const tripoint_bub_ms u_pos = u.pos_bub();
     const int dist = rl_dist( u_pos, p );
@@ -1044,8 +1046,9 @@ map::apparent_light_info map::apparent_light_helper( const level_cache &map_cach
                map_cache.vision_transparency_cache[p.x()][p.y()] <= LIGHT_TRANSPARENCY_SOLID;
     };
 
-    // possibly reduce view if aiming (also blocks light)
-    if( get_avatar().recoil < MAX_RECOIL ) {
+    // possibly reduce view if aiming (also blocks light); aiming cones are
+    // avatar-only, non-player viewers skip it
+    if( viewer == nullptr && get_avatar().recoil < MAX_RECOIL ) {
         if( get_avatar().cant_see( p ) ) {
             return { true, true, 0.0 };
         }
@@ -1105,9 +1108,13 @@ map::apparent_light_info map::apparent_light_helper( const level_cache &map_cach
 }
 
 lit_level map::apparent_light_at( const tripoint_bub_ms &p,
-                                  const visibility_variables &cache ) const
+                                  const visibility_variables &cache,
+                                  const Character *viewer ) const
 {
-    Character &player_character = get_player_character();
+    // DDA MP v4.0a-2: optional viewer replaces the host player (a netplay
+    // client's avatar sees with its own range); nullptr keeps the host.
+    const Character &player_character = viewer != nullptr
+                                        ? *viewer : get_player_character();
     const int dist = rl_dist( player_character.pos_bub( *this ), p );
 
     // Clairvoyance overrides everything.
@@ -1118,7 +1125,7 @@ lit_level map::apparent_light_at( const tripoint_bub_ms &p,
         return lit_level::BRIGHT;
     }
     const level_cache &map_cache = get_cache_ref( p.z() );
-    const apparent_light_info a = apparent_light_helper( map_cache, p );
+    const apparent_light_info a = apparent_light_helper( map_cache, p, viewer );
 
     // Unimpaired range is an override to strictly limit vision range based on various conditions,
     // but the player can still see light sources

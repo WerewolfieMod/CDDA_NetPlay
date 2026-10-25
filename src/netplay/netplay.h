@@ -232,6 +232,37 @@ std::vector<char> encode_avatar_text( const std::string &text );
 /// loop (next to the snapshot request pump).
 void host_pump_avatar_ops();
 
+/// Pump the per-session keyboard: keys of a session bound to an avatar
+/// step that avatar in the host world, others fall back to the legacy
+/// watcher queue. Called from the game loop next to the avatar ops pump.
+void host_pump_avatar_keys();
+
+/* ---- DDA MP v4.0a-2: per-session input routing ---- */
+
+/// One movement keystroke from a client session, alongside the session id
+/// so the host glue can route it to that session's avatar (not to the host
+/// player like the legacy keyboard queue does for watchers).
+struct sid_key {
+    int sid = -1;
+    uint32_t code = 0;
+};
+
+/// Pop one queued per-session key event (thread-safe). False when empty.
+bool host_pop_sid_key( sid_key &out );
+/* DDA MP v4.0a-2: true while the client key queue still holds steps. */
+bool host_avatar_keys_pending();
+
+/// Re-queue a key onto the legacy watcher queue (the sid it came from has
+/// no bound avatar, so it drives the host player like in v3.x).
+void host_push_legacy_key( uint32_t code );
+
+/// Session ids currently connected (copy, thread-safe).
+std::vector<int> host_session_ids();
+
+/// Send a screen frame to exactly one session (like the broadcast, minus
+/// the fan-out). False when the session vanished meanwhile.
+bool host_send_snapshot_to_sid( int sid, const snapshot &snap );
+
 /* ---- client avatar bindings ---- */
 
 /// Ask the host for the avatar owned by `nick` (must be connected). Also

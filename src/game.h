@@ -713,6 +713,17 @@ class game
         // Helper to make calling with a player pointer less verbose.
         point_rel_sm update_map( Character &p, bool z_level_changed = false );
         point_rel_sm update_map( int &x, int &y, bool z_level_changed = false );
+
+        /* DDA MP v4.0a-2: re-anchor the reality bubble around a netplay
+         * avatar the same way update_map anchors it around the player, so a
+         * roaming remote avatar keeps the world loaded under itself. Does
+         * nothing when the anchor already sits near the bubble center. The
+         * host player's position is shifted along with everything else.
+         * With light=true only the cheap parts run (shifts, critters, npc
+         * loading): no scent refresh, no map cache rebuild, no monster
+         * spawning — used inside an avatar's step burst, the rest is done
+         * by the host-anchored restore right after. */
+        void mp_anchor_map_on( Character &anchor, bool light = false );
         void update_overmap_seen(); // Update which overmap tiles we can see
 
         void peek();
@@ -1068,6 +1079,7 @@ class game
 
         input_context get_player_input( std::string &action );
 
+    public:
         /**
          * Shift all active monsters, the shift coordinate is the number of
          * shifted submaps. Monsters that are outside of the reality bubble after
@@ -1075,6 +1087,9 @@ class game
          * Note on z-levels: this works with vertical shifts, but currently all
          * monsters are despawned upon a vertical shift.
          */
+        /* DDA MP v4.0a-2: public so the netplay host glue can re-anchor the
+         * reality bubble around a remote avatar's roam (same semantics as
+         * game::update_map uses for the player). */
         void shift_monsters( const tripoint_rel_sm &shift );
     public:
         /**

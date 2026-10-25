@@ -7979,6 +7979,9 @@ bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
     geometry->rect( renderer, clip_rect, SDL_Color{ 0, 0, 0, 255 } );
     b->anchor = tripoint_bub_ms( pivot_bub_x, pivot_bub_y, 0 );
     b->tiles->set_frame_anchor( point( dest_x, dest_y ), point( px_w, px_h ), b->anchor );
+    // DDA MP v4.0a-2: random-variant sprites seed off streamed bub coords for
+    // the whole replay batch (the client's own map origin is meaningless).
+    b->tiles->set_replay_seeds( true );
     b->tiles->sanitize_replay_lighting();
     // Streamed light texels arrive fresh each batch; reset what last frame
     // held. netplay_ui stores them, then calls tiles_backend_enable_lighting.
@@ -8338,6 +8341,8 @@ void tiles_backend_end( void *handle )
         ++dump_frames;
         netplay_dump_display_buffer( dump_frames );
     }
+    // DDA MP v4.0a-2: the replay batch is over; back to world-based seeds.
+    b->tiles->set_replay_seeds( false );
 }
 
 } // namespace netplay

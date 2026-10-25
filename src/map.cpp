@@ -7762,8 +7762,16 @@ void map::update_submaps_with_active_items()
 
 void map::update_visibility_cache( const int zlev )
 {
-    Character &player_character = get_player_character();
+    update_visibility_cache( zlev, nullptr );
+}
+
+void map::update_visibility_cache( const int zlev, Character *viewer_override )
+{
+    Character &player_character = viewer_override != nullptr
+        ? *viewer_override
+        : get_player_character();
     const avatar &u = get_avatar();
+    const bool u_is_viewer = viewer_override == nullptr;
     const tripoint_bub_ms pos = player_character.pos_bub( *this );
 
     // what apparent_light_at reads that is the same on every level
@@ -7775,7 +7783,9 @@ void map::update_visibility_cache( const int zlev )
     common.clairvoyance = player_character.clairvoyance();
     common.unimpaired_range = player_character.unimpaired_range();
     common.boomered = player_character.has_effect( effect_boomered );
-    common.aiming = u.recoil < MAX_RECOIL;
+    // aiming (recoil) only exists on the host avatar; a netplay avatar npc
+    // is always treated as not aiming
+    common.aiming = u_is_viewer && u.recoil < MAX_RECOIL;
     common.aim_generation = common.aiming ? u.aim_generation() : 0;
 
     const auto set_variables = [&]( const visibility_inputs & inputs ) {
@@ -7821,7 +7831,8 @@ void map::update_visibility_cache( const int zlev )
             int &y = p.y();
             for( x = 0; x < MAPSIZE_X; x++ ) {
                 for( y = 0; y < MAPSIZE_Y; y++ ) {
-                    lit_level ll = apparent_light_at( p, visibility_variables_cache );
+                    lit_level ll = apparent_light_at( p, visibility_variables_cache,
+                                                      viewer_override );
                     visibility_cache[x][y] = ll;
                     sm_squares_seen[ x / SEEX ][ y / SEEY ] += ( ll == lit_level::BRIGHT || ll == lit_level::LIT );
                 }
@@ -10970,6 +10981,12 @@ std::vector<int> map::vision_parts_key( const tripoint_bub_ms &origin,
 
 void map::build_map_cache( const int zlev, bool skip_lightmap )
 {
+    // DDA MP v4.0a-2: default path is untouched — the host player.
+    build_map_cache_for( zlev, skip_lightmap, get_player_character() );
+}
+
+void map::build_map_cache_for( const int zlev, bool skip_lightmap, Character &viewer )
+{
     const int minz = zlevels ? -OVERMAP_DEPTH : zlev;
     const int maxz = zlevels ? OVERMAP_HEIGHT : zlev;
     build_scene_caches();
@@ -10980,8 +10997,9 @@ void map::build_map_cache( const int zlev, bool skip_lightmap )
         seen_cache_dirty |= build_vision_transparency_cache( z );
     }
 
-    avatar &u = get_avatar();
-    const Character::moncam_cache_t mcache = u.get_active_moncams();
+    // DDA MP v4.0a-2: the viewer replaces the host player as the origin of
+    // the vision cast; everything else (moncams, light sources) stays shared.
+    const Character::moncam_cache_t mcache = viewer.get_active_moncams();
     // a camera's cast reads its position, range and eye height for ledges; kept
     // per map, so building another map consumes none of this one's changes
     std::vector<camera_fov_input> moncams;
@@ -10991,11 +11009,11 @@ void map::build_map_cache( const int zlev, bool skip_lightmap )
                            } );
     }
     camera_cache_dirty |= moncams != camera_fov_moncams;
-    const tripoint_abs_ms p = get_player_character().pos_abs();
-    int const sr = u.unimpaired_range();
+    const tripoint_abs_ms p = viewer.pos_abs();
+    int const sr = viewer.unimpaired_range();
     // avatar cast also reads eye height for ledges and the mirrors and cameras
     // of the vehicle it stands in
-    const float eye = inbounds( p ) ? eye_level( u ) : 0.0f;
+    const float eye = inbounds( p ) ? eye_level( viewer ) : 0.0f;
     std::vector<int> vision_parts = inbounds( p ) ? vision_parts_key( get_bub( p ), sr ) :
                                     std::vector<int>();
     seen_cache_dirty |= avatar_fov_pos != p || sr != avatar_fov_range || eye != avatar_fov_eye_level ||

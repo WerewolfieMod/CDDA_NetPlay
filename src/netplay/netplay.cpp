@@ -297,6 +297,11 @@ struct netplay_state {
     /* queued client keystrokes (wire codes), bounded to avoid hogging */
     std::mutex keys_mutex;
     std::deque<uint32_t> host_keys;
+    /* DDA MP v4.0a-2: the same wire with the session id attached, so the
+     * host glue can steer each client's own avatar instead of the host
+     * player. Routed to the legacy queue by the main thread when the sid
+     * has no bound avatar (watchers keep v3.x behavior). */
+    std::deque<sid_key> avatar_keys;
 
     /* a client asked for the current picture (SNAP_REQ); consumed by the
      * host main thread — reader threads must not touch game state */
@@ -605,8 +610,8 @@ static void host_session_reader( int sid, socket_t sock )
                     break;
                 }
                 std::lock_guard<std::mutex> lk( state.keys_mutex );
-                if( state.host_keys.size() < 256 ) {
-                    state.host_keys.push_back( code );
+                if( state.avatar_keys.size() < 256 ) {
+                    state.avatar_keys.push_back( sid_key{ sid, code } );
                 }
             }
         } else if( op == frame::SNAP_REQ ) {
@@ -981,6 +986,67 @@ void host_broadcast_snapshot( const snapshot &snap )
             it = state.id2sock.erase( it );
         }
     }
+}
+
+/* DDA MP v4.0a-2 ------------------------------------------------- */
+
+bool host_pop_sid_key( sid_key &out )
+{
+    std::lock_guard<std::mutex> lk( state.keys_mutex );
+    if( state.avatar_keys.empty() ) {
+        return false;
+    }
+    out = state.avatar_keys.front();
+    state.avatar_keys.pop_front();
+    return true;
+}
+
+/* DDA MP v4.0a-2: whether the reader thread still holds avatar steps. The
+ * host keeps the reality bubble on the acting avatar while a burst is in
+ * progress and hands it back to the host player only between bursts. */
+bool host_avatar_keys_pending()
+{
+    std::lock_guard<std::mutex> lk( state.keys_mutex );
+    return !state.avatar_keys.empty();
+}
+
+void host_push_legacy_key( uint32_t code )
+{
+    std::lock_guard<std::mutex> lk( state.keys_mutex );
+    if( state.host_keys.size() < 256 ) {
+        state.host_keys.push_back( code );
+    }
+}
+
+std::vector<int> host_session_ids()
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    std::vector<int> out;
+    out.reserve( state.id2sock.size() );
+    for( const auto &[id, sock] : state.id2sock ) {
+        ( void )sock;
+        out.push_back( id );
+    }
+    return out;
+}
+
+bool host_send_snapshot_to_sid( int sid, const snapshot &snap )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> f = encode_frame( frame::SNAPSHOT,
+                                        maybe_compress( encode_snapshot_payload_raw( snap ) ) );
+    if( !send_all( it->second, f ) ) {
+        // failed session: drop it; its reader thread will notice too
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
 }
 
 bool host_pop_key( uint32_t &code )

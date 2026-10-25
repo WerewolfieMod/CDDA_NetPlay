@@ -1110,6 +1110,14 @@ class cata_tiles
         void set_world_backed( bool val ) {
             world_backed = val;
         }
+        /// DDA MP v4.0a-2: netplay tile replay has no real map under the
+        /// frame, so world-derived random-variant seeds (get_abs via the
+        /// client's own shifting map origin) float between turns. When set
+        /// (the whole backend draw batch), seeds come from the streamed bub
+        /// coordinates instead — stable per world tile.
+        void set_replay_seeds( bool val ) {
+            replay_seeds = val;
+        }
 
         /**
          * Initialize the current tileset (load tile images, load mapping), using the current
@@ -1278,6 +1286,7 @@ class cata_tiles
 
         bool disable_occlusion = false;
         bool world_backed = true;
+        bool replay_seeds = false; // DDA MP v4.0a-2, see set_replay_seeds
 
         bool do_draw_explosion = false;
         bool do_draw_custom_explosion = false;

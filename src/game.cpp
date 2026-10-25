@@ -2470,6 +2470,8 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
         // same idle hook so they are answered even when the host idles.
         if( netplay::host_is_running() ) {
             netplay::host_pump_avatar_ops();
+            // DDA MP v4.0a-2: bound client sessions steer their avatar NPCs.
+            netplay::host_pump_avatar_keys();
         }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
@@ -10364,6 +10366,120 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
     update_overmap_seen();
 
     return shift;
+}
+
+/* DDA MP v4.0a-2: reality-bubble re-anchor for a netplay avatar. Semantics
+ * copied from game::update_map (the player path), with the anchor being an
+ * arbitrary character and the host player shifted along with everything
+ * else (its next own update_map call re-centers on it as usual). Z stay
+ * unchanged: avatars only walk on the level they spawned on. */
+void game::mp_anchor_map_on( Character &anchor, bool light )
+{
+    map &here = get_map();
+
+    // Active anchors use their bubble slot; an anchor outside of the current
+    // bubble (the bubble was re-anchored away e.g. by the host player's own
+    // move) targets its real world position instead of the stale slot.
+    int x;
+    int y;
+    const tripoint_bub_ms abub = anchor.pos_bub( here );
+    if( here.inbounds( abub ) ) {
+        x = abub.x();
+        y = abub.y();
+    } else {
+        const tripoint_bub_ms desired = here.get_bub( anchor.pos_abs() );
+        x = desired.x();
+        y = desired.y();
+    }
+
+    point_rel_sm shift;
+
+    while( x < HALF_MAPSIZE_X ) {
+        x += SEEX;
+        shift.x()--;
+    }
+    while( x >= HALF_MAPSIZE_X + SEEX ) {
+        x -= SEEX;
+        shift.x()++;
+    }
+    while( y < HALF_MAPSIZE_Y ) {
+        y += SEEY;
+        shift.y()--;
+    }
+    while( y >= HALF_MAPSIZE_Y + SEEY ) {
+        y -= SEEY;
+        shift.y()++;
+    }
+
+    if( shift == point_rel_sm::zero ) {
+        return;
+    }
+
+    // this handles loading/unloading submaps that have scrolled on or off the viewport
+    // NOLINTNEXTLINE(cata-use-named-point-constants)
+    inclusive_rectangle<point_rel_sm> size_1( { -1, -1 }, { 1, 1 } );
+    point_rel_sm remaining_shift = shift;
+    while( remaining_shift != point_rel_sm::zero ) {
+        point_rel_sm this_shift = clamp( remaining_shift, size_1 );
+        here.shift( point_rel_sm( this_shift ) );
+        remaining_shift -= this_shift;
+    }
+
+    // Shift monsters
+    shift_monsters( { shift, 0 } );
+
+    // Shift NPCs
+    for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {
+        ( *it )->shift( shift );
+        const tripoint_bub_ms pos = ( *it )->pos_bub( here );
+
+        // TODO: This could probably be replaced by an inbounds check.
+        if( pos.x() < 0 || pos.x() >= MAPSIZE_X ||
+            pos.y() < 0 || pos.y() >= MAPSIZE_Y ) {
+            //Remove the npc from the active list. It remains in the overmap list.
+            ( *it )->on_unload();
+            it = critter_tracker->active_npc.erase( it );
+        } else {
+            ++it;
+        }
+    }
+
+    const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
+    u.shift_destination( -shift_ms );
+    // Positions are absolute in this codebase, so the map shift already
+    // recomputed every creature's bubble slot around the same world spot.
+    // Re-assert the host player's bubble slot (no world movement), like
+    // update_map's closing setpos does for the anchor.
+    u.setpos( here, tripoint_bub_ms( u.pos_bub().xy(), u.pos_bub().z() ) );
+
+    // DDA MP v4.0a-2: light mode stops after the cheap bookkeeping; the
+    // snapshot pipeline rebuilds whatever caches it needs on its own.
+    if( light ) {
+        if( npc *as_npc = dynamic_cast<npc *>( &anchor );
+            as_npc != nullptr && !as_npc->is_active() ) {
+            // The bubble left the avatar behind earlier; bring it into the
+            // active world again, and give it one turn's worth of move
+            // points right away (its pool starved while it was unloaded).
+            load_npcs( &here );
+            as_npc->mod_moves( 100 );
+        }
+        return;
+    }
+
+    scent.shift( shift_ms );
+
+    // Wake any npc now covered by the bubble (possibly the anchor itself, if
+    // another anchor had pushed it out before).
+    load_npcs( &here );
+
+    // Make sure map cache is consistent since it may have shifted.
+    for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {
+        here.invalidate_map_cache( zlev );
+    }
+    here.build_map_cache( here.get_abs_sub().z() );
+
+    // Spawn monsters if appropriate
+    here.spawn_monsters( false ); // Static monsters
 }
 
 void game::update_overmap_seen()

@@ -2929,6 +2929,14 @@ unsigned int cata_tiles::get_variant_seed( const tile_type &display_tile, TILE_C
     // seed the PRNG to get a reproducible random int
     // TODO: faster solution here
     unsigned int seed = 0;
+    // DDA MP v4.0a-2: during a netplay replay there is no real world behind
+    // the frame; here.get_abs() reads the client's own (shifting) map origin,
+    // so position-seeded variants floated between turns. The streamed bub
+    // coordinates are the host's per-tile coordinates — stable per world tile.
+    const bool mp_replay = replay_seeds;
+    const point mp_seed_pos = mp_replay
+            ? pos.raw().xy()
+            : here.get_abs( pos ).raw().xy();
     creature_tracker &creatures = get_creature_tracker();
     // TODO: determine ways other than category to differentiate more types of sprites
     switch( category ) {
@@ -2936,7 +2944,7 @@ unsigned int cata_tiles::get_variant_seed( const tile_type &display_tile, TILE_C
         case TILE_CATEGORY::FIELD:
         case TILE_CATEGORY::LIGHTING:
             // stationary map tiles, seed based on map coordinates
-            seed = simple_point_hash( here.get_abs( pos ).raw().xy() );
+            seed = simple_point_hash( mp_seed_pos );
             break;
         case TILE_CATEGORY::VEHICLE_PART:
             // vehicle parts, seed based on coordinates within the vehicle
@@ -2968,7 +2976,7 @@ unsigned int cata_tiles::get_variant_seed( const tile_type &display_tile, TILE_C
             if( fid.is_valid() ) {
                 const furn_t &f = fid.obj();
                 if( !f.is_movable() ) {
-                    seed = simple_point_hash( here.get_abs( pos ).raw().xy() );
+                    seed = simple_point_hash( mp_seed_pos );
                 }
             }
         }
@@ -2982,9 +2990,9 @@ unsigned int cata_tiles::get_variant_seed( const tile_type &display_tile, TILE_C
         case TILE_CATEGORY::NONE:
             // graffiti
             if( found_id == "graffiti" ) {
-                seed = std::hash<std::string> {}( here.graffiti_at( pos ) );
+                seed = mp_replay ? 0 : std::hash<std::string> {}( here.graffiti_at( pos ) );
             } else if( string_starts_with( found_id, "graffiti" ) ) {
-                seed = simple_point_hash( here.get_abs( pos ).raw().xy() );
+                seed = simple_point_hash( mp_seed_pos );
             }
             break;
         case TILE_CATEGORY::ITEM:
@@ -3046,23 +3054,30 @@ unsigned int cata_tiles::get_variant_seed( const tile_type &display_tile, TILE_C
     // idle tile animations:
     if( display_tile.animated ) {
         has_animated_tiles_ = true;
-        // idle animations run during the user's turn, and the animation speed
-        // needs to be defined by the tileset to look good, so we use system clock:
-        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-        auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>( now );
-        std::chrono::milliseconds value = now_ms.time_since_epoch();
-        // aiming roughly at the standard 60 frames per second:
-        int animation_frame = value.count() / 17;
-        // offset by log_rand so that everything does not blink at the same time:
-        animation_frame += loc_rand;
         int frames_in_loop = display_tile.fg.get_weight();
         if( frames_in_loop == 1 ) {
             frames_in_loop = display_tile.bg.get_weight();
         }
-        // loc_rand is actually the weighed index of the selected tile, and
-        // for animations the "weight" is the number of frames to show the tile for:
-        loc_rand = animation_frame % frames_in_loop;
-
+        if( mp_replay ) {
+            // DDA MP v4.0a-2: a netplay client redraws once per streamed
+            // frame, so a clock-driven animation frame is sampled at a
+            // random moment of each turn — the sprite seemed to change
+            // every turn. Freeze it to the tile's seeded stable frame.
+            loc_rand %= frames_in_loop;
+        } else {
+            // idle animations run during the user's turn, and the animation speed
+            // needs to be defined by the tileset to look good, so we use system clock:
+            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>( now );
+            std::chrono::milliseconds value = now_ms.time_since_epoch();
+            // aiming roughly at the standard 60 frames per second:
+            int animation_frame = value.count() / 17;
+            // offset by log_rand so that everything does not blink at the same time:
+            animation_frame += loc_rand;
+            // loc_rand is actually the weighed index of the selected tile, and
+            // for animations the "weight" is the number of frames to show the tile for:
+            loc_rand = animation_frame % frames_in_loop;
+        }
     }
 
     return loc_rand;
