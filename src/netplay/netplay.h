@@ -13,6 +13,7 @@
 // glue lives in the game-side hooks (main_menu, handle_action, main).
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,19 @@ using socket_t = std::int64_t;
 
 /// Default TCP port (player request: Minecraft-style 25565).
 constexpr int DEFAULT_PORT = 25565;
+
+/// DDA MP built-in diagnostics (v4.0a: no powershell / env needed).
+/// Default ON; all forensics land in %TEMP%\opencode\ddadiag — never inside
+/// the game folder. Escape hatches: env DDA_MP_DIAG=0|off disables,
+/// DDA_MP_DIAG=<dir> reroutes the folder. Returns "" when disabled.
+const std::string &mp_diag_dir();
+
+/// True when diagnostics are enabled (mp_diag_dir() is non-empty).
+inline bool mp_diag_enabled() { return !mp_diag_dir().empty(); }
+
+/// Opens `name` (e.g. "netplay_tiles.log") inside the diag folder for
+/// appending; nullptr when diagnostics are disabled.
+std::FILE *mp_diag_open( const char *name );
 
 /// Frame opcodes.
 enum class frame : int {

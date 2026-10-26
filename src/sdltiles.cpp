@@ -169,11 +169,9 @@ static int DrawableHeight;
 // This value is finally returned by input_manager::get_input_event.
 input_event last_input;
 
-/* DDA MP v3.9: diagnostics master switch. When false, no netplay_tiles.log /
- * netplay_light_trace.log / netplay_present_*.png / netplay_dump_*.png are
- * produced (present traces, buffer dumps, replay light/cell traces).
- * Flip to true and rebuild to re-enable. */
-constexpr bool mp_netplay_diag = false;
+/* DDA MP v3.9: diagnostics master switch — built-in (netplay::mp_diag_dir).
+ * Default ON without any env; DDA_MP_DIAG=0|off disables, <dir> reroutes. */
+static const bool mp_netplay_diag = netplay::mp_diag_enabled();
 
 static int inputdelay;         //How long getch will wait for a character to be typed
 int fontwidth;          //the width of the font, background is always this size
@@ -1190,7 +1188,7 @@ void refresh_display()
                && netplay::client_is_connected() ) );
     if( mp_log_now ) {
         const Uint32 wflags = ::window.get() ? SDL_GetWindowFlags( ::window.get() ) : 0;
-        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
         if( f ) {
             std::fprintf( f, "present #%d [%s]: begin wflags=0x%08x ticks=%u\n", mp_id, role,
                           wflags, GetTicks() );
@@ -1201,7 +1199,7 @@ void refresh_display()
     if( renderer_coordinator.should_abort_frame() ) {
         needupdate = true;
         if( mp_log_now ) {
-            std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+            std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
             if( f ) {
                 std::fprintf( f, "present #%d: gate abort_frame\n", mp_id );
                 std::fclose( f );
@@ -1212,7 +1210,7 @@ void refresh_display()
     if( request_tile_repair_if_needed() ) {
         needupdate = true;
         if( mp_log_now ) {
-            std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+            std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
             if( f ) {
                 std::fprintf( f, "present #%d: gate tile_repair\n", mp_id );
                 std::fclose( f );
@@ -1221,7 +1219,7 @@ void refresh_display()
         return;
     }
     if( mp_log_now ) {
-        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
         if( f ) {
             std::fprintf( f, "present #%d: gate ok\n", mp_id );
             std::fclose( f );
@@ -1258,7 +1256,7 @@ void refresh_display()
     // would fractionally scale and grid the minimap.
     const SDL_Rect dstrect = get_display_buffer_render_rect();
     if( mp_log_now ) {
-        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
         if( f ) {
             std::fprintf( f, "present #%d: dstrect %d,%d %dx%d\n", mp_id, dstrect.x,
                           dstrect.y, dstrect.w, dstrect.h );
@@ -1293,7 +1291,8 @@ void refresh_display()
             if( surf && surf->pixels
                 && RenderReadPixels( renderer, nullptr, GetSurfacePixelFormat( surf ),
                                      surf->pixels, surf->pitch ) ) {
-                const std::string fn = "netplay_present_" + std::string( role ) + "_" +
+                const std::string fn = netplay::mp_diag_dir() + "\\netplay_present_" +
+                                       std::string( role ) + "_" +
                                        std::to_string( mp_screen_dump_count ) + ".png";
                 IMG_SavePNG( surf.get(), fn.c_str() );
             }
@@ -1309,7 +1308,7 @@ void refresh_display()
     draw_gamepad_radial_menu();
     RenderPresent( renderer );
     if( mp_log_now ) {
-        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
         if( f ) {
             std::fprintf( f, "present #%d: presented\n", mp_id );
             std::fclose( f );
@@ -7818,7 +7817,7 @@ namespace netplay
 static void netplay_dump_display_buffer( int frame_no )
 {
     auto dump_log = []( const std::string & msg ) {
-        std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+        std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
         if( f ) {
             std::fputs( msg.c_str(), f );
             std::fputs( "\n", f );
@@ -7919,7 +7918,7 @@ void *tiles_backend_create()
                                     /*pump_events=*/true, /*terrain=*/false );
         } );
         if( mp_netplay_diag && !dmsg_captured.empty() ) {
-            std::FILE *lg = std::fopen( "netplay_tiles.log", "a" );
+            std::FILE *lg = netplay::mp_diag_open( "netplay_tiles.log" );
             if( lg ) {
                 std::fputs( "tileset load notes:\n", lg );
                 std::fputs( dmsg_captured.c_str(), lg );
@@ -8031,7 +8030,7 @@ void tiles_backend_draw( void *handle, int kind, const char *id, const char *sub
             static int mp_item_miss = 0;
             if( mp_netplay_diag && mp_item_miss < 40 ) {
                 ++mp_item_miss;
-                std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+                std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
                 if( f ) {
                     std::fprintf( f, "tiles: missing item tile '%s'\n", id );
                     std::fclose( f );
@@ -8184,7 +8183,7 @@ bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
         mp_set_cell_ymax = -1;
     }
     if( mp_netplay_diag && !mp_light_trace.empty() ) {
-        if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_light_trace.log" ) ) {
             std::fputs( mp_light_trace.c_str(), f );
             std::fclose( f );
         }
@@ -8226,7 +8225,7 @@ bool tiles_backend_enable_lighting( void *handle, int snap_w, int snap_h )
     static int mp_lit_log = 0;
     if( mp_netplay_diag && mp_lit_log < 8 ) {
         ++mp_lit_log;
-        if( std::FILE *f = std::fopen( "netplay_tiles.log", "a" ) ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
             std::fprintf( f, "tiles: lit frame ok (smooth_lighting_active)\n" );
             std::fclose( f );
         }

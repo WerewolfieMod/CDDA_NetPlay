@@ -446,12 +446,48 @@ bool tiles_replay_enabled()
 }
 
 /* ------------------------------------------------------------------ */
+/* built-in diagnostics folder (no env / powershell required)            */
+/* ------------------------------------------------------------------ */
+
+const std::string &mp_diag_dir()
+{
+    static const std::string dir = []() -> std::string {
+        const char *env = std::getenv( "DDA_MP_DIAG" );
+        if( env ) {
+            const std::string v( env );
+            if( v.empty() || v == "0" || v == "off" ) {
+                return std::string();
+            }
+            CreateDirectoryA( v.c_str(), nullptr );
+            return v;
+        }
+        const char *temp = std::getenv( "TEMP" );
+        if( !temp ) {
+            temp = std::getenv( "TMP" );
+        }
+        std::string d = ( temp ? temp : "." );
+        d += "\\opencode\\ddadiag";
+        CreateDirectoryA( d.c_str(), nullptr );
+        return d;
+    }();
+    return dir;
+}
+
+std::FILE *mp_diag_open( const char *name )
+{
+    const std::string &dir = mp_diag_dir();
+    if( dir.empty() ) {
+        return nullptr;
+    }
+    return std::fopen( ( dir + "\\" + name ).c_str(), "a" );
+}
+
 /* crash diagnostics black box                                          */
 /* ------------------------------------------------------------------ */
 
 static void mp_diag_write( const std::string &s )
 {
-    std::FILE *f = std::fopen( "netplay_tiles.log", "a" );
+    std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
     if( f ) {
         std::fputs( s.c_str(), f );
         std::fputs( "\n", f );
@@ -1093,7 +1129,9 @@ bool host_pop_snapshot_request()
 
 /* DDA MP v3.9: diagnostics master switch (rx snapshot size logs through
  * netplay_tiles.log). Flip to true and rebuild to re-enable. */
-constexpr bool mp_netplay_diag = false;
+/* DDA MP v3.9: diagnostics master switch — built-in (mp_diag_dir).
+ * Default ON without any env; DDA_MP_DIAG=0|off disables. */
+static const bool mp_netplay_diag = mp_diag_enabled();
 
 static void client_run( socket_t sock )
 {
@@ -1252,7 +1290,7 @@ static void client_run( socket_t sock )
                                 }
                             }
                             try {
-                                std::ofstream f( "netplay_tiles.log", std::ios::app );
+                                std::ofstream f( netplay::mp_diag_dir() + "\\netplay_tiles.log", std::ios::app );
                                 if( f ) {
                                     f << "rx snap #" << mp_rx_log << " w=" << snap.width
                                       << " h=" << snap.height

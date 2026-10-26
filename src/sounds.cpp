@@ -1,5 +1,7 @@
 #include "sounds.h"
 
+#include "netplay/netplay.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -249,6 +251,39 @@ static std::vector<std::pair<tripoint_bub_ms, sound_event>> sounds_since_last_tu
 // The sound events currently displayed to the player.
 static std::unordered_map<tripoint_bub_ms, sound_event> sound_markers;
 
+/* DDA MP v4.0a-6 diag: when DDA_MP_DIAG is set, every queued sound event
+ * lands in netplay_sound.log with its absolute world position — that lets
+ * us rule out bubble-shift attribution drift when a host sees "?" rings in
+ * the wrong cells or misses remote noise markers entirely. Unset = silent. */
+static const char *mp_snd_role()
+{
+    if( netplay::host_is_running() ) {
+        return "host";
+    }
+    if( netplay::client_is_connected() ) {
+        return "client";
+    }
+    return "none";
+}
+
+static void mp_snd_emit_log( const tripoint_bub_ms &p, int vol, sounds::sound_t category,
+                             const std::string &description, bool ambient, const char *via )
+{
+    const std::string &dir = netplay::mp_diag_dir();
+    if( dir.empty() ) {
+        return;
+    }
+    const tripoint_abs_ms a = get_map().get_abs( p );
+    char abs_buf[64];
+    std::snprintf( abs_buf, sizeof( abs_buf ), "(%d,%d,%d)", a.x(), a.y(), a.z() );
+    if( std::FILE *f = std::fopen( ( dir + "\\netplay_sound.log" ).c_str(), "a" ) ) {
+        std::fprintf( f, "emit role=%s via=%s abs=%s vol=%d cat=%d amb=%d desc=%.60s\n",
+                      mp_snd_role(), via, abs_buf, vol, static_cast<int>( category ),
+                      ambient ? 1 : 0, description.c_str() );
+        std::fclose( f );
+    }
+}
+
 // This is an attempt to handle attenuation of sound for underground areas.
 // The main issue it addresses is that you can hear activity
 // relatively deep underground while on the surface.
@@ -341,6 +376,7 @@ void sounds::sound( const tripoint_bub_ms &p, int vol, sound_t category,
     sounds_since_last_turn.emplace_back( p,
                                          sound_event{ vol, category, description, ambient,
                                                  false, id, variant, seas_str } );
+    mp_snd_emit_log( p, vol, category, description, ambient, "sound" );
 }
 
 void sounds::sound( const tripoint_bub_ms &p, int vol, sound_t category,
@@ -357,6 +393,7 @@ void sounds::add_footstep( const tripoint_bub_ms &p, int volume, int, monster *,
     const std::string seas_str = season_str( seas );
     sounds_since_last_turn.emplace_back( p, sound_event { volume,
                                          sound_t::movement, footstep, false, true, "", "", seas_str} );
+    mp_snd_emit_log( p, volume, sound_t::movement, footstep, true, "footstep" );
 }
 
 template <typename C>
@@ -732,6 +769,22 @@ void sounds::process_sound_markers( Character *you )
         }
 
         // Place footstep markers.
+        // DDA MP diag: role-tagged facts for the vanilla marker path so the
+        // host/graph question ("whose head is this '?' painted on") is
+        // answerable from the log alone.
+        if( netplay::mp_diag_enabled() ) {
+            const int mindist = distance_to_sound;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_sound.log" ) ) {
+                std::fprintf( f, "vmark role=%s av_abs=%s src_abs=%s vol=%d heard=%d dist=%d own=%d vis=%d\n",
+                              mp_snd_role(),
+                              here.get_abs( you->pos_bub() ).to_string().c_str(),
+                              here.get_abs( pos ).to_string().c_str(),
+                              raw_volume, heard_volume, mindist,
+                              pos == you->pos_bub() ? 1 : 0,
+                              you->sees( here, pos ) ? 1 : 0 );
+                std::fclose( f );
+            }
+        }
         if( pos == you->pos_bub() || ( you->sees( here, pos ) &&
                                        ( sound.category != sound_t::sensory ) ) ) {
             // If we are or can see the source, don't draw a marker, except for sonar etc
@@ -779,7 +832,18 @@ void sounds::process_sound_markers( Character *you )
 
         // Then place the sound marker in a random one.
         if( !unseen_points.empty() ) {
-            sound_markers.emplace( random_entry( unseen_points ), sound );
+            const tripoint_bub_ms mp_marker_at = random_entry( unseen_points );
+            sound_markers.emplace( mp_marker_at, sound );
+            if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_sound.log" ) ) {
+                    std::fprintf( f, "vmark placed role=%s av_abs=%s marker_abs=%s desc=%.60s\n",
+                                  mp_snd_role(),
+                                  here.get_abs( you->pos_bub() ).to_string().c_str(),
+                                  here.get_abs( mp_marker_at ).to_string().c_str(),
+                                  sound.description.c_str() );
+                    std::fclose( f );
+                }
+            }
         }
     }
     if( you->is_avatar() ) {
@@ -850,7 +914,24 @@ void sounds::process_avatar_markers( Character *avatar, std::vector<tripoint_bub
     if( avatar == nullptr ) {
         return;
     }
+    // DDA MP v4.0a-6 diag: when DDA_MP_DIAG is set, every avatar sound
+    // marker decision lands in netplay_sound.log — the visible "?" rings on
+    // the host screen get attributed from these facts (absolute positions
+    // to rule out bubble-shift drift).
+    const std::string &mp_snd_dir = netplay::mp_diag_dir();
     const map &here = get_map();
+    /**
+     */
+    const std::string role_tag = mp_snd_role();
+    auto mp_snd_log = [&]( const std::string & s ) {
+        if( mp_snd_dir.empty() ) {
+            return;
+        }
+        if( std::FILE *f = std::fopen( ( mp_snd_dir + "\\netplay_sound.log" ).c_str(), "a" ) ) {
+            std::fputs( ( role_tag + " " + s + "\n" ).c_str(), f );
+            std::fclose( f );
+        }
+    };
     // Deaf characters can't place a "?" from sound: vanilla skips the
     // display path for them entirely.
     if( avatar->is_deaf() ) {
@@ -859,6 +940,8 @@ void sounds::process_avatar_markers( Character *avatar, std::vector<tripoint_bub
     const float volume_multiplier = avatar->hearing_ability();
     const int weather_vol = get_weather().weather_id->sound_attn;
     const tripoint_bub_ms my_pos = avatar->pos_bub();
+    mp_snd_log( string_format( "avmark enter av_abs=%s sndqueue=%zu", here.get_abs( my_pos ).to_string(),
+                               sounds_since_last_turn.size() ) );
     for( std::size_t i = 0; i < sounds_since_last_turn.size(); i++ ) {
         // copy values, the queue may grow while we iterate (see
         // process_sound_markers)
@@ -894,6 +977,13 @@ void sounds::process_avatar_markers( Character *avatar, std::vector<tripoint_bub
                                                 heard_volume, distance_to_sound ) +
                                                 sound.volume ) % unseen_points.size() );
             out.emplace_back( unseen_points[ pick ] );
+            if( !mp_snd_dir.empty() ) {
+                mp_snd_log( string_format( "avmark av_abs=%s src_abs=%s marker_abs=%s vol=%d heard=%d desc=%.60s",
+                                           here.get_abs( my_pos ).to_string(),
+                                           here.get_abs( pos ).to_string(),
+                                           here.get_abs( unseen_points[ pick ] ).to_string(),
+                                           sound.volume, heard_volume, sound.description ) );
+            }
         }
     }
 }

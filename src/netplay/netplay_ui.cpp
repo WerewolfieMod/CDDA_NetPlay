@@ -131,8 +131,9 @@ void show_host_dialog()
 static std::string fat_client_loaded_world;
 
 /* DDA MP v3.9: diagnostics master switch (fat-load notes, tiles frame
- * traces, view probes). Flip to true and rebuild to re-enable. */
-constexpr bool mp_netplay_diag = false;
+ * traces, view probes) — built-in (mp_diag_dir). Default ON without any
+ * env; DDA_MP_DIAG=0|off disables. */
+static const bool mp_netplay_diag = mp_diag_enabled();
 
 // Appends to netplay_tiles.log (same channel as the replay renderer trace).
 static void mp_fat_log( const std::string &msg )
@@ -141,7 +142,7 @@ static void mp_fat_log( const std::string &msg )
         return;
     }
     try {
-        std::ofstream f( "netplay_tiles.log", std::ios::app );
+        std::ofstream f( netplay::mp_diag_dir() + "\\netplay_tiles.log", std::ios::app );
         if( f ) {
             f << msg << "\n";
         }
@@ -614,10 +615,10 @@ void run_view_loop()
             return;
         }
         try {
-            std::ofstream f( "netplay_tiles.log", std::ios::app );
-            if( f ) {
-                f << msg << "\n";
-            }
+                std::ofstream f( netplay::mp_diag_dir() + "\\netplay_tiles.log", std::ios::app );
+                if( f ) {
+                    f << msg << "\n";
+                }
         } catch( ... ) { }
     };
     static int trace_frames = 0;

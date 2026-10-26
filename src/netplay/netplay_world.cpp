@@ -169,7 +169,9 @@ static const trait_id trait_INATTENTIVE( "INATTENTIVE" );
 /* DDA MP v3.9: diagnostics master switch. When false, no netplay_tiles.log /
  * netplay_light_trace.log lines are produced by this TU (mine traces,
  * snapshot size logs). Flip to true and rebuild to re-enable. */
-constexpr bool mp_netplay_diag = false;
+/* DDA MP v3.9: diagnostics master switch — built-in (mp_diag_dir).
+ * Default ON without any env; DDA_MP_DIAG=0|off disables. */
+static const bool mp_netplay_diag = mp_diag_enabled();
 
 /* DDA MP v4.0a-2: each netplay avatar keeps its OWN map memory on the host,
  * keyed by its stable unique id ("netplay_avatar:<nick>"). Freshly seen
@@ -542,7 +544,7 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
         }
     }
     if( mp_netplay_diag && mp_light_trace_this && !mp_light_trace.empty() ) {
-        if( std::FILE *f = std::fopen( "netplay_light_trace.log", "a" ) ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_light_trace.log" ) ) {
             std::fputs( mp_light_trace.c_str(), f );
             std::fclose( f );
         }
