@@ -1230,7 +1230,12 @@ void host_pump_avatar_keys()
             }
         }
         if( here.inbounds( dst ) && npc_ptr->can_move_to( dst ) ) {
+            const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
             npc_ptr->move_to( dst );
+            // DDA MP: this noise came from another player's avatar — the
+            // host's "?" placement must check whether it sees the avatar,
+            // not the tile it just left (which may peek around a corner).
+            sounds::tag_last_sound_as_remote_player( npc_ptr->getID().get_value(), mp_from );
             // show the step to its own session immediately: without this the
             // movement would wait for the parity tick below
             av_send_session_picture( sk.sid, dst, npc_ptr.get() );

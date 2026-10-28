@@ -22,6 +22,7 @@
 #include "effect.h"
 #include "enums.h"
 #include "game.h"
+#include "lightmap.h"
 #include "game_constants.h"
 #include "itype.h" // IWYU pragma: keep
 #include "line.h"
@@ -203,6 +204,10 @@ struct sound_event {
     std::string id;
     std::string variant;
     std::string season;
+    /* DDA MP: npc id of the remote player's avatar that made this noise (-1:
+     * not a remote-player sound). The host's "?" placement uses this to test
+     * whether the PLAYER sees the avatar instead of the tile it just left. */
+    int remote_npc_id = -1;
 };
 
 struct centroid {
@@ -276,9 +281,14 @@ static void mp_snd_emit_log( const tripoint_bub_ms &p, int vol, sounds::sound_t 
     const tripoint_abs_ms a = get_map().get_abs( p );
     char abs_buf[64];
     std::snprintf( abs_buf, sizeof( abs_buf ), "(%d,%d,%d)", a.x(), a.y(), a.z() );
+    char av_buf[64] = "-";
+    {
+        const tripoint_abs_ms av = get_map().get_abs( get_player_character().pos_bub() );
+        std::snprintf( av_buf, sizeof( av_buf ), "(%d,%d,%d)", av.x(), av.y(), av.z() );
+    }
     if( std::FILE *f = std::fopen( ( dir + "\\netplay_sound.log" ).c_str(), "a" ) ) {
-        std::fprintf( f, "emit role=%s via=%s abs=%s vol=%d cat=%d amb=%d desc=%.60s\n",
-                      mp_snd_role(), via, abs_buf, vol, static_cast<int>( category ),
+        std::fprintf( f, "emit role=%s via=%s abs=%s avat=%s vol=%d cat=%d amb=%d desc=%.60s\n",
+                      mp_snd_role(), via, abs_buf, av_buf, vol, static_cast<int>( category ),
                       ambient ? 1 : 0, description.c_str() );
         std::fclose( f );
     }
@@ -394,6 +404,17 @@ void sounds::add_footstep( const tripoint_bub_ms &p, int volume, int, monster *,
     sounds_since_last_turn.emplace_back( p, sound_event { volume,
                                          sound_t::movement, footstep, false, true, "", "", seas_str} );
     mp_snd_emit_log( p, volume, sound_t::movement, footstep, true, "footstep" );
+}
+
+void sounds::tag_last_sound_as_remote_player( int npc_id, const tripoint_bub_ms &from )
+{
+    if( sounds_since_last_turn.empty() ) {
+        return;
+    }
+    auto &last = sounds_since_last_turn.back();
+    if( last.first == from && last.second.category == sound_t::movement ) {
+        last.second.remote_npc_id = npc_id;
+    }
 }
 
 template <typename C>
@@ -612,6 +633,19 @@ void sounds::process_sound_markers( Character *you )
     bool is_deaf = you->is_deaf();
     const float volume_multiplier = you->hearing_ability();
     const int weather_vol = get_weather().weather_id->sound_attn;
+    // DDA MP diag: queue lifecycle facts — a queued event whose source is no
+    // longer the avatar's own tile turns into a "stranger's" marker, so the
+    // entry/exit sizes tell whether own footsteps leak into later turns.
+    if( netplay::mp_diag_enabled() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_sound.log" ) ) {
+            std::fprintf( f, "pmark enter role=%s av_abs=%s isav=%d q=%zu\n",
+                          mp_snd_role(),
+                          here.get_abs( you->pos_bub() ).to_string().c_str(),
+                          you->is_avatar() ? 1 : 0,
+                          sounds_since_last_turn.size() );
+            std::fclose( f );
+        }
+    }
     // NOLINTNEXTLINE(modernize-loop-convert)
     for( std::size_t i = 0; i < sounds_since_last_turn.size(); i++ ) {
         // copy values instead of making references here to fix use-after-free error
@@ -769,23 +803,54 @@ void sounds::process_sound_markers( Character *you )
         }
 
         // Place footstep markers.
+        // DDA MP: the avatar's own footstep is queued on the tile it leaves
+        // and processed after the move, so the own-tile test below misses it
+        // and (when that tile is out of sight, e.g. at night) paints a "?"
+        // right behind the walker. Vanilla already treats a movement sound
+        // within one tile as "from the player" (see from_player below), so
+        // never mark those either.
+        const bool own_move_near = sound.category == sound_t::movement &&
+                                   distance_to_sound <= 1;
+        // Visibility of the sound's source. For a remote player's step the
+        // source tile is the one already left (often still lit and in view),
+        // so judge by where that avatar stands NOW: walking around a corner
+        // hides the walker while the tile behind stays visible.
+        // NB: the light cache in a netplay session is rebuilt around the
+        // client avatar, so pl_sees() reports "seen" for its surroundings
+        // even for the host's query; use the cache-independent optical trace.
+        bool source_seen = you->sees( here, pos );
+        if( sound.remote_npc_id >= 0 ) {
+            source_seen = false;
+            for( npc &guy : g->all_npcs() ) {
+                if( guy.getID().get_value() == sound.remote_npc_id ) {
+                    const bool los = here.sees( you->pos_bub(), guy.pos_bub(),
+                                                std::max( 1, rl_dist( you->pos_bub(), guy.pos_bub() ) ) );
+                    // Darkness hides a source just like a wall does.
+                    const bool dark = here.light_at( guy.pos_bub() ) <= lit_level::LOW;
+                    source_seen = los && !dark;
+                    break;
+                }
+            }
+        }
         // DDA MP diag: role-tagged facts for the vanilla marker path so the
         // host/graph question ("whose head is this '?' painted on") is
         // answerable from the log alone.
         if( netplay::mp_diag_enabled() ) {
             const int mindist = distance_to_sound;
             if( std::FILE *f = netplay::mp_diag_open( "netplay_sound.log" ) ) {
-                std::fprintf( f, "vmark role=%s av_abs=%s src_abs=%s vol=%d heard=%d dist=%d own=%d vis=%d\n",
+                std::fprintf( f, "vmark role=%s av_abs=%s src_abs=%s vol=%d heard=%d dist=%d own=%d vis=%d nearmove=%d remote=%d\n",
                               mp_snd_role(),
                               here.get_abs( you->pos_bub() ).to_string().c_str(),
                               here.get_abs( pos ).to_string().c_str(),
                               raw_volume, heard_volume, mindist,
                               pos == you->pos_bub() ? 1 : 0,
-                              you->sees( here, pos ) ? 1 : 0 );
+                              source_seen ? 1 : 0,
+                              own_move_near ? 1 : 0,
+                              sound.remote_npc_id );
                 std::fclose( f );
             }
         }
-        if( pos == you->pos_bub() || ( you->sees( here, pos ) &&
+        if( pos == you->pos_bub() || own_move_near || ( source_seen &&
                                        ( sound.category != sound_t::sensory ) ) ) {
             // If we are or can see the source, don't draw a marker, except for sonar etc
             continue;
@@ -830,16 +895,27 @@ void sounds::process_sound_markers( Character *you )
             }
         }
 
-        // Then place the sound marker in a random one.
+        // Then place the sound marker in a random one. Remote steps may have
+        // no unseen tile around them (the light cache says "visible"), so for
+        // those fall back to the source tile itself.
+        tripoint_bub_ms marker_at;
+        bool have_marker = false;
         if( !unseen_points.empty() ) {
-            const tripoint_bub_ms mp_marker_at = random_entry( unseen_points );
-            sound_markers.emplace( mp_marker_at, sound );
+            marker_at = random_entry( unseen_points );
+            have_marker = true;
+        } else if( sound.remote_npc_id >= 0 ) {
+            marker_at = pos;
+            have_marker = true;
+        }
+        if( have_marker ) {
+            sound_markers.emplace( marker_at, sound );
             if( netplay::mp_diag_enabled() ) {
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_sound.log" ) ) {
-                    std::fprintf( f, "vmark placed role=%s av_abs=%s marker_abs=%s desc=%.60s\n",
+                    std::fprintf( f, "vmark placed role=%s av_abs=%s marker_abs=%s unseen=%zu remote=%d desc=%.60s\n",
                                   mp_snd_role(),
                                   here.get_abs( you->pos_bub() ).to_string().c_str(),
-                                  here.get_abs( mp_marker_at ).to_string().c_str(),
+                                  here.get_abs( marker_at ).to_string().c_str(),
+                                  unseen_points.size(), sound.remote_npc_id,
                                   sound.description.c_str() );
                     std::fclose( f );
                 }
@@ -848,6 +924,14 @@ void sounds::process_sound_markers( Character *you )
     }
     if( you->is_avatar() ) {
         sounds_since_last_turn.clear();
+    }
+    if( netplay::mp_diag_enabled() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_sound.log" ) ) {
+            std::fprintf( f, "pmark exit role=%s isav=%d q_after=%zu\n",
+                          mp_snd_role(), you->is_avatar() ? 1 : 0,
+                          sounds_since_last_turn.size() );
+            std::fclose( f );
+        }
     }
 }
 
@@ -959,8 +1043,9 @@ void sounds::process_avatar_markers( Character *avatar, std::vector<tripoint_bub
         // Sources we can see don't get markers (sonar etc. still does), the
         // own tile never does. Same as the player path.
         const bool diff_z = pos.z() != my_pos.z();
-        if( pos == my_pos || ( !diff_z && sound.category != sound_t::sensory &&
-                               avatar->sees( here, pos ) ) ) {
+        if( pos == my_pos || ( sound.category == sound_t::movement && distance_to_sound <= 1 ) ||
+            ( !diff_z && sound.category != sound_t::sensory &&
+              avatar->sees( here, pos ) ) ) {
             continue;
         }
         const int err_offset = avatar_marker_err_offset( sound, pos, heard_volume, distance_to_sound );

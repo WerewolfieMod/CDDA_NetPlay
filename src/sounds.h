@@ -100,6 +100,11 @@ void mp_shift_bubble_positions( const point_rel_ms &shift );
  * event is re-processed. out: bub positions to draw. */
 void process_avatar_markers( Character *avatar, std::vector<tripoint_bub_ms> &out );
 
+/* DDA MP: mark the most recently queued sound as made by a remote player's
+ * avatar (npc id). The host then marks such noises by whether it sees the
+ * avatar itself, not the tile the avatar just stepped off. */
+void tag_last_sound_as_remote_player( int npc_id, const tripoint_bub_ms &from );
+
 // Return list of points that have sound events the player can hear.
 std::vector<tripoint_bub_ms> get_footstep_markers();
 // Return list of all sounds and the list of sound cluster centroids.
