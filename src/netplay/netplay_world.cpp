@@ -764,7 +764,30 @@ void host_game_tick()
             // of painting darkness over it.
             continue;
         }
-        av_send_session_picture( sid, av_session_center( sid ), viewer );
+        tripoint_bub_ms center = av_session_center( sid );
+        bool mp_re_anchored = false;
+        if( viewer != nullptr ) {
+            // DDA MP v4.0a-6: the streamed frame must fit inside the map.
+            // Between the avatar's own steps the bubble lives with the host
+            // player, and a roaming avatar ends near the bubble edge — the
+            // frame's outer cells then mine outside of the map and arrive
+            // empty: the black edge-ring that only cleared after the client
+            // stepped onto the dark area. Before building, re-anchor the
+            // reality bubble on the avatar with the same light anchor the
+            // step pump uses, then hand it back so the host player keeps its
+            // own vanilla anchor between snapshots.
+            if( center.x() < FRAMEW / 2 || center.y() < FRAMEH / 2 ||
+                center.x() + FRAMEW / 2 >= MAPSIZE_X ||
+                center.y() + FRAMEH / 2 >= MAPSIZE_Y ) {
+                g->mp_anchor_map_on( *viewer, true );
+                center = viewer->pos_bub();
+                mp_re_anchored = true;
+            }
+        }
+        av_send_session_picture( sid, center, viewer );
+        if( mp_re_anchored ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
     }
 }
 
