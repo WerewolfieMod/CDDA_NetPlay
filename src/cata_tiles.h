@@ -1118,6 +1118,13 @@ class cata_tiles
         void set_replay_seeds( bool val ) {
             replay_seeds = val;
         }
+        /// DDA MP v4.0a-4: frame cells' bub coordinates are camera-relative,
+        /// so random-weighted sprite variants would re-roll every step. The
+        /// backend adds this offset (abs origin - pivot anchor) to the seed
+        /// coordinates, making variants stable per world tile.
+        void set_replay_seed_offset( const point &off ) {
+            replay_seed_offset = off;
+        }
 
         /**
          * Initialize the current tileset (load tile images, load mapping), using the current
@@ -1287,6 +1294,7 @@ class cata_tiles
         bool disable_occlusion = false;
         bool world_backed = true;
         bool replay_seeds = false; // DDA MP v4.0a-2, see set_replay_seeds
+        point replay_seed_offset; // DDA MP v4.0a-4, see set_replay_seed_offset
 
         bool do_draw_explosion = false;
         bool do_draw_custom_explosion = false;

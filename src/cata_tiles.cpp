@@ -2935,7 +2935,7 @@ unsigned int cata_tiles::get_variant_seed( const tile_type &display_tile, TILE_C
     // coordinates are the host's per-tile coordinates — stable per world tile.
     const bool mp_replay = replay_seeds;
     const point mp_seed_pos = mp_replay
-            ? pos.raw().xy()
+            ? pos.raw().xy() + replay_seed_offset
             : here.get_abs( pos ).raw().xy();
     creature_tracker &creatures = get_creature_tracker();
     // TODO: determine ways other than category to differentiate more types of sprites

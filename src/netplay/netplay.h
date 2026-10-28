@@ -166,6 +166,15 @@ struct snapshot {
     /// Optional parallel sprite payload, same layout as cells. May be empty
     /// (host without tile mining, synthetic test frames...).
     std::vector<tile_cell> tiles;
+    /// DDA MP v4.0a-4: absolute world coordinates of the frame's pivot cell
+    /// (the host's map.get_abs(center)). Random-weighted sprite variants seed
+    /// off tile position; the client's frame cells are camera-relative, so a
+    /// streamed origin keeps the variant stable per world tile (the flickering
+    /// ivan-chay flower). false = legacy host (camera-relative seeds).
+    bool has_origin = false;
+    int origin_x = 0;
+    int origin_y = 0;
+    int origin_z = 0;
 };
 
 /// One keyboard pseudo-event from the client.
@@ -371,6 +380,10 @@ bool tiles_replay_enabled();
  * without a loaded world. Opaque handle: nullptr = unavailable/failure. */
 void *tiles_backend_create();
 void tiles_backend_destroy( void *handle );
+/// DDA MP v4.0a-4: absolute world coordinates of the current snapshot's
+/// pivot cell (from the streamed origin). Call before tiles_backend_begin
+/// for each frame; has=false keeps the legacy camera-relative seeds.
+void tiles_backend_set_origin( void *handle, int ax, int ay, int az, bool has );
 /// Start one frame batch: clip rect (dest + pixel size), pivot in bubble
 /// coords (window center). Returns false when the frame must be skipped.
 bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,

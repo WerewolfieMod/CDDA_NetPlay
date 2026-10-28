@@ -652,6 +652,17 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.width = FRAMEW;
     out.height = FRAMEH;
     out.cells.reserve( FRAMEW * FRAMEH );
+    // DDA MP v4.0a-4: stream the frame's absolute world origin — the pivot
+    // cell is the client avatar's own cell, so the streamed cell coordinates
+    // change every step; random-weighted sprite variants seed off position,
+    // and this offset keeps them stable per world tile.
+    {
+        const tripoint_abs_ms oabs = here.get_abs( center );
+        out.has_origin = true;
+        out.origin_x = oabs.raw().xy().x;
+        out.origin_y = oabs.raw().xy().y;
+        out.origin_z = center.z();
+    }
 #if defined(TILES)
     cata_cursesport::WINDOW *wraw = win.get<cata_cursesport::WINDOW>();
     for( int y = 0; y < FRAMEH; y++ ) {

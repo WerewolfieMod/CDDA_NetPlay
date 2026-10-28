@@ -805,6 +805,11 @@ void run_view_loop()
                             const int dest_x = center_px_x - canvas_w / 2;
                             const int dest_y = center_px_y - canvas_h / 2;
                             constexpr int PIVOT = 32; // inside the 48-tile bubble
+                            // DDA MP v4.0a-4: feed the streamed absolute origin
+                            // so sprite variant seeds are world-stable.
+                            netplay::tiles_backend_set_origin( tiles_backend,
+                                                               snap.origin_x, snap.origin_y,
+                                                               snap.origin_z, snap.has_origin );
                             if( netplay::tiles_backend_begin( tiles_backend, dest_x, dest_y,
                                                               canvas_w, canvas_h, PIVOT, PIVOT ) ) {
                                 mp_canvas_ok = true;

@@ -1015,6 +1015,14 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             // on the client; the ascii cells carry the same glyph anyway).
             p.push_back( static_cast<char>( t.marker ) );
         }
+        // DDA MP v4.0a-4: absolute world origin of the frame's pivot cell,
+        // written after the cell loop. The reader's exact-fit ladder decodes
+        // this 12-byte trailer first; legacy payloads fall through as before.
+        if( snap.has_origin ) {
+            put_i32( p, snap.origin_x );
+            put_i32( p, snap.origin_y );
+            put_i32( p, snap.origin_z );
+        }
     }
     return p;
 }
@@ -1181,7 +1189,11 @@ static void client_run( socket_t sock )
                         if( probe.ok && tc > 0
                             && tc <= ( body.size() - probe.off ) / 6 ) {
                             const size_t tiles_off = r.off;
-                            auto try_decode = [&]( size_t extras ) {
+                            bool got_origin = false;
+                            int o_x = 0;
+                            int o_y = 0;
+                            int o_z = 0;
+                            auto try_decode = [&]( size_t extras, bool with_origin ) {
                                 reader rr;
                                 rr.data = probe.data;
                                 rr.size = probe.size;
@@ -1240,34 +1252,49 @@ static void client_run( socket_t sock )
                                     }
                                     out.push_back( std::move( t ) );
                                 }
+                                if( with_origin && rr.ok ) {
+                                    o_x = rr.get_i32();
+                                    o_y = rr.get_i32();
+                                    o_z = rr.get_i32();
+                                }
                                 // exact fit decides which layout ran
                                 if( !rr.ok || rr.off != body.size() ) {
                                     out.clear();
                                     return out;
                                 }
+                                if( with_origin ) {
+                                    got_origin = true;
+                                }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 16 );
+                            std::vector<tile_cell> parsed = try_decode( 16, true );
                             if( parsed.empty() ) {
-                                parsed = try_decode( 15 );
+                                parsed = try_decode( 16, false );
                             }
                             if( parsed.empty() ) {
-                                parsed = try_decode( 14 );
+                                parsed = try_decode( 15, false );
                             }
                             if( parsed.empty() ) {
-                                parsed = try_decode( 13 );
+                                parsed = try_decode( 14, false );
                             }
                             if( parsed.empty() ) {
-                                parsed = try_decode( 10 );
+                                parsed = try_decode( 13, false );
                             }
                             if( parsed.empty() ) {
-                                parsed = try_decode( 7 );
+                                parsed = try_decode( 10, false );
                             }
                             if( parsed.empty() ) {
-                                parsed = try_decode( 0 );
+                                parsed = try_decode( 7, false );
+                            }
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 0, false );
                             }
                             if( !parsed.empty() ) {
                                 snap.tiles = std::move( parsed );
+                                snap.has_origin = got_origin;
+                                snap.origin_x = o_x;
+                                snap.origin_y = o_y;
+                                snap.origin_z = o_z;
                             }
                         }
                     }

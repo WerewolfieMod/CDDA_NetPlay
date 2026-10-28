@@ -7792,6 +7792,12 @@ struct netplay_tile_backend {
     std::unique_ptr<netplay_tile_context> tiles;
     std::unique_ptr<display_buffer_draw_scope> scope;
     tripoint_bub_ms anchor;
+    // DDA MP v4.0a-4: absolute world origin of the current snapshot's pivot
+    // cell, consumed in tiles_backend_begin for stable variant seeds.
+    int origin_x = 0;
+    int origin_y = 0;
+    int origin_z = 0;
+    bool has_origin = false;
     // DDA MP: streamed smooth-lighting texels of the current snapshot, laid
     // out like one lightmap level (light columns + reach columns); z is the
     // anchor's z. Reset per frame batch, refilled from the snapshot cells.
@@ -7959,9 +7965,20 @@ static int mp_set_cell_xmax = -1;
 static int mp_set_cell_ymin = 0;
 static int mp_set_cell_ymax = -1;
 
-bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
-                          int px_h, int pivot_bub_x, int pivot_bub_y )
+void tiles_backend_set_origin( void *handle, int ax, int ay, int az, bool has )
 {
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr ) {
+        return;
+    }
+    b->origin_x = ax;
+    b->origin_y = ay;
+    b->origin_z = az;
+    b->has_origin = has;
+}
+
+bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
+                          int px_h, int pivot_bub_x, int pivot_bub_y ){
     netplay_tile_backend *b = netplay_backend_cast( handle );
     if( b == nullptr || !b->tiles || !b->tiles->is_valid() ) {
         return false;
@@ -7981,6 +7998,16 @@ bool tiles_backend_begin( void *handle, int dest_x, int dest_y, int px_w,
     // DDA MP v4.0a-2: random-variant sprites seed off streamed bub coords for
     // the whole replay batch (the client's own map origin is meaningless).
     b->tiles->set_replay_seeds( true );
+    // DDA MP v4.0a-4: stable per-world-tile seeds for random-weighted sprite
+    // variants (the flickering ivan-chay flower). offset = abs origin - the
+    // local pivot anchor; without a streamed origin (legacy host) the offset
+    // is zero, which keeps the historical behavior.
+    if( b->tiles ) {
+        b->tiles->set_replay_seed_offset( b->has_origin
+                                          ? point( b->origin_x - b->anchor.raw().xy().x,
+                                                   b->origin_y - b->anchor.raw().xy().y )
+                                          : point( 0, 0 ) );
+    }
     b->tiles->sanitize_replay_lighting();
     // Streamed light texels arrive fresh each batch; reset what last frame
     // held. netplay_ui stores them, then calls tiles_backend_enable_lighting.
