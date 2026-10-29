@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <csignal>
 #include <cstring>
@@ -331,6 +332,11 @@ struct netplay_state {
     std::string avatar_deny_reason;
     snapshot latest;
     bool have_latest = false;
+    /* DDA MP v4.0a-7: one short host->client status line (turn pacing hints),
+     * guarded by hover_mutex; the view loop consumes it. */
+    std::mutex hover_mutex;
+    std::string hover_text;
+    bool have_hover = false;
     std::vector<std::vector<char>> client_out;
     std::mutex client_out_mutex;
 
@@ -1055,6 +1061,14 @@ bool host_pop_sid_key( sid_key &out )
     // is just a stable drain order
     out = state.avatar_keys.begin()->second;
     state.avatar_keys.erase( state.avatar_keys.begin() );
+    if( mp_diag_enabled() ) {
+        const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch() ).count();
+        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "srv pop wms=%lld sid=%d code=%u\n", wms, out.sid, out.code );
+            std::fclose( f );
+        }
+    }
     return true;
 }
 
@@ -1115,8 +1129,25 @@ bool host_send_snapshot_to_sid( int sid, const snapshot &snap )
     return true;
 }
 
-bool host_pop_key( uint32_t &code )
+bool host_send_hover_to_sid( int sid, const std::string &text )
 {
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_str( p, text );
+    if( !send_all( it->second, encode_frame( frame::HOVER, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool host_pop_key( uint32_t &code ){
     std::lock_guard<std::mutex> lk( state.keys_mutex );
     if( state.host_keys.empty() ) {
         return false;
@@ -1378,6 +1409,16 @@ static void client_run( socket_t sock )
             r.data = payload.data();
             r.size = payload.size();
             local_deny = r.get_str();
+        } else if( op == frame::HOVER ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string text = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.hover_mutex );
+                state.hover_text = text;
+                state.have_hover = true;
+            }
         } else if( op == frame::BYE ) {
             break;
         }
@@ -1503,10 +1544,39 @@ bool client_receive( snapshot &out )
     return true;
 }
 
+#if !defined(TILES)
+/* Curses-only builds: no window title to update, the hint stays silent. */
+void client_status_hint( const std::string &text )
+{
+    ( void )text;
+}
+#endif
+
+bool client_take_hover( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.hover_mutex );
+    if( !state.have_hover ) {
+        return false;
+    }
+    out = state.hover_text;
+    state.have_hover = false;
+    return true;
+}
+
 void client_send_keys( const std::vector<key_event> &keys )
 {
     if( !state.connected ) {
         return;
+    }
+    if( mp_diag_enabled() ) {
+        const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch() ).count();
+        for( const key_event &k : keys ) {
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "cli key wms=%lld code=%u\n", wms, k.code );
+                std::fclose( f );
+            }
+        }
     }
     std::vector<char> p;
     put_u32( p, static_cast<uint32_t>( keys.size() ) );

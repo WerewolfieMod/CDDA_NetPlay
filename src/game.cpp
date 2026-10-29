@@ -10466,10 +10466,10 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
         if( npc *as_npc = dynamic_cast<npc *>( &anchor );
             as_npc != nullptr && !as_npc->is_active() ) {
             // The bubble left the avatar behind earlier; bring it into the
-            // active world again, and give it one turn's worth of move
-            // points right away (its pool starved while it was unloaded).
+            // active world again. Move points are NOT granted here: the pool
+            // is refilled once per world turn (host_note_world_turn), or the
+            // client could walk without a host turn.
             load_npcs( &here );
-            as_npc->mod_moves( 100 );
         }
         return;
     }

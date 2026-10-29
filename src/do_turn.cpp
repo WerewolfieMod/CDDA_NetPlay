@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <map>
 #include <memory>
 #include <optional>
@@ -57,6 +58,7 @@
 #include "mtype.h"
 #include "music.h"
 #include "npc.h"
+#include "netplay/netplay.h"
 #include "options.h"
 #include "output.h"
 #include "overmapbuffer.h"
@@ -67,6 +69,10 @@
 #include "rng.h"
 #include "scent_map.h"
 #include "sdlsound.h"
+#if defined(TILES)
+#   include "sdltiles.h" // tilecontext (draw cache invalidation)
+#   include "sdl_wrappers.h" // SDL_PumpEvents (keep the window responsive)
+#endif
 #include "simple_pathfinding.h"
 #include "sounds.h"
 #include "stats_tracker.h"
@@ -548,6 +554,56 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
+    // DDA MP v4.0a-7: strict turn parity — do not advance the world until
+    // every connected client gave its order this round. The earlier gate in
+    // handle_action() ran AFTER the world had already ticked, which refilled
+    // the clients' move pools (they kept walking while the host stood still).
+    if( netplay::host_turn_blocked() ) {
+        netplay::host_pump_snapshot_requests();
+        netplay::host_pump_avatar_ops();
+        netplay::host_pump_avatar_keys();
+        // Refresh idle clients occasionally, not 17 times a second: each frame
+        // is a full 1519-tile payload, and nothing changes while we wait.
+        static std::chrono::steady_clock::time_point mp_last_idle_snap;
+        const auto mp_idle_now = std::chrono::steady_clock::now();
+        if( mp_idle_now - mp_last_idle_snap > std::chrono::milliseconds( 250 ) ) {
+            mp_last_idle_snap = mp_idle_now;
+            netplay::host_game_tick();
+        }
+        // The host just took its turn; while we wait for the client the frame
+        // must still be re-rendered, otherwise the host's own screen keeps the
+        // pre-move picture (the client already received the new one).
+        invalidate_main_ui_adaptor();
+#if defined(TILES)
+        if( tilecontext ) {
+            tilecontext->set_draw_cache_dirty();
+        }
+#endif
+        ui_manager::redraw();
+        // Draw the waiting hint AFTER the frame (redraw erases the screen, so a
+        // hint drawn earlier is wiped out and never reaches the display).
+        const int mp_wait_w = std::min( TERMX, 48 );
+        static catacurses::window mp_wait_win;
+        if( !mp_wait_win ) {
+            mp_wait_win = catacurses::newwin( 1, mp_wait_w,
+                                              point( std::max( 0, ( TERMX - mp_wait_w ) / 2 ), 0 ) );
+        }
+        werase( mp_wait_win );
+        mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
+        wnoutrefresh( mp_wait_win );
+#if defined(TILES)
+        // ui_manager::redraw only fills the display buffer; without an explicit
+        // present the host keeps seeing the frame from before its own move
+        // until the client's input arrives.
+        refresh_display();
+        // Pump the platform event queue, or Windows marks the window as "Not
+        // responding" while we sit in the waiting loop.
+        SDL_PumpEvents();
+#endif
+        std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
+        return false;
+    }
+
     drain_renderer_recovery();
 
     weather_manager &weather = get_weather();
@@ -829,5 +885,7 @@ bool game::do_turn()
     // DDA MP: stream the current view to connected network sessions once per
     // world turn (and collect any queued remote keystrokes for the next turn).
     netplay::host_game_tick();
+    // DDA MP v4.0a-7: a fresh turn round — clients may give their orders again.
+    netplay::host_note_world_turn();
     return false;
 }

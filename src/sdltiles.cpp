@@ -8371,5 +8371,23 @@ void tiles_backend_end( void *handle )
     b->tiles->set_replay_seeds( false );
 }
 
+/* DDA MP v4.0a-7: turn-pacing hint on the client. There is no spare screen
+ * space in the replay loop, so ride the window title (visible while waiting
+ * for the host's turn). Empty text restores the plain title. */
+void client_status_hint( const std::string &text )
+{
+    if( !::window ) {
+        return;
+    }
+    static std::string last;
+    if( text == last ) {
+        return;
+    }
+    last = text;
+    const std::string base = "Cataclysm: Dark Days Ahead";
+    const std::string title = text.empty() ? base : base + " — " + text;
+    SetWindowTitle( ::window.get(), title.c_str() );
+}
+
 } // namespace netplay
 #endif // TILES

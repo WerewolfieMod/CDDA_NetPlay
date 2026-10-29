@@ -6,6 +6,7 @@
 #include "netplay.h"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <string>
 
@@ -685,6 +686,9 @@ void run_view_loop()
     int cur_w = -1;
     int cur_h = -1;
     catacurses::window win;
+    // DDA MP v4.0a-7: one-line turn-pacing hint drawn over the picture.
+    catacurses::window mp_hint_win;
+    std::string mp_hint_text;
 
     auto ensure_window = [&]( int width, int height ) {
         if( cur_w == width && cur_h == height ) {
@@ -699,12 +703,24 @@ void run_view_loop()
 
     while( !voluntary_quit ) {
         input_context ctxt( "NETPLAY_VIEW", keyboard_mode::keycode );
-        ctxt.set_timeout( 150 ); // view mode cadence; handle_input blocks up to this
+        // DDA MP v4.0a-7: always redraw at ~33 fps. A step's picture arrives
+        // between world turns; polling only every 150 ms made it appear "after
+        // the tick" depending on when it landed.
+        ctxt.set_timeout( 30 );
         ctxt.register_action( "QUIT" );
         ctxt.register_action( "ANY_INPUT" );
         ctxt.register_directions();
 
         while( client_is_connected() ) {
+            // DDA MP v4.0a-7: turn-pacing hint from the host ("waiting for
+            // other players..."), shown above the picture and in the title.
+            {
+                std::string mp_hint;
+                if( netplay::client_take_hover( mp_hint ) ) {
+                    mp_hint_text = mp_hint;
+                    netplay::client_status_hint( mp_hint );
+                }
+            }
 #if defined(TILES)
             // DDA MP v3.9: service any queued renderer-recovery work before
             // drawing. The game's own loop does this per tick and inside the
@@ -741,6 +757,29 @@ void run_view_loop()
                 // request loop above.
                 mp_have_picture = true;
                 ensure_window( snap.width, snap.height );
+                // DDA MP diag: when did the client actually adopt a picture
+                // (signature of a few cells tells changed frames apart).
+                if( mp_netplay_diag ) {
+                    static int mp_rx_count = 0;
+                    static std::size_t mp_last_hash = 0;
+                    std::size_t mp_hash = 1469598103934665603ull;
+                    for( const cell &cc : snap.cells ) {
+                        mp_hash ^= static_cast<std::size_t>( cc.glyph );
+                        mp_hash *= 1099511628211ull;
+                        mp_hash ^= static_cast<std::size_t>( cc.color );
+                        mp_hash *= 1099511628211ull;
+                    }
+                    if( mp_rx_count < 400 && mp_hash != mp_last_hash ) {
+                        mp_last_hash = mp_hash;
+                        ++mp_rx_count;
+                        const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::system_clock::now().time_since_epoch() ).count();
+                        mp_tlog( string_format( "cli snap wms=%lld #%d hash=%llx tiles=%zu",
+                                                wms, mp_rx_count,
+                                                static_cast<unsigned long long>( mp_hash ),
+                                                snap.tiles.size() ) );
+                    }
+                }
                 if( mp_ascii_debug ) {
                     werase( win );
                     draw_border( win, c_white, _( "Cata server" ) );
@@ -1112,6 +1151,24 @@ void run_view_loop()
                 mvwprintz( catacurses::stdscr, point( 1, 1 ), c_light_gray,
                            _( "Waiting for the host picture..." ) );
                 wnoutrefresh( catacurses::stdscr );
+            }
+
+            // DDA MP v4.0a-7: overlay the turn-pacing hint on top of the
+            // freshly stamped canvas (the canvas is stamped earlier in this
+            // iteration, so the text survives until the present below).
+            if( !mp_hint_text.empty() ) {
+                const int mp_hint_w = std::min( TERMX, 48 );
+                if( !mp_hint_win ) {
+                    mp_hint_win = catacurses::newwin( 1, mp_hint_w,
+                                                      point( std::max( 0, ( TERMX - mp_hint_w ) / 2 ), 0 ) );
+                }
+                werase( mp_hint_win );
+                std::string s = mp_hint_text;
+                if( static_cast<int>( s.size() ) > mp_hint_w ) {
+                    s.resize( mp_hint_w );
+                }
+                mvwprintz( mp_hint_win, point( 0, 0 ), c_yellow, s );
+                wnoutrefresh( mp_hint_win );
             }
 
             // Present the freshly drawn frame. The game's own main loop calls

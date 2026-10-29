@@ -70,6 +70,7 @@
 #include "mdarray.h"
 #include "messages.h"
 #include "monster.h"
+#include "netplay/netplay.h"
 #include "move_mode.h"
 #include "mtype.h"
 #include "mutation.h"
@@ -270,6 +271,13 @@ input_context game::get_player_input( std::string &action )
         ctxt.register_action( "QUIT", to_translation( "Accept your fate" ) );
     } else {
         ctxt = get_default_mode_input_context();
+        // DDA MP v4.0a-7: while hosting, the input wait must not be indefinite:
+        // the host poll loop is what feeds remote avatar keystrokes. Without a
+        // timeout the client's step sat in the queue until the host pressed
+        // something of its own (its picture only updated on the next host turn).
+        if( netplay::host_is_running() && netplay::host_session_count() > 0 ) {
+            ctxt.set_timeout( 30 );
+        }
     }
 
     here.update_visibility_cache( pos.z() );

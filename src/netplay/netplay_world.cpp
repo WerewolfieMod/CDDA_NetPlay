@@ -744,6 +744,16 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center,
     }
     snapshot snap;
     build_host_snapshot( snap, center, viewer );
+    if( netplay::mp_diag_enabled() ) {
+        const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch() ).count();
+        const tripoint_bub_ms vp = viewer != nullptr ? viewer->pos_bub() : get_avatar().pos_bub();
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "srv snap wms=%lld sid=%d center=%d,%d viewer=%d,%d\n",
+                          wms, sid, center.x(), center.y(), vp.x(), vp.y() );
+            std::fclose( f );
+        }
+    }
     netplay::host_send_snapshot_to_sid( sid, snap );
 }
 
@@ -1192,6 +1202,14 @@ void host_pump_avatar_ops()
  * does not fast-forward the world under the others; the host player keeps
  * its own do_turn ticks whenever it acts. Flag map is main-thread only. */
 static std::map<int, bool> av_acted_since_tick;
+/* DDA MP v4.0a-7: per-session move pool, owned by netplay. The avatar NPC is
+ * unloaded and reloaded whenever the reality bubble flips between the host and
+ * the client, and the NPC loader resets `moves` to 100 on every load — the
+ * engine pool alone therefore let a client walk without limit. */
+static std::map<int, int> av_move_pool;
+/* DDA MP v4.0a-7: session is holding an action that cannot pay until the next
+ * world turn — do not retry (and re-hint) it every pump cycle. */
+static std::map<int, bool> av_waiting_for_turn;
 
 static bool av_all_acted()
 {
@@ -1208,6 +1226,11 @@ void host_pump_avatar_keys()
 {
     netplay::sid_key sk;
     while( netplay::host_pop_sid_key( sk ) ) {
+        if( av_waiting_for_turn[sk.sid] ) {
+            // Out-of-turn key (the pool is spent): ignore it rather than replay
+            // it later. Cleared when the host's turn starts a new round.
+            continue;
+        }
         const auto it = av_sid_to_npc.find( sk.sid );
         if( it == av_sid_to_npc.end() ) {
             // watcher: legacy host player injection
@@ -1258,24 +1281,40 @@ void host_pump_avatar_keys()
         // turn). Speed, terrain and obstacles all cost real move points, so
         // the player's keyrate is naturally limited to what the body can do
         // per turn instead of flooding the world with steps.
+        int mp_step_cost = 0;
         {
             const tripoint_bub_ms pos = npc_ptr->pos_bub();
             const bool diag = trigdist && pos.x() != dst.x() && pos.y() != dst.y();
-            const int cost = npc_ptr->run_cost( here.combined_movecost( pos, dst ), diag );
-            if( cost > npc_ptr->get_moves() ) {
+            mp_step_cost = npc_ptr->run_cost( here.combined_movecost( pos, dst ), diag );
+            auto pool_it = av_move_pool.find( sk.sid );
+            if( pool_it == av_move_pool.end() ) {
+                pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
+            }
+            if( mp_step_cost > pool_it->second ) {
                 // pool exhausted: the move waits for the next world turn;
                 // the key is NOT eaten — the session keeps its single action
                 // in flight until the pool can pay for it. Break, not
                 // continue: the key is back at the front of its slot and
                 // would spin this pump forever otherwise; the next pump run
                 // (after the next world turn refills the pool) retries it.
-                netplay::host_put_back_sid_key( sk );
+                // The step cannot be paid: DROP the key (do not queue it for a
+                // later turn — a delayed automatic move reads as "my input was
+                // ignored and then happened by itself"). The player presses
+                // again when the host's turn starts a new round.
+                if( !av_waiting_for_turn[sk.sid] ) {
+                    av_waiting_for_turn[sk.sid] = true;
+                    netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
+                }
                 break;
             }
         }
         if( here.inbounds( dst ) && npc_ptr->can_move_to( dst ) ) {
             const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
             npc_ptr->move_to( dst );
+            // DDA MP v4.0a-7: actually spend the pool (owned by netplay — the
+            // NPC loader resets the engine moves on every bubble flip).
+            av_move_pool[sk.sid] = std::max( 0, av_move_pool[sk.sid] - mp_step_cost );
+            npc_ptr->set_moves( av_move_pool[sk.sid] );
             // DDA MP: this noise came from another player's avatar — the
             // host's "?" placement must check whether it sees the avatar,
             // not the tile it just left (which may peek around a corner).
@@ -1286,26 +1325,25 @@ void host_pump_avatar_keys()
             if( netplay::mp_diag_enabled() ) {
                 const long long mp_total_ms = mp_ms_since( mp_t0 );
                 const int mp_dist = rl_dist( get_avatar().pos_bub(), npc_ptr->pos_bub() );
-                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "step sid=%d dist=%d anchor=%lldms total=%lldms dst=%d,%d\n",
-                                  sk.sid, mp_dist, mp_anchor_ms, mp_total_ms,
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch() ).count();
+                    std::fprintf( f, "srv step wms=%lld sid=%d dist=%d anchor=%lldms total=%lldms dst=%d,%d\n",
+                                  wms, sk.sid, mp_dist, mp_anchor_ms, mp_total_ms,
                                   dst.x(), dst.y() );
                     std::fclose( f );
                 }
             }
             // parity: this bind acted since the last world turn
             av_acted_since_tick[sk.sid] = true;
-            if( av_all_acted() ) {
-                // every bound avatar stepped since the last tick: spend the
-                // shared world turn (host pause), then wait for the next
-                // action batch — strictly one world turn at a time. The
-                // host's turn machinery needs a vanilla host-anchored
-                // bubble, so hand the bubble back before the pause runs.
-                av_acted_since_tick.clear();
-                g->mp_anchor_map_on( get_avatar() );
-                netplay::host_push_legacy_key( 11 );
-                break;
-            }
+            // The step went through: the client is not waiting any more.
+            netplay::host_send_hover_to_sid( sk.sid, "" );
+            // DDA MP v4.0a-7: the shared world turn is NOT synthesized here
+            // any more. The client's step spends its move pool, and the world
+            // advances only when the host takes a turn — so a client can never
+            // act twice while the host stands still (and the host's own turn
+            // is gated on the client having acted).
+            break;
         }
     }
     // DDA MP v4.0a-2: when the burst is over (no more client steps queued),
@@ -1316,6 +1354,41 @@ void host_pump_avatar_keys()
     if( !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
+}
+
+/* DDA MP v4.0a-7: called at the end of every host world turn. A fresh round
+ * starts: every session may act again, so clear the per-session "acted" marks
+ * and lift their waiting hints. */
+void host_note_world_turn()
+{
+    if( !host_is_running() || host_session_count() == 0 ) {
+        return;
+    }
+    av_acted_since_tick.clear();
+    // Move points of an avatar that is outside the bubble (the usual case
+    // between its own steps) are not refilled by the vanilla NPC turn pass,
+    // so pay its one turn of speed here — exactly like Character::process_turn
+    // does for a processed NPC, and only when it wasn't processed already.
+    for( int sid : netplay::host_session_ids() ) {
+        if( npc *av = av_session_npc( sid ); av != nullptr && !av->is_dead_state() ) {
+            // Exactly one turn of move points, never an accumulated stock.
+            av_move_pool[sid] = av->get_speed();
+            av->set_moves( av_move_pool[sid] );
+        }
+        av_waiting_for_turn[sid] = false;
+        netplay::host_send_hover_to_sid( sid, "" );
+    }
+}
+
+/* DDA MP v4.0a-7: strict turn parity — the host may spend its turn only after
+ * every bound client gave its order. No grace: waiting is exactly the point
+ * (the host sees "waiting for other players..." while the world stands). */
+bool host_turn_blocked()
+{
+    if( !host_is_running() || host_session_count() == 0 ) {
+        return false;
+    }
+    return !av_all_acted();
 }
 
 } // namespace netplay
