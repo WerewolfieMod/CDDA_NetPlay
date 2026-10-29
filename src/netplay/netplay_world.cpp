@@ -47,6 +47,7 @@
 #include "overmapbuffer.h"
 #include "worldfactory.h"
 
+#include <chrono>
 #include <cstdlib>
 
 #if defined(TILES)
@@ -1235,6 +1236,14 @@ void host_pump_avatar_keys()
             continue; // CONFIRM and unknown codes: swallow
         }
         map &here = get_map();
+        // DDA MP diag: per-step timing by distance — the far-roaming client
+        // slowdown needs facts about which stage grows with distance.
+        const auto mp_t0 = std::chrono::steady_clock::now();
+        auto mp_ms_since = []( const std::chrono::steady_clock::time_point &t ) {
+            return static_cast<long long>(
+                       std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t ).count() );
+        };
         // DDA MP v4.0a-2: the avatar roams the world like the host player
         // does, so keep the reality bubble anchored around it (the same way
         // the engine anchors it around the player after a move). This also
@@ -1242,6 +1251,7 @@ void host_pump_avatar_keys()
         // mode: only the cheap shifts run, no cache/spawn work — a burst of
         // client steps must not pay the full anchor price on every step.
         g->mp_anchor_map_on( *npc_ptr, true );
+        const long long mp_anchor_ms = mp_ms_since( mp_t0 );
         const tripoint_bub_ms dst = npc_ptr->pos_bub() + dir_it->second;
         // DDA MP v4.0a-2: a step pays the price the engine charges an NPC's
         // own walk move, out of the avatar's move pool (refilled every world
@@ -1273,6 +1283,16 @@ void host_pump_avatar_keys()
             // show the step to its own session immediately: without this the
             // movement would wait for the parity tick below
             av_send_session_picture( sk.sid, dst, npc_ptr.get() );
+            if( netplay::mp_diag_enabled() ) {
+                const long long mp_total_ms = mp_ms_since( mp_t0 );
+                const int mp_dist = rl_dist( get_avatar().pos_bub(), npc_ptr->pos_bub() );
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "step sid=%d dist=%d anchor=%lldms total=%lldms dst=%d,%d\n",
+                                  sk.sid, mp_dist, mp_anchor_ms, mp_total_ms,
+                                  dst.x(), dst.y() );
+                    std::fclose( f );
+                }
+            }
             // parity: this bind acted since the last world turn
             av_acted_since_tick[sk.sid] = true;
             if( av_all_acted() ) {
