@@ -149,21 +149,21 @@ std::pair<std::string, nc_color> pain_text_color( const Creature &c );
 std::pair<std::string, nc_color> pain_text_color( const Character &u );
 std::pair<std::string, nc_color> faction_text( const Character &u );
 // Character morale, as a color-coded ascii emoticon face
-std::pair<std::string, nc_color> morale_face_color( const avatar &u );
+std::pair<std::string, nc_color> morale_face_color( const Character &u );
 // Helpers for morale_face_color
 std::pair<std::string, nc_color> morale_emotion( int morale_cur, const mood_face &face );
 
 // Current movement mode and color, as single letter or full word
 std::pair<std::string, nc_color> move_mode_letter_color( const Character &u );
 // Movement counter and mode letter, like "50(R)" or "100(W)"
-std::pair<std::string, nc_color> move_count_and_mode_text_color( const avatar &u );
+std::pair<std::string, nc_color> move_count_and_mode_text_color( const Character &u );
 // Weight carried, relative to capacity, in %, like "90%"
-std::pair<std::string, nc_color> carry_weight_text_color( const avatar &u );
+std::pair<std::string, nc_color> carry_weight_text_color( const Character &u );
 
 std::pair<std::string, nc_color> temp_text_color( const Character &u,
         const bodypart_str_id &bp = bodypart_str_id::NULL_ID() );
 std::pair<std::string, nc_color> power_text_color( const Character &u );
-std::pair<std::string, nc_color> power_balance_text_color( const avatar &u );
+std::pair<std::string, nc_color> power_balance_text_color( const Character &u );
 
 std::pair<std::string, nc_color> safe_mode_text_color( bool classic_mode );
 std::pair<std::string, nc_color> wind_text_color( const Character &u );
@@ -192,17 +192,17 @@ nc_color limb_color( const Character &u, const bodypart_id &bp, bool bleed, bool
 nc_color encumb_color( int level );
 
 // Weight carried, formatted as "current/max"
-std::pair<std::string, nc_color> carry_weight_value_color( const avatar &ava );
+std::pair<std::string, nc_color> carry_weight_value_color( const Character &ava );
 
 // Colorized symbol for the overmap tile at the given location
-std::pair<std::string, nc_color> overmap_tile_symbol_color( const avatar &u,
+std::pair<std::string, nc_color> overmap_tile_symbol_color( const Character &u,
         const tripoint_abs_omt &omt, bool edge_tile, bool &found_mi );
 // Colorized symbol for an overmap note, given its full text
 std::pair<std::string, nc_color> overmap_note_symbol_color( std::string_view note_text );
 // Mission marker position as an offset within an overmap of given width and height
-point mission_arrow_offset( const avatar &you, int width, int height );
+point mission_arrow_offset( const Character &you, int width, int height );
 // Fully colorized newline-separated overmap string of the given size, centered on character
-std::string colorized_overmap_text( const avatar &u, int width, int height );
+std::string colorized_overmap_text( const Character &u, int width, int height );
 // Current overmap position (coordinates)
 std::string overmap_position_text( const tripoint_abs_omt &loc );
 

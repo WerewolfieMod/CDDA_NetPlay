@@ -1,6 +1,6 @@
-﻿// CataDDA Multiplayer ("DDA MP") вЂ” user-facing flows:
+// CataDDA Multiplayer ("DDA MP") — user-facing flows:
 //  * in-game "Open world to network" host dialog,
-//  * in-game/main-menu "Join by IPвЂ¦" client flow,
+//  * in-game/main-menu "Join by IP…" client flow,
 //  * the remote-session fullscreen ASCII viewer (`run_view_loop`).
 
 #include "netplay.h"
@@ -27,6 +27,8 @@
 #include "output.h"
 #include "uilist.h"
 #include "ui_manager.h"
+#include "cata_imgui.h"
+#include "imgui/imgui.h"
 #include "worldfactory.h" // world_generator / WORLD (fat client)
 
 #include "string_input_popup.h"
@@ -132,7 +134,7 @@ void show_host_dialog()
 static std::string fat_client_loaded_world;
 
 /* DDA MP v3.9: diagnostics master switch (fat-load notes, tiles frame
- * traces, view probes) — built-in (mp_diag_dir). Default ON without any
+ * traces, view probes) � built-in (mp_diag_dir). Default ON without any
  * env; DDA_MP_DIAG=0|off disables. */
 static const bool mp_netplay_diag = mp_diag_enabled();
 
@@ -313,7 +315,7 @@ static void run_avatar_join_flow( const std::string &use_nick )
     }
 
     // v4.0a-1: the host keeps one avatar per nick, so the client resumes
-    // the first (only) living entry automatically — no choice is offered.
+    // the first (only) living entry automatically � no choice is offered.
     netplay::client_send_avatar_resume( use_nick );
 
     const int st = avatar_wait_answer( 10 );
@@ -353,7 +355,7 @@ static void join_load_prefs( std::string &addr, std::string &nick )
         jo.read( "address", addr );
         jo.read( "nick", nick );
     } catch( ... ) {
-        // missing/broken prefs: fall back to the defaults — never block joining
+        // missing/broken prefs: fall back to the defaults � never block joining
     }
 }
 
@@ -504,7 +506,7 @@ void show_join_dialog()
         return;
     }
 
-    // DDA MP v3.9: ask for the current picture right after the WELCOME —
+    // DDA MP v3.9: ask for the current picture right after the WELCOME �
     // the host answers while the client loads its world data, so the view
     // loop starts with a frame already buffered and shows tiles instantly.
     // If the host plays during the load, its tick snapshots keep the buffer
@@ -512,7 +514,7 @@ void show_join_dialog()
     netplay::client_request_snapshot();
 
     // DDA MP fat client: the host announced its world in WELCOME. Load its
-    // mod data now вЂ” before entering the fullscreen view вЂ” so the loading
+    // mod data now — before entering the fullscreen view — so the loading
     // starts immediately upon the user's join confirmation, not after the
     // first input is pumped in the view loop.
     fat_client_load_data();
@@ -525,7 +527,7 @@ void show_join_dialog()
 #if defined(TILES)
     // DDA MP v3.9: load the replay tileset now, while the loading screen
     // still owns the window. The view loop would otherwise create it on its
-    // first tile frame — multi seconds with the stale main-menu frame
+    // first tile frame � multi seconds with the stale main-menu frame
     // sitting on the glass. create() is idempotent (shared instance).
     if( netplay::client_is_connected() ) {
         netplay::tiles_backend_create();
@@ -606,6 +608,163 @@ static long key_to_remote( const std::string &action )
     return 0; // no map
 }
 
+namespace {
+/* DDA MP v4.0a-8: the client owns the sidebar layout. The host only sends
+ * "key=value" lines; parsing and drawing live here. */
+struct mp_sheet_data {
+    std::string name;
+    std::string wield;
+    int hp = 0;
+    int hp_max = 0;
+    int stam = 0;
+    int stam_max = 0;
+    int pain = 0;
+    int sleepy = 0;
+    int hunger = 0;
+    int thirst = 0;
+    int str = 0;
+    int dex = 0;
+    int intel = 0;
+    int per = 0;
+    int wear = 0;
+    int speed = 0;
+    int moves = 0;
+    int morale = 0;
+    std::string effects;
+    // body part -> "cur/max"
+    std::map<std::string, std::string> parts;
+    bool valid = false;
+};
+
+mp_sheet_data mp_parse_sheet( const std::string &text )
+{
+    mp_sheet_data d;
+    std::istringstream iss( text );
+    std::string line;
+    while( std::getline( iss, line ) ) {
+        const std::size_t eq = line.find( '=' );
+        if( eq == std::string::npos ) {
+            continue;
+        }
+        const std::string k = line.substr( 0, eq );
+        const std::string v = line.substr( eq + 1 );
+        auto to_int = [&v]( int &dst ) {
+            try {
+                dst = std::stoi( v );
+            } catch( ... ) {
+                // keep the previous value on malformed payloads
+            }
+        };
+        if( k == "name" ) {
+            d.name = v;
+        } else if( k == "wield" ) {
+            d.wield = v;
+        } else if( k == "hp" ) {
+            to_int( d.hp );
+        } else if( k == "hp_max" ) {
+            to_int( d.hp_max );
+        } else if( k == "stam" ) {
+            to_int( d.stam );
+        } else if( k == "stam_max" ) {
+            to_int( d.stam_max );
+        } else if( k == "pain" ) {
+            to_int( d.pain );
+        } else if( k == "sleepy" ) {
+            to_int( d.sleepy );
+        } else if( k == "hunger" ) {
+            to_int( d.hunger );
+        } else if( k == "thirst" ) {
+            to_int( d.thirst );
+        } else if( k == "str" ) {
+            to_int( d.str );
+        } else if( k == "dex" ) {
+            to_int( d.dex );
+        } else if( k == "int" ) {
+            to_int( d.intel );
+        } else if( k == "per" ) {
+            to_int( d.per );
+        } else if( k == "wear" ) {
+            to_int( d.wear );
+        } else if( k == "speed" ) {
+            to_int( d.speed );
+        } else if( k == "moves" ) {
+            to_int( d.moves );
+        } else if( k == "morale" ) {
+            to_int( d.morale );
+        } else if( k == "effects" ) {
+            d.effects = v;
+        } else if( k.rfind( "hp_", 0 ) == 0 ) {
+            d.parts[k.substr( 3 )] = v;
+        }
+    }
+    d.valid = !d.name.empty();
+    return d;
+}
+
+std::string mp_bar( int v, int max, int w = 10 )
+{
+    if( max <= 0 ) {
+        max = 1;
+    }
+    int fill = v <= 0 ? 0 : ( v * w ) / max;
+    if( fill > w ) {
+        fill = w;
+    }
+    std::string s = "[";
+    for( int i = 0; i < w; ++i ) {
+        s += i < fill ? '#' : '-';
+    }
+    s += ']';
+    return s;
+}
+
+/* DDA MP v4.0a-10: the sidebar as plain text lines (client-owned layout). */
+std::vector<std::string> mp_sheet_lines( const mp_sheet_data &d )
+{
+    std::vector<std::string> out;
+    out.push_back( d.name );
+    static const char *const part_ids[] = { "head", "torso", "arm_l", "arm_r", "leg_l", "leg_r" };
+    static const char *const part_labels[] = {
+        "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"
+    };
+    for( int i = 0; i < 6; i++ ) {
+        const auto it = d.parts.find( part_ids[i] );
+        out.push_back( string_format( "%-11s %s", _( part_labels[i] ),
+                                      it == d.parts.end() ? "-" : it->second ) );
+    }
+    out.emplace_back();
+    out.push_back( string_format( "%s %s %d/%d", _( "HP" ), mp_bar( d.hp, d.hp_max ), d.hp, d.hp_max ) );
+    out.push_back( string_format( "%s %s %d/%d", _( "Stamina" ), mp_bar( d.stam, d.stam_max ),
+                                  d.stam, d.stam_max ) );
+    out.emplace_back();
+    out.push_back( string_format( "%s %d", _( "Pain" ), d.pain ) );
+    out.push_back( string_format( "%s %d", _( "Sleepiness" ), d.sleepy ) );
+    out.push_back( string_format( "%s %d", _( "Hunger" ), d.hunger ) );
+    out.push_back( string_format( "%s %d", _( "Thirst" ), d.thirst ) );
+    out.push_back( string_format( "%s %d", _( "Morale" ), d.morale ) );
+    out.emplace_back();
+    out.push_back( string_format( "%s %d", _( "Strength" ), d.str ) );
+    out.push_back( string_format( "%s %d", _( "Dexterity" ), d.dex ) );
+    out.push_back( string_format( "%s %d", _( "Intelligence" ), d.intel ) );
+    out.push_back( string_format( "%s %d", _( "Perception" ), d.per ) );
+    out.push_back( string_format( "%s %d", _( "Speed" ), d.speed ) );
+    out.push_back( string_format( "%s %d", _( "Moves" ), d.moves ) );
+    out.emplace_back();
+    out.push_back( _( "Weapon" ) );
+    out.push_back( d.wield.empty() ? "-" : d.wield );
+    out.push_back( string_format( "%s %d", _( "Worn" ), d.wear ) );
+    if( !d.effects.empty() ) {
+        out.emplace_back();
+        std::istringstream eff( d.effects );
+        std::string e;
+        while( std::getline( eff, e, ';' ) ) {
+            out.push_back( e );
+        }
+    }
+    return out;
+}
+} // namespace
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -641,7 +800,7 @@ void run_view_loop()
     } mp_prompts;
     debug_suppress_prompts( true );
     // Track whether the user left on purpose (ESC) to skip the reconnect
-    // offer вЂ” sudden disconnects offer to rejoin instead.
+    // offer — sudden disconnects offer to rejoin instead.
     bool voluntary_quit = false;
 
     // Guard against garbage frames: no sane session needs more than this.
@@ -689,6 +848,48 @@ void run_view_loop()
     // DDA MP v4.0a-7: one-line turn-pacing hint drawn over the picture.
     catacurses::window mp_hint_win;
     std::string mp_hint_text;
+    // DDA MP v4.0a-8: character sheet panel (C toggles it).
+    catacurses::window mp_sheet_win;
+    std::string mp_sheet_text;
+    bool mp_sheet_open = true; // the status panel is docked by default
+    snapshot mp_sidebar;
+    sidebar_frame mp_side;
+    // DDA MP v4.0a-10: sidebar pixel width, measured during the ImGui redraw
+    // (ImGui is not in a frame here, so the value is one frame old — fine).
+    static float mp_sb_overlay_w = 0.0f;
+    // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
+    // position matches the host's exactly and does not depend on the curses
+    // grid scale.
+    ui_adaptor mp_sb_adaptor;
+    mp_sb_adaptor.on_redraw( [&]( const ui_adaptor & ) {
+        if( !mp_sheet_open || mp_sheet_text.empty() ) {
+            return;
+        }
+        const mp_sheet_data d = mp_parse_sheet( mp_sheet_text );
+        if( !d.valid ) {
+            return;
+        }
+        const std::vector<std::string> lines = mp_sheet_lines( d );
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        const ImGuiIO &io = ImGui::GetIO();
+        const float fs = ImGui::GetFontSize();
+        float maxw = 0.0f;
+        for( const std::string &l : lines ) {
+            maxw = std::max( maxw, ImGui::CalcTextSize( l.c_str() ).x );
+        }
+        const float pad = fs * 0.6f;
+        const float x0 = std::max( 0.0f, io.DisplaySize.x - maxw - pad * 2.0f );
+        mp_sb_overlay_w = io.DisplaySize.x - x0;
+        dl->AddRectFilled( ImVec2( x0, 0.0f ), io.DisplaySize, IM_COL32( 0, 0, 0, 170 ) );
+        float y = pad;
+        for( const std::string &l : lines ) {
+            if( y + fs > io.DisplaySize.y ) {
+                break;
+            }
+            dl->AddText( ImVec2( x0 + pad, y ), IM_COL32( 220, 220, 220, 255 ), l.c_str() );
+            y += ImGui::GetTextLineHeight();
+        }
+    } );
 
     auto ensure_window = [&]( int width, int height ) {
         if( cur_w == width && cur_h == height ) {
@@ -712,6 +913,17 @@ void run_view_loop()
         ctxt.register_directions();
 
         while( client_is_connected() ) {
+            // DDA MP v4.0a-9: report our terminal size so the host renders the
+            // sidebar to fit instead of letting the client clip it.
+            {
+                static int mp_last_cols = -1;
+                static int mp_last_rows = -1;
+                if( TERMX != mp_last_cols || TERMY != mp_last_rows ) {
+                    mp_last_cols = TERMX;
+                    mp_last_rows = TERMY;
+                    netplay::client_send_view( TERMX, TERMY );
+                }
+            }
             // DDA MP v4.0a-7: turn-pacing hint from the host ("waiting for
             // other players..."), shown above the picture and in the title.
             {
@@ -719,6 +931,10 @@ void run_view_loop()
                 if( netplay::client_take_hover( mp_hint ) ) {
                     mp_hint_text = mp_hint;
                     netplay::client_status_hint( mp_hint );
+                }
+                std::string mp_sheet;
+                if( netplay::client_sheet( mp_sheet ) ) {
+                    mp_sheet_text = std::move( mp_sheet );
                 }
             }
 #if defined(TILES)
@@ -742,7 +958,7 @@ void run_view_loop()
             // ui adaptors; redraw() regenerates the registered windows here,
             // right before the tileset canvas stamps over them (that covered
             // form is proven stable). Removing it made the invalidated
-            // windows repaint at random moments inside the input pump —
+            // windows repaint at random moments inside the input pump �
             // the screen alternated between stamped tiles and the cleared
             // black buffer (the observed flicker).
             ui_manager::redraw();
@@ -841,7 +1057,11 @@ void run_view_loop()
                             const int center_px_y = ( win_y + cur_h / 2 + 1 ) * font_px_h;
                             const int canvas_w = snap.width * tw;
                             const int canvas_h = snap.height * th;
-                            const int dest_x = center_px_x - canvas_w / 2;
+                            // Shift the picture left by half the sidebar width: the
+                            // host keeps the map and its sidebar side by side, and the
+                            // streamed sidebar must not sit under the sprites.
+                            const int dest_x = center_px_x - canvas_w / 2 -
+                                               static_cast<int>( mp_sb_overlay_w / 2.0f );
                             const int dest_y = center_px_y - canvas_h / 2;
                             constexpr int PIVOT = 32; // inside the 48-tile bubble
                             // DDA MP v4.0a-4: feed the streamed absolute origin
@@ -876,7 +1096,7 @@ void run_view_loop()
                                                               trace_draws, kind, id ) );
                                     }
                                 };
-                                // DDA MP: prepass — stream every cell's
+                                // DDA MP: prepass � stream every cell's
                                 // light texel color (the host's own
                                 // smooth-lighting values), then bind the lit
                                 // frame so the sprites take the real GPU lit
@@ -923,7 +1143,7 @@ void run_view_loop()
                                             t.vpart.empty() && !( t.flags & 1 ) ) {
                                             continue;
                                         }
-                                        // DDA MP: pass the cell's real lit_level —
+                                        // DDA MP: pass the cell's real lit_level �
                                         // the lit frame (or, in the fallback, the
                                         // overlay below) replicas the host's light.
                                         const int mp_lit = static_cast<int>( t.light );
@@ -1110,7 +1330,7 @@ void run_view_loop()
                                         }
                                         if( t.marker != 0 ) {
                                             // DDA MP v4.0a-2: the avatar's own
-                                            // heard-sound "?" — the host places
+                                            // heard-sound "?" � the host places
                                             // it (deterministically) and
                                             // streams the overlay id; drawn
                                             // exactly like the game's own
@@ -1142,7 +1362,7 @@ void run_view_loop()
                 }
 #endif
             } else {
-                // DDA MP v3.9: no valid picture yet — hold a quiet
+                // DDA MP v3.9: no valid picture yet � hold a quiet
                 // placeholder over the menu instead of flashing it. redraw()
                 // above already regenerated the registered windows; the
                 // stdscr paint wraps them into the neutral wait screen. Safe
@@ -1193,6 +1413,16 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
+            // DDA MP v4.0a-8: 'C' toggles the status sidebar. The panel never
+            // captures input � movement and orders keep working while it is on.
+            {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_ch = mp_ev.get_first_input();
+                if( mp_ch == 'c' || mp_ch == 'C' ) {
+                    mp_sheet_open = !mp_sheet_open;
+                    continue;
+                }
+            }
             if( action == "QUIT" ) {
                 // DDA MP: ESC opens an in-game-style menu instead of instantly
                 // disconnecting the session.

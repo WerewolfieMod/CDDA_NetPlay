@@ -458,7 +458,7 @@ void widget_custom_var::deserialize( const JsonObject &jo )
     }
 }
 
-void widget_custom_var::set_widget_var_range( const avatar &ava, widget &wgt ) const
+void widget_custom_var::set_widget_var_range( const Character &ava, widget &wgt ) const
 {
     const_dialogue d( get_const_talker_for( ava ), nullptr );
     wgt._var_min = static_cast<int>( min.evaluate( d ) );
@@ -467,7 +467,7 @@ void widget_custom_var::set_widget_var_range( const avatar &ava, widget &wgt ) c
     wgt._var_norm.second = static_cast<int>( norm.second.evaluate( d ) );
 }
 
-int widget_custom_var::get_var_value( const avatar &ava ) const
+int widget_custom_var::get_var_value( const Character &ava ) const
 {
     const_dialogue d( get_const_talker_for( ava ), nullptr );
     return static_cast<int>( value.evaluate( d ) );
@@ -668,7 +668,7 @@ const bodypart_id &widget::only_bp() const
     return _bps.empty() ? bp_null : *_bps.begin();
 }
 
-void widget::set_default_var_range( const avatar &ava )
+void widget::set_default_var_range( const Character &ava )
 {
     _var_min = INT_MIN;
     _var_max = INT_MAX;
@@ -844,10 +844,13 @@ void widget::set_default_var_range( const avatar &ava )
     }
 }
 
-int widget::get_var_value( const avatar &ava ) const
+int widget::get_var_value( const Character &ava ) const
 {
     // Numeric value to be rendered in the widget
     int value = 0;
+    // DDA MP: widgets also render for non-player characters (netplay avatars),
+    // which lack the avatar-only state (focus, power balance, move counter).
+    const avatar *mp_av = dynamic_cast<const avatar *>( &ava );
 
     // Each "var" value refers to some attribute, typically of the avatar, that yields a numeric
     // value, and can be displayed as a numeric field, a graph, or a series of text clauses.
@@ -857,24 +860,24 @@ int widget::get_var_value( const avatar &ava ) const
             value = ava.get_stamina();
             break;
         case widget_var::mana:
-            value = ava.magic->available_mana();
+            value = mp_av ? mp_av->magic->available_mana() : 0;
             break;
         case widget_var::max_mana:
-            value = ava.magic->max_mana( ava );
+            value = mp_av ? mp_av->magic->max_mana( *mp_av ) : 0;
             break;
         case widget_var::oxygen:
-            value = ava.oxygen;
+            value = mp_av ? mp_av->oxygen : 0;
             break;
         case widget_var::power_percentage:
-            value = ava.has_max_power() ? ( 100 * ava.get_power_level().value() ) /
-                    ava.get_max_power_level().value() : 0;
+            value = mp_av && mp_av->has_max_power() ? ( 100 * mp_av->get_power_level().value() ) /
+                    mp_av->get_max_power_level().value() : 0;
             break;
         case widget_var::log_power_balance: {
-            int value_abs = std::abs( ava.power_balance.value() );
+            int value_abs = mp_av ? std::abs( mp_av->power_balance.value() ) : 0;
             if( value_abs < 500 ) {
                 value = 0;
             } else {
-                int sign = ava.power_balance.value() > 0 ? 1 : -1;
+                int sign = mp_av->power_balance.value() > 0 ? 1 : -1;
                 value = ( sign * 100.0 * std::log10( value_abs / 500.0 ) );
             }
             value += 600;
@@ -908,13 +911,13 @@ int widget::get_var_value( const avatar &ava ) const
             }
             break;
         case widget_var::focus:
-            value = ava.get_focus();
+            value = mp_av ? mp_av->get_focus() : 0;
             break;
         case widget_var::speed:
             value = ava.get_speed();
             break;
         case widget_var::move:
-            value = ava.movecounter;
+            value = mp_av ? mp_av->movecounter : ava.get_moves();
             break;
         case widget_var::move_remainder:
             value = ava.get_moves();
@@ -991,7 +994,7 @@ bool widget::has_flag( const std::string &flag ) const
     return has_flag( flag_id( flag ) );
 }
 
-std::string widget::show( const avatar &ava, const unsigned int max_width )
+std::string widget::show( const Character &ava, const unsigned int max_width )
 {
     set_default_var_range( ava );
     if( uses_text_function() ) {
@@ -1030,7 +1033,7 @@ int widget::custom_draw_multiline( const std::string &widget_string, const catac
 // Handles rendering a widget's content into a window panel.
 static int custom_draw_func( const draw_args &args )
 {
-    const avatar &u = args._ava;
+    const Character &u = args._ava;
     const catacurses::window &w = args._win;
     widget *wgt = args.get_widget();
 
@@ -1206,7 +1209,7 @@ static void set_height_for_widget( const widget_id &id, int height )
 }
 
 // NOTE: Use max_width to split multi-line widgets across lines
-std::string widget::color_text_function_string( const avatar &ava, unsigned int max_width )
+std::string widget::color_text_function_string( const Character &ava, unsigned int max_width )
 {
     std::string ret;
     // Most text variables have both a string and a color.
@@ -1841,7 +1844,7 @@ static std::string append_line( const std::string &line, bool first_row, int max
     return ret;
 }
 
-std::string widget::layout( const avatar &ava, unsigned int max_width, int label_width,
+std::string widget::layout( const Character &ava, unsigned int max_width, int label_width,
                             bool skip_pad )
 {
     std::string ret;

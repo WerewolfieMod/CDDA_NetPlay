@@ -8389,5 +8389,26 @@ void client_status_hint( const std::string &text )
     SetWindowTitle( ::window.get(), title.c_str() );
 }
 
+/* DDA MP v4.0a-10: how many terminal cells actually fit into the drawable
+ * window. TERMX/TERMY can lag behind after a resize/scale change, which made
+ * right-docked windows slide off the visible area. */
+void drawable_cells( int &cols, int &rows )
+{
+    cols = TERMX;
+    rows = TERMY;
+    if( !::window ) {
+        return;
+    }
+    int w = 0;
+    int h = 0;
+    GetWindowSize( ::window.get(), &w, &h );
+    if( w > 0 && fontwidth > 0 ) {
+        cols = std::max( 1, w / fontwidth );
+    }
+    if( h > 0 && fontheight > 0 ) {
+        rows = std::max( 1, h / fontheight );
+    }
+}
+
 } // namespace netplay
 #endif // TILES

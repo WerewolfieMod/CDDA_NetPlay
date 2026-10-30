@@ -337,6 +337,17 @@ struct netplay_state {
     std::mutex hover_mutex;
     std::string hover_text;
     bool have_hover = false;
+    /* DDA MP v4.0a-8: latest character sheet text from the host. */
+    std::mutex sheet_mutex;
+    std::string sheet_text;
+    bool have_sheet = false;
+    /* DDA MP v4.0a-9: latest host-rendered sidebar cells. */
+    std::mutex sidebar_mutex;
+    sidebar_frame sidebar;
+    bool have_sidebar = false;
+    /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
+    std::mutex view_mutex;
+    std::map<int, std::pair<int, int>> client_views;
     std::vector<std::vector<char>> client_out;
     std::mutex client_out_mutex;
 
@@ -667,6 +678,16 @@ static void host_session_reader( int sid, socket_t sock )
             // Empty payload: "the client finished loading, send the current
             // picture". Consumed on the host main thread (game loop pump).
             state.snap_request_pending = true;
+        } else if( op == frame::CLIENT_VIEW ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int cols = static_cast<int>( r.get_u16() );
+            const int rows = static_cast<int>( r.get_u16() );
+            if( r.ok && cols > 0 && rows > 0 ) {
+                std::lock_guard<std::mutex> lk( state.view_mutex );
+                state.client_views[sid] = { cols, rows };
+            }
         } else if( op == frame::AVATAR_LIST_REQ || op == frame::AVATAR_RESUME ||
                    op == frame::AVATAR_PROFILE ) {
             // DDA MP v4.0: queue the avatar op for the host main thread with
@@ -1147,6 +1168,47 @@ bool host_send_hover_to_sid( int sid, const std::string &text )
     return true;
 }
 
+bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( sb.width ) );
+    put_u16( p, static_cast<uint16_t>( sb.height ) );
+    for( const sidebar_cell &c : sb.cells ) {
+        put_str8( p, c.text );
+        put_i32( p, static_cast<int32_t>( c.color ) );
+    }
+    if( !send_all( it->second, encode_frame( frame::SIDEBAR, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool host_send_sheet_to_sid( int sid, const std::string &text )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_str( p, text );
+    if( !send_all( it->second, encode_frame( frame::CHARACTER_SHEET, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
 bool host_pop_key( uint32_t &code ){
     std::lock_guard<std::mutex> lk( state.keys_mutex );
     if( state.host_keys.empty() ) {
@@ -1419,6 +1481,38 @@ static void client_run( socket_t sock )
                 state.hover_text = text;
                 state.have_hover = true;
             }
+        } else if( op == frame::CHARACTER_SHEET ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string text = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.sheet_mutex );
+                state.sheet_text = text;
+                state.have_sheet = true;
+            }
+        } else if( op == frame::SIDEBAR ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            sidebar_frame sb;
+            sb.width = static_cast<int>( r.get_u16() );
+            sb.height = static_cast<int>( r.get_u16() );
+            if( r.ok && sb.width > 0 && sb.height > 0 && sb.width <= 200 && sb.height <= 200 ) {
+                const size_t cells = static_cast<size_t>( sb.width ) * sb.height;
+                sb.cells.reserve( cells );
+                for( size_t i = 0; i < cells && r.ok; i++ ) {
+                    sidebar_cell c;
+                    c.text = r.get_str8();
+                    c.color = r.get_i32();
+                    sb.cells.push_back( std::move( c ) );
+                }
+                if( r.ok ) {
+                    std::lock_guard<std::mutex> lk( state.sidebar_mutex );
+                    state.sidebar = std::move( sb );
+                    state.have_sidebar = true;
+                }
+            }
         } else if( op == frame::BYE ) {
             break;
         }
@@ -1552,6 +1646,35 @@ void client_status_hint( const std::string &text )
 }
 #endif
 
+bool client_sidebar( sidebar_frame &out )
+{
+    std::lock_guard<std::mutex> lk( state.sidebar_mutex );
+    if( !state.have_sidebar ) {
+        return false;
+    }
+    out = state.sidebar;
+    return true;
+}
+
+bool client_sheet( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.sheet_mutex );
+    if( !state.have_sheet ) {
+        return false;
+    }
+    out = state.sheet_text;
+    return true;
+}
+
+#if !defined(TILES)
+/* Curses-only builds: no window metrics to consult; the caller falls back. */
+void drawable_cells( int &cols, int &rows )
+{
+    cols = 0;
+    rows = 0;
+}
+#endif
+
 bool client_take_hover( std::string &out )
 {
     std::lock_guard<std::mutex> lk( state.hover_mutex );
@@ -1560,6 +1683,31 @@ bool client_take_hover( std::string &out )
     }
     out = state.hover_text;
     state.have_hover = false;
+    return true;
+}
+
+void client_send_view( int cols, int rows )
+{
+    if( !state.connected ) {
+        return;
+    }
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( std::max( 1, cols ) ) );
+    put_u16( p, static_cast<uint16_t>( std::max( 1, rows ) ) );
+    if( !send_all( state.client_sock, encode_frame( frame::CLIENT_VIEW, p ) ) ) {
+        state.stop_client();
+    }
+}
+
+bool host_client_view( int sid, int &cols, int &rows )
+{
+    std::lock_guard<std::mutex> lk( state.view_mutex );
+    const auto it = state.client_views.find( sid );
+    if( it == state.client_views.end() ) {
+        return false;
+    }
+    cols = it->second.first;
+    rows = it->second.second;
     return true;
 }
 

@@ -364,9 +364,14 @@ std::string display::sundial_text_color( const Character &u, int width )
     return ret + "]";
 }
 
-std::pair<std::string, nc_color> display::morale_face_color( const avatar &u )
+std::pair<std::string, nc_color> display::morale_face_color( const Character &u )
 {
-    const mood_face_id &face = u.character_mood_face();
+    // DDA MP: only the player character carries a mood face.
+    const avatar *mp_av = dynamic_cast<const avatar *>( &u );
+    if( mp_av == nullptr ) {
+        return std::make_pair( "", c_white );
+    }
+    const mood_face_id &face = mp_av->character_mood_face();
     if( face.is_null() ) {
         return std::make_pair( "ERR", c_white );
     }
@@ -480,12 +485,13 @@ std::pair<std::string, nc_color> display::power_text_color( const Character &u )
     return std::make_pair( s_pwr, c_pwr );
 }
 
-std::pair<std::string, nc_color> display::power_balance_text_color( const avatar &u )
+std::pair<std::string, nc_color> display::power_balance_text_color( const Character &u )
 {
     nc_color c_pwr = c_red;
     std::string s_pwr;
 
-    units::energy balance = u.power_balance;
+    units::energy balance = dynamic_cast<const avatar *>( &u ) ?
+                            dynamic_cast<const avatar *>( &u )->power_balance : 0_kJ;
     units::energy abs_balance = units::from_millijoule( std::abs( balance.value() ) );
 
     if( balance < -1_kJ ) {
@@ -1116,15 +1122,17 @@ std::pair<std::string, nc_color> display::move_mode_letter_color( const Characte
 }
 
 // Movement counter and mode letter, like "50(R)" or "100(W)"
-std::pair<std::string, nc_color> display::move_count_and_mode_text_color( const avatar &u )
+std::pair<std::string, nc_color> display::move_count_and_mode_text_color( const Character &u )
 {
     std::pair<std::string, nc_color> mode_pair = display::move_mode_letter_color( u );
-    std::string count_and_mode = string_format( "%d(%s)", u.movecounter, mode_pair.first );
+    const avatar *mp_av = dynamic_cast<const avatar *>( &u );
+    std::string count_and_mode = string_format( "%d(%s)",
+                                 mp_av ? mp_av->movecounter : u.get_moves(), mode_pair.first );
     return std::make_pair( count_and_mode, mode_pair.second );
 }
 
 // Weight carried, relative to capacity, in %, like "90%".
-std::pair<std::string, nc_color> display::carry_weight_text_color( const avatar &u )
+std::pair<std::string, nc_color> display::carry_weight_text_color( const Character &u )
 {
     int carry_wt;
 
@@ -1153,7 +1161,7 @@ std::pair<std::string, nc_color> display::carry_weight_text_color( const avatar 
 }
 
 // Weight carried, formatted as "current/max" in kg
-std::pair<std::string, nc_color> display::carry_weight_value_color( const avatar &ava )
+std::pair<std::string, nc_color> display::carry_weight_value_color( const Character &ava )
 {
     float carry_wt = convert_weight( ava.weight_carried() );
     float max_wt = convert_weight( ava.weight_capacity() );
@@ -1273,14 +1281,15 @@ std::pair<std::string, nc_color> display::overmap_note_symbol_color( std::string
     return std::make_pair( ter_sym, ter_color );
 }
 
-std::string display::colorized_overmap_text( const avatar &u, const int width, const int height )
+std::string display::colorized_overmap_text( const Character &u, const int width, const int height )
 {
     std::string overmap_text;
     map &here = get_map();
 
     // Map is roughly centered around this point
     const tripoint_abs_omt &center_xyz = u.pos_abs_omt();
-    const tripoint_abs_omt &mission_xyz = u.get_active_mission_target();
+    const avatar *mp_av = dynamic_cast<const avatar *>( &u );
+    const tripoint_abs_omt &mission_xyz = mp_av ? mp_av->get_active_mission_target() : center_xyz;
     // Retrieve cached string instead of constantly rebuilding it
     if( disp_om_cache.is_valid_for( center_xyz, mission_xyz, width ) ) {
         return disp_om_cache.get_val();
@@ -1347,11 +1356,12 @@ std::string display::current_position_text( const tripoint_abs_omt &loc )
 
 // Return (x, y) position of mission target, relative to avatar location, within an overmap of the
 // given width and height.
-point display::mission_arrow_offset( const avatar &you, int width, int height )
+point display::mission_arrow_offset( const Character &you, int width, int height )
 {
     // FIXME: Use tripoint for curs
     const point_abs_omt curs = you.pos_abs_omt().xy();
-    const tripoint_abs_omt targ = you.get_active_mission_target();
+    const avatar *mp_av = dynamic_cast<const avatar *>( &you );
+    const tripoint_abs_omt targ = mp_av ? mp_av->get_active_mission_target() : you.pos_abs_omt();
     const point mid( width / 2, height / 2 );
 
     // If x-coordinates are the same, mission is either due north or due south

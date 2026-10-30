@@ -14,6 +14,7 @@
 class JsonArray;
 class JsonOut;
 class avatar;
+class Character;
 class widget;
 struct point;
 
@@ -46,10 +47,10 @@ bool default_render();
 // passed to the constructor, accessible with get_widget().
 struct draw_args {
     public:
-        const avatar &_ava;
+        const Character &_ava;
         const catacurses::window &_win;
 
-        draw_args( const avatar &a, const catacurses::window &w, const widget_id &wgt ) :
+        draw_args( const Character &a, const catacurses::window &w, const widget_id &wgt ) :
             _ava( a ), _win( w ), _wgt( wgt ) {}
 
         widget *get_widget() const {

@@ -61,6 +61,13 @@ enum class frame : int {
     AVATAR_PROFILE = 23,    ///< client -> host: a freshly created avatar (json)
     AVATAR_OK = 24,         ///< host -> client: bind/creation accepted
     AVATAR_DENIED = 25,     ///< host -> client: bind/creation rejected (text)
+    /// DDA MP v4.0a-8: serialized character sheet of the session's avatar
+    /// (plain text lines), refreshed by the host once per world turn.
+    CHARACTER_SHEET = 26,   ///< host -> client: avatar sheet text
+    /// DDA MP v4.0a-9: the host's real sidebar rendered for the session's
+    /// avatar (colour cells), so the client sees the same panels.
+    SIDEBAR = 27,           ///< host -> client: rendered sidebar cells
+    CLIENT_VIEW = 28,       ///< client -> host: terminal size (u16 cols, u16 rows)
 };
 
 /// DDA MP v3.9.1: one item-layer sprite the host's tileset draws on a cell
@@ -157,6 +164,20 @@ struct tile_cell {
     bool item_skip_top = false;
 };
 
+/// DDA MP v4.0a-9: one rendered sidebar cell — the text as the curses layer
+/// stores it (UTF-8, may be a multi-byte glyph) plus its colour.
+struct sidebar_cell {
+    std::string text;
+    int color = 0;
+};
+
+/// A rendered sidebar block (the host's panel layout, drawn for one avatar).
+struct sidebar_frame {
+    int width = 0;
+    int height = 0;
+    std::vector<sidebar_cell> cells;
+};
+
 /// Full screen frame for a remote session.
 struct snapshot {
     int width = 0;
@@ -231,6 +252,10 @@ bool host_pop_key( uint32_t &code );
 /// DDA MP v4.0a-7: send a short status line to one session (turn pacing:
 /// "waiting for other players..."); empty text clears it on the client.
 bool host_send_hover_to_sid( int sid, const std::string &text );
+/// DDA MP v4.0a-8: send the session avatar's character sheet (plain text).
+bool host_send_sheet_to_sid( int sid, const std::string &text );
+/// DDA MP v4.0a-9: send the host-rendered sidebar (colour cells) to a session.
+bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
@@ -354,14 +379,26 @@ std::string client_last_address();
 bool client_receive( snapshot &out );
 /// DDA MP v4.0a-7: latest status line from the host (returned once).
 bool client_take_hover( std::string &out );
+/// DDA MP v4.0a-8: latest character sheet text of this session's avatar
+/// (copied on every call; false until the host sent one).
+bool client_sheet( std::string &out );
+/// DDA MP v4.0a-9: latest rendered sidebar from the host (copied per call).
+bool client_sidebar( sidebar_frame &out );
 /// Show a short status hint on the client's screen (empty clears it).
 void client_status_hint( const std::string &text );
+/// DDA MP v4.0a-10: terminal cells that actually fit the drawable window.
+void drawable_cells( int &cols, int &rows );
 /// Ask the host to send its current picture right away. The host streams
 /// snapshots only on its own turn, so a freshly-loaded client needs this to
 /// see anything before somebody presses a key. Safe to call often.
 void client_request_snapshot();
 /// Send an input batch upstream.
 void client_send_keys( const std::vector<key_event> &keys );
+/// DDA MP v4.0a-9: tell the host this client's terminal size (cols x rows) so
+/// the sidebar is rendered to fit instead of being clipped by the client.
+void client_send_view( int cols, int rows );
+/// Host: last reported terminal size of a session (false if none yet).
+bool host_client_view( int sid, int &cols, int &rows );
 /// Per-turn maintenance. Safe to call often.
 void client_pump();
 

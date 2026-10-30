@@ -35,6 +35,7 @@
 #include "mtype.h"
 #include "npc.h"
 #include "output.h"
+#include "panels.h"
 #include "messages.h"
 #include "cata_utility.h"
 #include "string_formatter.h"
@@ -807,12 +808,19 @@ void host_game_tick()
  * pressed a key. The client polls with SNAP_REQ instead; the reader threads
  * must not touch game state, so this consumes the flag on the host main
  * thread and answers with the current picture. No-op without a request. */
-void host_pump_snapshot_requests()
-{
+static void av_send_status( int sid );
+
+void host_pump_snapshot_requests(){
     if( !host_pop_snapshot_request() ) {
         return;
     }
     host_game_tick();
+    // DDA MP v4.0a-9: a freshly joined client asks for its first picture right
+    // away; push the sidebar and sheet along with it instead of waiting for
+    // the first world turn.
+    for( int sid : netplay::host_session_ids() ) {
+        av_send_status( sid );
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1226,11 +1234,9 @@ void host_pump_avatar_keys()
 {
     netplay::sid_key sk;
     while( netplay::host_pop_sid_key( sk ) ) {
-        if( av_waiting_for_turn[sk.sid] ) {
-            // Out-of-turn key (the pool is spent): ignore it rather than replay
-            // it later. Cleared when the host's turn starts a new round.
-            continue;
-        }
+        // Never gate on the "waiting" hint flag: it must only suppress repeated
+        // messages. Gating on it deadlocked both sides (host waits for the
+        // client's order, the client's keys were being ignored).
         const auto it = av_sid_to_npc.find( sk.sid );
         if( it == av_sid_to_npc.end() ) {
             // watcher: legacy host player injection
@@ -1356,6 +1362,159 @@ void host_pump_avatar_keys()
     }
 }
 
+/* DDA MP v4.0a-8: raw key=value character data for the client's own sidebar.
+ * The host only reads values; layout, labels and bars are the client's job, so
+ * the client can restyle the panel without any host changes. */
+static std::string build_character_sheet( npc &av )
+{    std::string s;
+    auto add = [&]( const char *k, int v ) {
+        s += k;
+        s += '=';
+        s += std::to_string( v );
+        s += '\n';
+    };
+    auto add_str = [&]( const char *k, const std::string &v ) {
+        s += k;
+        s += '=';
+        s += v;
+        s += '\n';
+    };
+    add_str( "name", av.get_name() );
+    add( "hp", av.get_hp() );
+    add( "hp_max", av.get_hp_max() );
+    add( "stam", av.get_stamina() );
+    add( "stam_max", av.get_stamina_max() );
+    add( "pain", av.get_pain() );
+    add( "sleepy", av.get_sleepiness() );
+    add( "hunger", av.get_hunger() );
+    add( "thirst", av.get_thirst() );
+    add( "str", av.get_str() );
+    add( "dex", av.get_dex() );
+    add( "int", av.get_int() );
+    add( "per", av.get_per() );
+    add( "speed", av.get_speed() );
+    add( "moves", av.get_moves() );
+    add( "morale", av.get_morale_level() );
+    // Body parts: current/maximum HP, the same rows the vanilla sidebar lists.
+    {
+        static const std::pair<const char *, const char *> parts[] = {
+            { "head", "head" }, { "torso", "torso" },
+            { "arm_l", "arm_l" }, { "arm_r", "arm_r" },
+            { "leg_l", "leg_l" }, { "leg_r", "leg_r" },
+        };
+        for( const auto &pr : parts ) {
+            const bodypart_id bp( pr.second );
+            s += "hp_";
+            s += pr.first;
+            s += '=';
+            s += std::to_string( av.get_part_hp_cur( bp ) );
+            s += '/';
+            s += std::to_string( av.get_part_hp_max( bp ) );
+            s += '\n';
+        }
+    }
+    // Active effects (ids) — the client shows them as a list.
+    {
+        std::string eff;
+        for( const effect &e : av.get_effects() ) {
+            if( !eff.empty() ) {
+                eff += ';';
+            }
+            eff += e.get_id().str();
+        }
+        add_str( "effects", eff );
+    }
+    const item_location wielded = av.get_wielded_item();
+    add_str( "wield", wielded ? wielded->tname() : std::string() );
+    add( "wear", static_cast<int>( av.worn.size() ) );
+    return s;
+}
+
+/* DDA MP v4.0a-9: render the host's real sidebar (the player's current panel
+ * layout) for an arbitrary character — here the client's avatar NPC — into a
+ * cell grid, so the client can show exactly the host's panels for its own
+ * character (same widgets, same options, same mods). */
+#if defined(TILES)
+static void build_sidebar_snapshot( sidebar_frame &out, Character &who,
+                                     int max_cols = 0, int max_rows = 0 )
+{
+    panel_manager &mgr = panel_manager::get_manager();
+    const std::vector<window_panel> &panels = mgr.get_current_layout().panels();
+    int width = 0;
+    for( const window_panel &p : panels ) {
+        if( p.render() && p.get_width() > width ) {
+            width = p.get_width();
+        }
+    }
+    if( width <= 0 ) {
+        return;
+    }
+    if( max_cols > 0 ) {
+        width = std::min( width, max_cols );
+    }
+    const int height = max_rows > 0 ? std::min( TERMY, max_rows ) : TERMY;
+    out.width = width;
+    out.height = height;
+    out.cells.assign( static_cast<size_t>( width ) * height, sidebar_cell() );
+    int y = 0;
+    for( const window_panel &p : panels ) {
+        if( !p.render() ) {
+            continue;
+        }
+        // The message-log panel (height -2) mirrors the host's own log; a
+        // remote player must not see the host's messages.
+        if( p.get_height() == -2 ) {
+            continue;
+        }
+        int h = p.get_height();
+        h = std::min( h, height - y );
+        if( h <= 0 ) {
+            break;
+        }
+        if( p.toggle ) {
+            catacurses::window w = catacurses::newwin( h, p.get_width(), point( 0, 0 ) );
+            werase( w );
+            p.draw( { who, w, p.get_widget() } );
+            cata_cursesport::WINDOW *raw = w.get<cata_cursesport::WINDOW>();
+            for( int yy = 0; yy < h && y + yy < height; yy++ ) {
+                for( int xx = 0; xx < p.get_width() && xx < width; xx++ ) {
+                    const cata_cursesport::cursecell &cc = raw->line[yy].chars[xx];
+                    sidebar_cell &dst = out.cells[static_cast<size_t>( y + yy ) * width + xx];
+                    dst.text = cc.ch;
+                    dst.color = static_cast<int>( cc.FG );
+                }
+            }
+        }
+        y += h;
+    }
+}
+#endif
+
+/* DDA MP v4.0a-9: push the status payloads (character sheet + rendered
+ * sidebar) for one session's avatar. Used on join and once per world turn. */
+static void av_send_status( int sid )
+{
+    npc *av = av_session_npc( sid );
+    if( av == nullptr || av->is_dead_state() ) {
+        return;
+    }
+    netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
+    // DDA MP v4.0a-10: the client renders its sidebar from this data itself;
+    // the streamed-cell variant is kept for reference but no longer sent.
+#if defined(TILES)
+    if( false ) {
+        int mp_cols = 0;
+        int mp_rows = 0;
+        netplay::host_client_view( sid, mp_cols, mp_rows );
+        sidebar_frame sb;
+        build_sidebar_snapshot( sb, *av, mp_cols, mp_rows );
+        if( !sb.cells.empty() ) {
+            netplay::host_send_sidebar_to_sid( sid, sb );
+        }
+    }
+#endif
+}
+
 /* DDA MP v4.0a-7: called at the end of every host world turn. A fresh round
  * starts: every session may act again, so clear the per-session "acted" marks
  * and lift their waiting hints. */
@@ -1374,6 +1533,8 @@ void host_note_world_turn()
             // Exactly one turn of move points, never an accumulated stock.
             av_move_pool[sid] = av->get_speed();
             av->set_moves( av_move_pool[sid] );
+            // DDA MP v4.0a-8/9: refresh the client's status payloads.
+            av_send_status( sid );
         }
         av_waiting_for_turn[sid] = false;
         netplay::host_send_hover_to_sid( sid, "" );

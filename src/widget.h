@@ -17,7 +17,7 @@
 #include "translation.h"
 #include "type_id.h"
 
-class avatar;
+class Character;
 
 namespace catacurses
 {
@@ -232,8 +232,8 @@ struct widget_custom_var {
     std::pair<dbl_or_var::part_t, dbl_or_var::part_t> norm;
 
     void deserialize( const JsonObject &jo );
-    void set_widget_var_range( const avatar &ava, widget &wgt ) const;
-    int get_var_value( const avatar &ava ) const;
+    void set_widget_var_range( const Character &ava, widget &wgt ) const;
+    int get_var_value( const Character &ava ) const;
 };
 
 // A widget is a UI element displaying information from the underlying value of a widget_var.
@@ -343,19 +343,19 @@ class widget
         // Layout this widget within max_width, including child widgets. Calling layout on a regular
         // (non-layout style) widget is the same as show(), but will pad with spaces inside the
         // label area, so the returned string is equal to max_width.
-        std::string layout( const avatar &ava, unsigned int max_width = 0, int label_width = 0,
+        std::string layout( const Character &ava, unsigned int max_width = 0, int label_width = 0,
                             bool skip_pad = false );
         // Display labeled widget, with value (number, graph, or string) from an avatar
-        std::string show( const avatar &ava, unsigned int max_width );
+        std::string show( const Character &ava, unsigned int max_width );
         // Return a window_panel for rendering this widget at given width (and possibly height)
         window_panel get_window_panel( int width, int req_height = 1 );
         // Return a colorized string for a _var associated with a description function
-        std::string color_text_function_string( const avatar &ava, unsigned int max_width );
+        std::string color_text_function_string( const Character &ava, unsigned int max_width );
         // Return true if the current _var is one which uses a description function
         bool uses_text_function() const;
 
         // Evaluate and return the bound "var" associated value for an avatar
-        int get_var_value( const avatar &ava ) const;
+        int get_var_value( const Character &ava ) const;
         // True if this widget has the given flag. Used to specify certain behaviors.
         bool has_flag( const flag_id &flag ) const;
         bool has_flag( const std::string &flag ) const;
@@ -363,7 +363,7 @@ class widget
         const bodypart_id &only_bp() const;
 
         // Set _var_min, _var_norm, and _var_max to values from the avatar
-        void set_default_var_range( const avatar &ava );
+        void set_default_var_range( const Character &ava );
 
         // Return a color-enhanced value_string
         std::string color_value_string( int value, int width_max = 0 );
