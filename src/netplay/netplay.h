@@ -88,6 +88,8 @@ struct minimap_frame {
         int dx = 0;
         int dy = 0;
         uint32_t color = 0;
+        std::string name;
+        std::string sym; // display symbol ("@" for characters, monster glyph)
     };
     std::vector<beacon> beacons;
 };

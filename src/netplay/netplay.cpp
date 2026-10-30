@@ -1227,6 +1227,8 @@ bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
         put_i32( p, b.dx );
         put_i32( p, b.dy );
         put_u32( p, b.color );
+        put_str8( p, b.name );
+        put_str8( p, b.sym );
     }
     if( !send_all( it->second, encode_frame( frame::MINIMAP, p ) ) ) {
         close_socket( it->second );
@@ -1633,6 +1635,8 @@ static void client_run( socket_t sock )
                     b.dx = static_cast<int>( r.get_i32() );
                     b.dy = static_cast<int>( r.get_i32() );
                     b.color = r.get_u32();
+                    b.name = r.get_str8();
+                    b.sym = r.get_str8();
                     mm.beacons.push_back( b );
                 }
                 if( r.ok ) {

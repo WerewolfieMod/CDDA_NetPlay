@@ -903,8 +903,23 @@ void run_view_loop()
                     }
                 }
             }
+            int draw_y = 0;
             for( int row = 0; row < used_rows; row++ ) {
-                const float y = row * ch;
+                // Skip blank rows: the host's panels leave empty lines between
+                // blocks, the client shows a tight list.
+                bool row_empty = true;
+                for( int col = 0; col < mp_side.width; col++ ) {
+                    const std::string &t = mp_side.cells[static_cast<size_t>( row ) *
+                                                          mp_side.width + col].text;
+                    if( !t.empty() && t != " " ) {
+                        row_empty = false;
+                        break;
+                    }
+                }
+                if( row_empty ) {
+                    continue;
+                }
+                const float y = draw_y * ch;
                 if( y + ch > io.DisplaySize.y ) {
                     break;
                 }
@@ -932,58 +947,28 @@ void run_view_loop()
                                  run.c_str() );
                     col = c;
                 }
+                ++draw_y;
             }
             // DDA MP v4.0a-11: the client's own message log, under the panels.
-            float ly = used_rows * ch;
-            // DDA MP v4.0a-12: overmap minimap (host-coloured tiles).
-            if( mp_mini_map.width > 0 && mp_mini_map.height > 0 &&
-                mp_mini_map.color.size() == static_cast<size_t>( mp_mini_map.width ) *
-                mp_mini_map.height ) {
-                const float dot = 2.0f;
-                const float mw = mp_mini_map.width * dot;
-                const float mh = mp_mini_map.height * dot;
-                // Center the block inside the sidebar column (like the host's panel).
-                const float mp_panel_w = mp_side.width > 0 ? mp_side.width * cw : ( io.DisplaySize.x - x0 );
-                const float mx = x0 + std::max( 0.0f, ( mp_panel_w - mw ) / 2.0f );
-                if( ly + mh + ch < io.DisplaySize.y ) {
-                    dl->AddRectFilled( ImVec2( mx, ly ), ImVec2( mx + mw, ly + mh ),
-                                       IM_COL32( 0, 0, 0, 255 ) );
-                    for( int yy = 0; yy < mp_mini_map.height; yy++ ) {
-                        for( int xx = 0; xx < mp_mini_map.width; xx++ ) {
-                            const size_t mi = static_cast<size_t>( yy ) * mp_mini_map.width + xx;
-                            const int light = mi < mp_mini_map.seen.size() ?
-                                              static_cast<int>( mp_mini_map.seen[mi] ) : 0;
-                            if( light == 0 ) {
-                                continue; // DARK/BLANK: not drawn, like the host
-                            }
-                            const int ci = static_cast<int>( mp_mini_map.color[mi] );
-                            // LOW light is desaturated by the host; use a dim gray here.
-                            const ImU32 col = light == 1 ? IM_COL32( 110, 110, 110, 255 ) :
-                                              cataimgui::ImU32_from_color( decode_cell_color( ci ) );
-                            dl->AddRectFilled( ImVec2( mx + xx * dot + 0.5f, ly + yy * dot + 0.5f ),
-                                               ImVec2( mx + ( xx + 1 ) * dot - 0.5f,
-                                                       ly + ( yy + 1 ) * dot - 0.5f ), col );
-                        }
-                    }
-                    // Critter beacons (diamonds), like the host's minimap.
-                    for( const minimap_frame::beacon &b : mp_mini_map.beacons ) {
-                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx ) * dot + dot / 2.0f;
-                        const float by = ly + ( mp_mini_map.height / 2 + b.dy ) * dot + dot / 2.0f;
-                        const ImU32 bcol = cataimgui::ImU32_from_color(
-                                               decode_cell_color( static_cast<int>( b.color ) ) );
-                        dl->AddQuadFilled( ImVec2( bx, by - dot ), ImVec2( bx + dot, by ),
-                                           ImVec2( bx, by + dot ), ImVec2( bx - dot, by ), bcol );
-                    }
-                    // Player marker: white diamond at the centre tile.
-                    const float cx = mx + ( mp_mini_map.width / 2 ) * dot + dot / 2.0f;
-                    const float cy = ly + ( mp_mini_map.height / 2 ) * dot + dot / 2.0f;
-                    dl->AddQuadFilled( ImVec2( cx, cy - dot * 0.6f ), ImVec2( cx + dot * 0.6f, cy ),
-                                       ImVec2( cx, cy + dot * 0.6f ), ImVec2( cx - dot * 0.6f, cy ),
-                                       IM_COL32( 255, 255, 255, 255 ) );
-                    ly += mh + ch;
+            float ly = draw_y * ch;
+            // DDA MP v4.0a-13: creatures this character can see (own list).
+            int mp_shown = 0;
+            for( const minimap_frame::beacon &bb : mp_mini_map.beacons ) {
+                if( bb.name.empty() || mp_shown >= 12 || ly + ch > io.DisplaySize.y ) {
+                    continue;
                 }
+                dl->AddText( ImVec2( x0, ly ),
+                             cataimgui::ImU32_from_color(
+                                 decode_cell_color( static_cast<int>( bb.color ) ) ),
+                             ( bb.sym + " " + bb.name ).c_str() );
+                ly += ch;
+                ++mp_shown;
             }
-            const int mp_fit = static_cast<int>( ( io.DisplaySize.y - ly ) / ch );
+            // Minimap is anchored at the bottom; the log fills the space above.
+            const float mp_mini_top = mp_mini_map.width > 0 ?
+                                      io.DisplaySize.y - mp_mini_map.height * 2.0f - 2.0f :
+                                      io.DisplaySize.y;
+            const int mp_fit = static_cast<int>( ( mp_mini_top - ch - ly ) / ch );
             if( mp_fit > 0 && !mp_log.empty() ) {
                 const int first = std::max( 0, static_cast<int>( mp_log.size() ) - mp_fit );
                 for( int i = first; i < static_cast<int>( mp_log.size() ); i++ ) {
@@ -1002,6 +987,54 @@ void run_view_loop()
                     dl->AddText( ImVec2( x0, ly ),
                                  cataimgui::ImU32_from_color( ml_col ), ml.text.c_str() );
                     ly += ch;
+                }
+            }
+            // DDA MP v4.0a-12: overmap minimap (host-coloured tiles).
+            if( mp_mini_map.width > 0 && mp_mini_map.height > 0 &&
+                mp_mini_map.color.size() == static_cast<size_t>( mp_mini_map.width ) *
+                mp_mini_map.height ) {
+                const float dot = 2.0f;
+                const float mw = mp_mini_map.width * dot;
+                const float mh = mp_mini_map.height * dot;
+                // Center the block inside the sidebar column (like the host's panel).
+                const float mp_panel_w = mp_side.width > 0 ? mp_side.width * cw : ( io.DisplaySize.x - x0 );
+                const float mx = x0 + std::max( 0.0f, ( mp_panel_w - mw ) / 2.0f );
+                if( mp_mini_top + mh <= io.DisplaySize.y + 1.0f ) {
+                    const float mini_y = mp_mini_top;
+                    dl->AddRectFilled( ImVec2( mx, mini_y ), ImVec2( mx + mw, mini_y + mh ),
+                                       IM_COL32( 0, 0, 0, 255 ) );
+                    for( int yy = 0; yy < mp_mini_map.height; yy++ ) {
+                        for( int xx = 0; xx < mp_mini_map.width; xx++ ) {
+                            const size_t mi = static_cast<size_t>( yy ) * mp_mini_map.width + xx;
+                            const int light = mi < mp_mini_map.seen.size() ?
+                                              static_cast<int>( mp_mini_map.seen[mi] ) : 0;
+                            if( light == 0 ) {
+                                continue; // DARK/BLANK: not drawn, like the host
+                            }
+                            const int ci = static_cast<int>( mp_mini_map.color[mi] );
+                            // LOW light is desaturated by the host; use a dim gray here.
+                            const ImU32 col = light == 1 ? IM_COL32( 110, 110, 110, 255 ) :
+                                              cataimgui::ImU32_from_color( decode_cell_color( ci ) );
+                            dl->AddRectFilled( ImVec2( mx + xx * dot + 0.5f, mini_y + yy * dot + 0.5f ),
+                                               ImVec2( mx + ( xx + 1 ) * dot - 0.5f,
+                                                       mini_y + ( yy + 1 ) * dot - 0.5f ), col );
+                        }
+                    }
+                    // Critter beacons (diamonds), like the host's minimap.
+                    for( const minimap_frame::beacon &b : mp_mini_map.beacons ) {
+                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx ) * dot + dot / 2.0f;
+                        const float by = mini_y + ( mp_mini_map.height / 2 + b.dy ) * dot + dot / 2.0f;
+                        const ImU32 bcol = cataimgui::ImU32_from_color(
+                                               decode_cell_color( static_cast<int>( b.color ) ) );
+                        dl->AddQuadFilled( ImVec2( bx, by - dot ), ImVec2( bx + dot, by ),
+                                           ImVec2( bx, by + dot ), ImVec2( bx - dot, by ), bcol );
+                    }
+                    // Player marker: white diamond at the centre tile.
+                    const float cx = mx + ( mp_mini_map.width / 2 ) * dot + dot / 2.0f;
+                    const float cy = mini_y + ( mp_mini_map.height / 2 ) * dot + dot / 2.0f;
+                    dl->AddQuadFilled( ImVec2( cx, cy - dot * 0.6f ), ImVec2( cx + dot * 0.6f, cy ),
+                                       ImVec2( cx, cy + dot * 0.6f ), ImVec2( cx - dot * 0.6f, cy ),
+                                       IM_COL32( 255, 255, 255, 255 ) );
                 }
             }
             mp_sb_overlay_w = io.DisplaySize.x - x0;

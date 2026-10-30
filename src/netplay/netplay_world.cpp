@@ -1475,9 +1475,19 @@ static void build_sidebar_snapshot( sidebar_frame &out, Character &who,
             continue;
         }
         // The message-log panel (height -2) mirrors the host's own log; a
-        // remote player must not see the host's messages.
+        // remote player must not see the host's messages. The critter list is
+        // likewise computed around the host player.
         if( p.get_height() == -2 ) {
             continue;
+        }
+        {
+            const std::string mp_wid = p.get_widget().str();
+            if( mp_wid.find( "monster" ) != std::string::npos ||
+                mp_wid.find( "creature" ) != std::string::npos ||
+                mp_wid.find( "critter" ) != std::string::npos ||
+                mp_wid.find( "npc" ) != std::string::npos ) {
+                continue;
+            }
         }
         int h = p.get_height();
         h = std::min( h, height - y );
@@ -1499,6 +1509,35 @@ static void build_sidebar_snapshot( sidebar_frame &out, Character &who,
             }
         }
         y += h;
+    }
+    // DDA MP v4.0a-13: drop rows that echo creature names (the host's own NPC
+    // panel). The client renders its own list from the minimap beacons.
+    {
+        std::vector<std::string> mp_names;
+        for( npc &guy : g->all_npcs() ) {
+            if( &guy != &who ) {
+                mp_names.push_back( guy.get_name() );
+            }
+        }
+        for( monster &mon : g->all_monsters() ) {
+            mp_names.push_back( mon.get_name() );
+        }
+        for( int row = 0; row < out.height; row++ ) {
+            std::string rowtext;
+            for( int col = 0; col < out.width; col++ ) {
+                rowtext += out.cells[static_cast<size_t>( row ) * out.width + col].text;
+            }
+            for( const std::string &nm : mp_names ) {
+                if( !nm.empty() && rowtext.find( nm ) != std::string::npos ) {
+                    for( int col = 0; col < out.width; col++ ) {
+                        sidebar_cell &c = out.cells[static_cast<size_t>( row ) * out.width + col];
+                        c.text.clear();
+                        c.color = 0;
+                    }
+                    break;
+                }
+            }
+        }
     }
 }
 #endif
@@ -1568,7 +1607,7 @@ static void av_send_status( int sid )
         }
         // Critter beacons (same idea as the host's pixel minimap diamonds).
         for( monster &mon : g->all_monsters() ) {
-            if( !av->sees( here, mon ) ) {
+            if( !av->sees( here, mon.pos_bub() ) ) {
                 continue;
             }
             const tripoint_bub_ms mp = mon.pos_bub();
@@ -1578,11 +1617,12 @@ static void av_send_status( int sid )
                 const monster_attitude matt = mon.attitude( av );
                 const bool hostile = matt == MATT_ATTACK || matt == MATT_FOLLOW;
                 mm.beacons.push_back( { bx, by, static_cast<uint32_t>(
-                                           hostile ? 1 : mp_base_color_index( mon.symbol_color() ) ) } );
+                                           hostile ? 1 : mp_base_color_index( mon.symbol_color() ) ),
+                                        mon.get_name(), mon.symbol() } );
             }
         }
         for( npc &guy : g->all_npcs() ) {
-            if( &guy == av || !av->sees( here, guy ) ) {
+            if( &guy == av || !av->sees( here, guy.pos_bub() ) ) {
                 continue;
             }
             const tripoint_bub_ms mp = guy.pos_bub();
@@ -1590,7 +1630,22 @@ static void av_send_status( int sid )
             const int by = mp.y() - center.y();
             if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
                 mm.beacons.push_back( { bx, by,
-                                        static_cast<uint32_t>( mp_base_color_index( guy.symbol_color() ) ) } );
+                                        static_cast<uint32_t>( mp_base_color_index( guy.symbol_color() ) ),
+                                        guy.get_name(), "@" } );
+            }
+        }
+        // The host player is an avatar, not an NPC — add it explicitly.
+        {
+            avatar &host_u = get_avatar();
+            if( av->sees( here, host_u.pos_bub() ) ) {
+                const tripoint_bub_ms mp = host_u.pos_bub();
+                const int bx = mp.x() - center.x();
+                const int by = mp.y() - center.y();
+                if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
+                    mm.beacons.push_back( { bx, by, static_cast<uint32_t>(
+                                               mp_base_color_index( host_u.symbol_color() ) ),
+                                            host_u.get_name(), "@" } );
+                }
             }
         }
         netplay::host_send_minimap_to_sid( sid, mm );
