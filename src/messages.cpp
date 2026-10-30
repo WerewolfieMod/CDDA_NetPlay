@@ -32,6 +32,7 @@
 #include "string_input_popup.h"
 #include "translation.h"
 #include "translations.h"
+#include "netplay/netplay.h"
 #include "type_id.h"
 #include "ui_manager.h"
 #include "viewer.h"

@@ -1296,7 +1296,10 @@ void host_pump_avatar_keys()
             if( pool_it == av_move_pool.end() ) {
                 pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
             }
-            if( mp_step_cost > pool_it->second ) {
+            // DDA MP v4.0a-11: a step may cost more than one turn's pool (bench,
+            // dresser, rubble...). Vanilla lets the player spend what they have
+            // for such a move; requiring cost <= pool made furniture impassable.
+            if( pool_it->second <= 0 ) {
                 // pool exhausted: the move waits for the next world turn;
                 // the key is NOT eaten — the session keeps its single action
                 // in flight until the pool can pay for it. Break, not
@@ -1321,6 +1324,14 @@ void host_pump_avatar_keys()
             // NPC loader resets the engine moves on every bubble flip).
             av_move_pool[sk.sid] = std::max( 0, av_move_pool[sk.sid] - mp_step_cost );
             npc_ptr->set_moves( av_move_pool[sk.sid] );
+            // DDA MP v4.0a-11: same rule as the host's game::walk_move — tell the
+            // client only when the destination tile is slower than the tile it
+            // left ("Moving onto this %s is slow!"), never for leaving it.
+            if( here.move_cost( dst ) > here.move_cost( mp_from ) ) {
+                netplay::host_send_event_to_sid(
+                    sk.sid, string_format( _( "Moving onto this %s is slow!" ),
+                                           here.name( dst ) ),
+                    static_cast<int>( m_warning ) );            }
             // DDA MP: this noise came from another player's avatar — the
             // host's "?" placement must check whether it sees the avatar,
             // not the tile it just left (which may peek around a corner).
@@ -1427,6 +1438,8 @@ static std::string build_character_sheet( npc &av )
     const item_location wielded = av.get_wielded_item();
     add_str( "wield", wielded ? wielded->tname() : std::string() );
     add( "wear", static_cast<int>( av.worn.size() ) );
+    // World turn, so the client can age its message log in game time.
+    add( "turn", to_turn<int>( calendar::turn ) );
     return s;
 }
 
@@ -1499,10 +1512,8 @@ static void av_send_status( int sid )
         return;
     }
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
-    // DDA MP v4.0a-10: the client renders its sidebar from this data itself;
-    // the streamed-cell variant is kept for reference but no longer sent.
 #if defined(TILES)
-    if( false ) {
+    {
         int mp_cols = 0;
         int mp_rows = 0;
         netplay::host_client_view( sid, mp_cols, mp_rows );

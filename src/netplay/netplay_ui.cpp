@@ -627,6 +627,7 @@ struct mp_sheet_data {
     int intel = 0;
     int per = 0;
     int wear = 0;
+    int turn = 0; // world turn for message ageing
     int speed = 0;
     int moves = 0;
     int morale = 0;
@@ -685,6 +686,8 @@ mp_sheet_data mp_parse_sheet( const std::string &text )
             to_int( d.per );
         } else if( k == "wear" ) {
             to_int( d.wear );
+        } else if( k == "turn" ) {
+            to_int( d.turn );
         } else if( k == "speed" ) {
             to_int( d.speed );
         } else if( k == "moves" ) {
@@ -854,14 +857,128 @@ void run_view_loop()
     bool mp_sheet_open = true; // the status panel is docked by default
     snapshot mp_sidebar;
     sidebar_frame mp_side;
-    // DDA MP v4.0a-10: sidebar pixel width, measured during the ImGui redraw
-    // (ImGui is not in a frame here, so the value is one frame old — fine).
+    // DDA MP v4.0a-11: the client keeps its own message log (the host's log is
+    // not streamed). Fed by state diffs and client-side events.
+    struct mp_log_line {
+        std::string text;
+        int type = 0;
+        int turn = 0;
+    };
+    static std::vector<mp_log_line> mp_log;
+    static mp_sheet_data mp_prev;
+    static int mp_cur_turn = 0;
+    auto mp_log_add = []( const std::string & s, int type ) {
+        if( mp_log.size() >= 200 ) {
+            mp_log.erase( mp_log.begin() );
+        }
+        mp_log.push_back( { s, type, mp_cur_turn } );
+    };
     static float mp_sb_overlay_w = 0.0f;
+    static snapshot mp_mini;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
     ui_adaptor mp_sb_adaptor;
     mp_sb_adaptor.on_redraw( [&]( const ui_adaptor & ) {
+        const ImGuiIO &io = ImGui::GetIO();
+        ImDrawList *dl = ImGui::GetForegroundDrawList();
+        const float fs = ImGui::GetFontSize();
+        const float pad = fs * 0.6f;
+        // DDA MP v4.0a-10: prefer the host-rendered panels (identical look:
+        // same widgets, layout, colours), drawn here in the pixel layer.
+        if( !mp_side.cells.empty() ) {
+            const float cw = ImGui::CalcTextSize( "M" ).x;
+            const float ch = ImGui::GetTextLineHeight();
+            const float x0 = std::max( 0.0f, io.DisplaySize.x - mp_side.width * cw - cw );
+            dl->AddRectFilled( ImVec2( x0 - cw, 0.0f ), io.DisplaySize, IM_COL32( 0, 0, 0, 210 ) );
+            // Real used height: the frame is TERMY rows tall, most of them empty.
+            int used_rows = 0;
+            for( int row = 0; row < mp_side.height; row++ ) {
+                for( int col = 0; col < mp_side.width; col++ ) {
+                    const std::string &t = mp_side.cells[static_cast<size_t>( row ) *
+                                                          mp_side.width + col].text;
+                    if( !t.empty() && t != " " ) {
+                        used_rows = row + 1;
+                        break;
+                    }
+                }
+            }
+            for( int row = 0; row < used_rows; row++ ) {
+                const float y = row * ch;
+                if( y + ch > io.DisplaySize.y ) {
+                    break;
+                }
+                int col = 0;
+                while( col < mp_side.width ) {
+                    const sidebar_cell &c0 = mp_side.cells[static_cast<size_t>( row ) *
+                                                           mp_side.width + col];
+                    if( c0.text.empty() || c0.text == " " ) {
+                        ++col;
+                        continue;
+                    }
+                    std::string run = c0.text;
+                    int c = col + 1;
+                    while( c < mp_side.width ) {
+                        const sidebar_cell &cn = mp_side.cells[static_cast<size_t>( row ) *
+                                                               mp_side.width + c];
+                        if( cn.text.empty() || cn.color != c0.color ) {
+                            break;
+                        }
+                        run += cn.text;
+                        ++c;
+                    }
+                    dl->AddText( ImVec2( x0 + col * cw, y ),
+                                 cataimgui::ImU32_from_color( decode_cell_color( c0.color ) ),
+                                 run.c_str() );
+                    col = c;
+                }
+            }
+            // DDA MP v4.0a-11: the client's own message log, under the panels.
+            float ly = used_rows * ch;
+            // DDA MP v4.0a-11: client-side minimap of the streamed frame (the
+            // host's pixel minimap cannot render into our offscreen panel).
+            if( !mp_mini.cells.empty() && mp_mini.width > 0 && mp_mini.height > 0 ) {
+                const float dot = 2.0f;
+                const float mw = mp_mini.width * dot;
+                const float mh = mp_mini.height * dot;
+                if( ly + mh + ch < io.DisplaySize.y ) {
+                    for( int yy = 0; yy < mp_mini.height; yy++ ) {
+                        for( int xx = 0; xx < mp_mini.width; xx++ ) {
+                            const cell &mc = mp_mini.cells[static_cast<size_t>( yy ) *
+                                                           mp_mini.width + xx];
+                            dl->AddRectFilled( ImVec2( x0 + xx * dot, ly + yy * dot ),
+                                               ImVec2( x0 + ( xx + 1 ) * dot, ly + ( yy + 1 ) * dot ),
+                                               cataimgui::ImU32_from_color(
+                                                   decode_cell_color( mc.color ) ) );
+                        }
+                    }
+                    ly += mh + ch;
+                }
+            }
+            const int mp_fit = static_cast<int>( ( io.DisplaySize.y - ly ) / ch );
+            if( mp_fit > 0 && !mp_log.empty() ) {
+                const int first = std::max( 0, static_cast<int>( mp_log.size() ) - mp_fit );
+                for( int i = first; i < static_cast<int>( mp_log.size() ); i++ ) {
+                    const mp_log_line &ml = mp_log[static_cast<size_t>( i )];
+                    // Same ageing as the host's message log (game turns):
+                    // fresh -> slightly old -> dark gray.
+                    const int mp_age = mp_cur_turn - ml.turn;
+                    nc_color ml_col;
+                    if( mp_age <= 5 ) {
+                        ml_col = msgtype_to_color( static_cast<game_message_type>( ml.type ), false );
+                    } else if( mp_age <= 10 ) {
+                        ml_col = msgtype_to_color( static_cast<game_message_type>( ml.type ), true );
+                    } else {
+                        ml_col = c_dark_gray;
+                    }
+                    dl->AddText( ImVec2( x0, ly ),
+                                 cataimgui::ImU32_from_color( ml_col ), ml.text.c_str() );
+                    ly += ch;
+                }
+            }
+            mp_sb_overlay_w = io.DisplaySize.x - x0;
+            return;
+        }
         if( !mp_sheet_open || mp_sheet_text.empty() ) {
             return;
         }
@@ -870,14 +987,10 @@ void run_view_loop()
             return;
         }
         const std::vector<std::string> lines = mp_sheet_lines( d );
-        ImDrawList *dl = ImGui::GetForegroundDrawList();
-        const ImGuiIO &io = ImGui::GetIO();
-        const float fs = ImGui::GetFontSize();
         float maxw = 0.0f;
         for( const std::string &l : lines ) {
             maxw = std::max( maxw, ImGui::CalcTextSize( l.c_str() ).x );
         }
-        const float pad = fs * 0.6f;
         const float x0 = std::max( 0.0f, io.DisplaySize.x - maxw - pad * 2.0f );
         mp_sb_overlay_w = io.DisplaySize.x - x0;
         dl->AddRectFilled( ImVec2( x0, 0.0f ), io.DisplaySize, IM_COL32( 0, 0, 0, 170 ) );
@@ -935,6 +1048,45 @@ void run_view_loop()
                 std::string mp_sheet;
                 if( netplay::client_sheet( mp_sheet ) ) {
                     mp_sheet_text = std::move( mp_sheet );
+                    const mp_sheet_data d = mp_parse_sheet( mp_sheet_text );
+                    if( d.valid ) {
+                        if( d.turn > 0 ) {
+                            mp_cur_turn = d.turn;
+                        }
+                        if( mp_prev.valid ) {
+                            if( d.hp < mp_prev.hp ) {
+                                mp_log_add( string_format( "Потеряно %d HP", mp_prev.hp - d.hp ),
+                                            static_cast<int>( m_bad ) );
+                            } else if( d.hp > mp_prev.hp ) {
+                                mp_log_add( string_format( "Восстановлено %d HP", d.hp - mp_prev.hp ),
+                                            static_cast<int>( m_good ) );
+                            }
+                            if( d.hunger >= mp_prev.hunger + 10 ) {
+                                mp_log_add( string_format( "Голод: %d", d.hunger ),
+                                            static_cast<int>( m_warning ) );
+                            }
+                            if( d.thirst >= mp_prev.thirst + 10 ) {
+                                mp_log_add( string_format( "Жажда: %d", d.thirst ),
+                                            static_cast<int>( m_info ) );
+                            }
+                            if( d.pain > mp_prev.pain ) {
+                                mp_log_add( string_format( "Боль: %d", d.pain ),
+                                            static_cast<int>( m_bad ) );
+                            }
+                            if( d.effects != mp_prev.effects ) {
+                                mp_log_add( "Состояние изменилось", static_cast<int>( m_info ) );
+                            }
+                        }
+                        mp_prev = d;
+                    }
+                }
+                // Host-rendered panels (preferred: identical look).
+                netplay::client_sidebar( mp_side );
+                // Events for the client's own log.
+                std::string mp_ev_text;
+                int mp_ev_type = 0;
+                while( netplay::client_take_event( mp_ev_text, mp_ev_type ) ) {
+                    mp_log_add( mp_ev_text, mp_ev_type );
                 }
             }
 #if defined(TILES)
@@ -973,6 +1125,7 @@ void run_view_loop()
                 // request loop above.
                 mp_have_picture = true;
                 ensure_window( snap.width, snap.height );
+                mp_mini = snap;
                 // DDA MP diag: when did the client actually adopt a picture
                 // (signature of a few cells tells changed frames apart).
                 if( mp_netplay_diag ) {
@@ -1413,16 +1566,6 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
-            // DDA MP v4.0a-8: 'C' toggles the status sidebar. The panel never
-            // captures input � movement and orders keep working while it is on.
-            {
-                const input_event mp_ev = ctxt.get_raw_input();
-                const int mp_ch = mp_ev.get_first_input();
-                if( mp_ch == 'c' || mp_ch == 'C' ) {
-                    mp_sheet_open = !mp_sheet_open;
-                    continue;
-                }
-            }
             if( action == "QUIT" ) {
                 // DDA MP: ESC opens an in-game-style menu instead of instantly
                 // disconnecting the session.

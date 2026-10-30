@@ -68,6 +68,8 @@ enum class frame : int {
     /// avatar (colour cells), so the client sees the same panels.
     SIDEBAR = 27,           ///< host -> client: rendered sidebar cells
     CLIENT_VIEW = 28,       ///< client -> host: terminal size (u16 cols, u16 rows)
+    /// DDA MP v4.0a-11: one short event line for the client's message log.
+    EVENT_TEXT = 29,        ///< host -> client: str text
 };
 
 /// DDA MP v3.9.1: one item-layer sprite the host's tileset draws on a cell
@@ -256,6 +258,10 @@ bool host_send_hover_to_sid( int sid, const std::string &text );
 bool host_send_sheet_to_sid( int sid, const std::string &text );
 /// DDA MP v4.0a-9: send the host-rendered sidebar (colour cells) to a session.
 bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
+/// DDA MP v4.0a-11: send one event line to the client's message log.
+bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 );
+/// DDA MP v4.0a-11: broadcast one event line to every connected session.
+void host_broadcast_event( const std::string &text, int msg_type );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
@@ -384,6 +390,8 @@ bool client_take_hover( std::string &out );
 bool client_sheet( std::string &out );
 /// DDA MP v4.0a-9: latest rendered sidebar from the host (copied per call).
 bool client_sidebar( sidebar_frame &out );
+/// DDA MP v4.0a-11: pop one event line sent by the host (false when empty).
+bool client_take_event( std::string &out, int &msg_type );
 /// Show a short status hint on the client's screen (empty clears it).
 void client_status_hint( const std::string &text );
 /// DDA MP v4.0a-10: terminal cells that actually fit the drawable window.

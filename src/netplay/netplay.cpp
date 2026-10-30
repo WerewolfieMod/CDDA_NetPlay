@@ -345,6 +345,9 @@ struct netplay_state {
     std::mutex sidebar_mutex;
     sidebar_frame sidebar;
     bool have_sidebar = false;
+    /* DDA MP v4.0a-11: event lines for the client's own message log. */
+    std::mutex event_mutex;
+    std::deque<std::pair<int, std::string>> client_events;
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
@@ -1168,6 +1171,40 @@ bool host_send_hover_to_sid( int sid, const std::string &text )
     return true;
 }
 
+bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    p.push_back( static_cast<char>( msg_type & 0xff ) );
+    put_str( p, text );
+    if( !send_all( it->second, encode_frame( frame::EVENT_TEXT, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+void host_broadcast_event( const std::string &text, int msg_type )
+{
+    std::vector<int> sids;
+    {
+        std::lock_guard<std::mutex> lk( state.sessions_mutex );
+        sids.reserve( state.id2sock.size() );
+        for( const auto &entry : state.id2sock ) {
+            sids.push_back( entry.first );
+        }
+    }
+    for( int sid : sids ) {
+        host_send_event_to_sid( sid, text, msg_type );
+    }
+}
+
 bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb )
 {
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
@@ -1513,6 +1550,19 @@ static void client_run( socket_t sock )
                     state.have_sidebar = true;
                 }
             }
+        } else if( op == frame::EVENT_TEXT ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int msg_type = static_cast<int>( r.get_u8() );
+            const std::string text = r.get_str();
+            if( r.ok && !text.empty() ) {
+                std::lock_guard<std::mutex> lk( state.event_mutex );
+                state.client_events.emplace_back( msg_type, text );
+                if( state.client_events.size() > 200 ) {
+                    state.client_events.pop_front();
+                }
+            }
         } else if( op == frame::BYE ) {
             break;
         }
@@ -1645,6 +1695,18 @@ void client_status_hint( const std::string &text )
     ( void )text;
 }
 #endif
+
+bool client_take_event( std::string &out, int &msg_type )
+{
+    std::lock_guard<std::mutex> lk( state.event_mutex );
+    if( state.client_events.empty() ) {
+        return false;
+    }
+    msg_type = state.client_events.front().first;
+    out = std::move( state.client_events.front().second );
+    state.client_events.pop_front();
+    return true;
+}
 
 bool client_sidebar( sidebar_frame &out )
 {
