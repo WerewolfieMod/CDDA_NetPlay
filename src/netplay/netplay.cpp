@@ -348,6 +348,10 @@ struct netplay_state {
     /* DDA MP v4.0a-11: event lines for the client's own message log. */
     std::mutex event_mutex;
     std::deque<std::pair<int, std::string>> client_events;
+    /* DDA MP v4.0a-12: overmap minimap block. */
+    std::mutex minimap_mutex;
+    minimap_frame minimap;
+    bool have_minimap = false;
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
@@ -1190,6 +1194,49 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )
     return true;
 }
 
+bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    if( mp_diag_enabled() ) {
+        static int mp_mm_logged = 0;
+        if( mp_mm_logged < 3 ) {
+            ++mp_mm_logged;
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "minimap tx sid=%d %dx%d c0=%u c1=%u\n", sid, mm.width, mm.height,
+                              mm.color.empty() ? 0u : mm.color[0],
+                              mm.color.size() > 1 ? mm.color[1] : 0u );
+                std::fclose( f );
+            }
+        }
+    }
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( mm.width ) );
+    put_u16( p, static_cast<uint16_t>( mm.height ) );
+    for( uint32_t c : mm.color ) {
+        put_u32( p, c );
+    }
+    for( uint8_t s : mm.seen ) {
+        p.push_back( static_cast<char>( s ) );
+    }
+    put_u16( p, static_cast<uint16_t>( mm.beacons.size() ) );
+    for( const minimap_frame::beacon &b : mm.beacons ) {
+        put_i32( p, b.dx );
+        put_i32( p, b.dy );
+        put_u32( p, b.color );
+    }
+    if( !send_all( it->second, encode_frame( frame::MINIMAP, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
 void host_broadcast_event( const std::string &text, int msg_type )
 {
     std::vector<int> sids;
@@ -1563,6 +1610,52 @@ static void client_run( socket_t sock )
                     state.client_events.pop_front();
                 }
             }
+        } else if( op == frame::MINIMAP ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            minimap_frame mm;
+            mm.width = static_cast<int>( r.get_u16() );
+            mm.height = static_cast<int>( r.get_u16() );
+            if( r.ok && mm.width > 0 && mm.height > 0 && mm.width <= 128 && mm.height <= 128 ) {
+                const size_t n = static_cast<size_t>( mm.width ) * mm.height;
+                mm.color.reserve( n );
+                for( size_t i = 0; i < n && r.ok; i++ ) {
+                    mm.color.push_back( r.get_u32() );
+                }
+                mm.seen.reserve( n );
+                for( size_t i = 0; i < n && r.ok; i++ ) {
+                    mm.seen.push_back( r.get_u8() );
+                }
+                const uint16_t nb = static_cast<uint16_t>( r.get_u16() );
+                for( uint16_t i = 0; i < nb && r.ok; i++ ) {
+                    minimap_frame::beacon b;
+                    b.dx = static_cast<int>( r.get_i32() );
+                    b.dy = static_cast<int>( r.get_i32() );
+                    b.color = r.get_u32();
+                    mm.beacons.push_back( b );
+                }
+                if( r.ok ) {
+                    std::lock_guard<std::mutex> lk( state.minimap_mutex );
+                    state.minimap = std::move( mm );
+                    state.have_minimap = true;
+                    if( mp_diag_enabled() ) {
+                        static int mp_mm_rx = 0;
+                        if( mp_mm_rx < 3 ) {
+                            ++mp_mm_rx;
+                            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "minimap rx %dx%d c0=%u c1=%u\n",
+                                              state.minimap.width, state.minimap.height,
+                                              state.minimap.color.empty() ? 0u :
+                                              state.minimap.color[0],
+                                              state.minimap.color.size() > 1 ?
+                                              state.minimap.color[1] : 0u );
+                                std::fclose( f );
+                            }
+                        }
+                    }
+                }
+            }
         } else if( op == frame::BYE ) {
             break;
         }
@@ -1695,6 +1788,16 @@ void client_status_hint( const std::string &text )
     ( void )text;
 }
 #endif
+
+bool client_minimap( minimap_frame &out )
+{
+    std::lock_guard<std::mutex> lk( state.minimap_mutex );
+    if( !state.have_minimap ) {
+        return false;
+    }
+    out = state.minimap;
+    return true;
+}
 
 bool client_take_event( std::string &out, int &msg_type )
 {

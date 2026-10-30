@@ -874,7 +874,7 @@ void run_view_loop()
         mp_log.push_back( { s, type, mp_cur_turn } );
     };
     static float mp_sb_overlay_w = 0.0f;
-    static snapshot mp_mini;
+    static minimap_frame mp_mini_map;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
@@ -935,23 +935,51 @@ void run_view_loop()
             }
             // DDA MP v4.0a-11: the client's own message log, under the panels.
             float ly = used_rows * ch;
-            // DDA MP v4.0a-11: client-side minimap of the streamed frame (the
-            // host's pixel minimap cannot render into our offscreen panel).
-            if( !mp_mini.cells.empty() && mp_mini.width > 0 && mp_mini.height > 0 ) {
+            // DDA MP v4.0a-12: overmap minimap (host-coloured tiles).
+            if( mp_mini_map.width > 0 && mp_mini_map.height > 0 &&
+                mp_mini_map.color.size() == static_cast<size_t>( mp_mini_map.width ) *
+                mp_mini_map.height ) {
                 const float dot = 2.0f;
-                const float mw = mp_mini.width * dot;
-                const float mh = mp_mini.height * dot;
+                const float mw = mp_mini_map.width * dot;
+                const float mh = mp_mini_map.height * dot;
+                // Center the block inside the sidebar column (like the host's panel).
+                const float mp_panel_w = mp_side.width > 0 ? mp_side.width * cw : ( io.DisplaySize.x - x0 );
+                const float mx = x0 + std::max( 0.0f, ( mp_panel_w - mw ) / 2.0f );
                 if( ly + mh + ch < io.DisplaySize.y ) {
-                    for( int yy = 0; yy < mp_mini.height; yy++ ) {
-                        for( int xx = 0; xx < mp_mini.width; xx++ ) {
-                            const cell &mc = mp_mini.cells[static_cast<size_t>( yy ) *
-                                                           mp_mini.width + xx];
-                            dl->AddRectFilled( ImVec2( x0 + xx * dot, ly + yy * dot ),
-                                               ImVec2( x0 + ( xx + 1 ) * dot, ly + ( yy + 1 ) * dot ),
-                                               cataimgui::ImU32_from_color(
-                                                   decode_cell_color( mc.color ) ) );
+                    dl->AddRectFilled( ImVec2( mx, ly ), ImVec2( mx + mw, ly + mh ),
+                                       IM_COL32( 0, 0, 0, 255 ) );
+                    for( int yy = 0; yy < mp_mini_map.height; yy++ ) {
+                        for( int xx = 0; xx < mp_mini_map.width; xx++ ) {
+                            const size_t mi = static_cast<size_t>( yy ) * mp_mini_map.width + xx;
+                            const int light = mi < mp_mini_map.seen.size() ?
+                                              static_cast<int>( mp_mini_map.seen[mi] ) : 0;
+                            if( light == 0 ) {
+                                continue; // DARK/BLANK: not drawn, like the host
+                            }
+                            const int ci = static_cast<int>( mp_mini_map.color[mi] );
+                            // LOW light is desaturated by the host; use a dim gray here.
+                            const ImU32 col = light == 1 ? IM_COL32( 110, 110, 110, 255 ) :
+                                              cataimgui::ImU32_from_color( decode_cell_color( ci ) );
+                            dl->AddRectFilled( ImVec2( mx + xx * dot + 0.5f, ly + yy * dot + 0.5f ),
+                                               ImVec2( mx + ( xx + 1 ) * dot - 0.5f,
+                                                       ly + ( yy + 1 ) * dot - 0.5f ), col );
                         }
                     }
+                    // Critter beacons (diamonds), like the host's minimap.
+                    for( const minimap_frame::beacon &b : mp_mini_map.beacons ) {
+                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx ) * dot + dot / 2.0f;
+                        const float by = ly + ( mp_mini_map.height / 2 + b.dy ) * dot + dot / 2.0f;
+                        const ImU32 bcol = cataimgui::ImU32_from_color(
+                                               decode_cell_color( static_cast<int>( b.color ) ) );
+                        dl->AddQuadFilled( ImVec2( bx, by - dot ), ImVec2( bx + dot, by ),
+                                           ImVec2( bx, by + dot ), ImVec2( bx - dot, by ), bcol );
+                    }
+                    // Player marker: white diamond at the centre tile.
+                    const float cx = mx + ( mp_mini_map.width / 2 ) * dot + dot / 2.0f;
+                    const float cy = ly + ( mp_mini_map.height / 2 ) * dot + dot / 2.0f;
+                    dl->AddQuadFilled( ImVec2( cx, cy - dot * 0.6f ), ImVec2( cx + dot * 0.6f, cy ),
+                                       ImVec2( cx, cy + dot * 0.6f ), ImVec2( cx - dot * 0.6f, cy ),
+                                       IM_COL32( 255, 255, 255, 255 ) );
                     ly += mh + ch;
                 }
             }
@@ -1082,6 +1110,7 @@ void run_view_loop()
                 }
                 // Host-rendered panels (preferred: identical look).
                 netplay::client_sidebar( mp_side );
+                netplay::client_minimap( mp_mini_map );
                 // Events for the client's own log.
                 std::string mp_ev_text;
                 int mp_ev_type = 0;
@@ -1125,7 +1154,6 @@ void run_view_loop()
                 // request loop above.
                 mp_have_picture = true;
                 ensure_window( snap.width, snap.height );
-                mp_mini = snap;
                 // DDA MP diag: when did the client actually adopt a picture
                 // (signature of a few cells tells changed frames apart).
                 if( mp_netplay_diag ) {

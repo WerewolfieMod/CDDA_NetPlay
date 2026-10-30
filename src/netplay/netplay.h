@@ -70,6 +70,26 @@ enum class frame : int {
     CLIENT_VIEW = 28,       ///< client -> host: terminal size (u16 cols, u16 rows)
     /// DDA MP v4.0a-11: one short event line for the client's message log.
     EVENT_TEXT = 29,        ///< host -> client: str text
+    /// DDA MP v4.0a-12: overmap minimap block around the session avatar.
+    MINIMAP = 30,           ///< host -> client: [w][h][u32 color]*
+};
+
+/// One minimap block: overmap tiles around the avatar, colours precomputed by
+/// the host's overmap display code.
+struct minimap_frame {
+    int width = 0;
+    int height = 0;
+    std::vector<uint32_t> color;
+    /// 1 when the session avatar can see the tile, 0 otherwise (drawn black).
+    std::vector<uint8_t> seen;
+    /// Critter beacons (host's pixel-minimap diamonds): position relative to
+    /// the block centre and a base colour index.
+    struct beacon {
+        int dx = 0;
+        int dy = 0;
+        uint32_t color = 0;
+    };
+    std::vector<beacon> beacons;
 };
 
 /// DDA MP v3.9.1: one item-layer sprite the host's tileset draws on a cell
@@ -262,6 +282,8 @@ bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
 bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 );
 /// DDA MP v4.0a-11: broadcast one event line to every connected session.
 void host_broadcast_event( const std::string &text, int msg_type );
+/// DDA MP v4.0a-12: send the overmap minimap block to a session.
+bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
@@ -392,6 +414,8 @@ bool client_sheet( std::string &out );
 bool client_sidebar( sidebar_frame &out );
 /// DDA MP v4.0a-11: pop one event line sent by the host (false when empty).
 bool client_take_event( std::string &out, int &msg_type );
+/// DDA MP v4.0a-12: latest overmap minimap block (copied per call).
+bool client_minimap( minimap_frame &out );
 /// Show a short status hint on the client's screen (empty clears it).
 void client_status_hint( const std::string &text );
 /// DDA MP v4.0a-10: terminal cells that actually fit the drawable window.

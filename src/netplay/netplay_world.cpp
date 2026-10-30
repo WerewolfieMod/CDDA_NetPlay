@@ -1505,6 +1505,23 @@ static void build_sidebar_snapshot( sidebar_frame &out, Character &who,
 
 /* DDA MP v4.0a-9: push the status payloads (character sheet + rendered
  * sidebar) for one session's avatar. Used on join and once per world turn. */
+/* DDA MP v4.0a-12: minimap tiles are drawn from the base-colour index (the
+ * same 0..15 encoding the client's cells use), so map nc_color here. */
+static int mp_base_color_index( nc_color c )
+{
+    static const nc_color base16[] = {
+        c_black, c_red, c_green, c_brown, c_blue, c_magenta, c_cyan,
+        c_light_gray, c_dark_gray, c_light_red, c_light_green, c_yellow,
+        c_light_blue, c_pink, c_light_cyan, c_white
+    };
+    for( int i = 0; i < 16; i++ ) {
+        if( c == base16[i] ) {
+            return i;
+        }
+    }
+    return 8; // dark gray fallback
+}
+
 static void av_send_status( int sid )
 {
     npc *av = av_session_npc( sid );
@@ -1512,6 +1529,73 @@ static void av_send_status( int sid )
         return;
     }
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
+#if defined(TILES)
+    {
+        // DDA MP v4.0a-12: the host's pixel minimap colours MAP tiles (terrain,
+        // furniture, vehicles) around the player, not overmap tiles. Send the
+        // same data: a square of map tiles around the avatar.
+        minimap_frame mm;
+        constexpr int MP_R = 60; // 121x121 map tiles, like the host's pixel minimap
+        mm.width = MP_R * 2 + 1;
+        mm.height = MP_R * 2 + 1;
+        map &here = get_map();
+        const tripoint_bub_ms center = av->pos_bub();
+        mm.color.reserve( static_cast<size_t>( mm.width ) * mm.height );
+        mm.seen.reserve( static_cast<size_t>( mm.width ) * mm.height );
+        for( int dy = -MP_R; dy <= MP_R; dy++ ) {
+            for( int dx = -MP_R; dx <= MP_R; dx++ ) {
+                const tripoint_bub_ms p = center + tripoint_rel_ms( dx, dy, 0 );
+                nc_color col = c_black;
+                // Light level from the same cache the host's minimap reads:
+                // 0 = DARK/BLANK (not drawn), 1 = LOW (dimmed), 2 = lit.
+                uint8_t light = 0;
+                if( here.inbounds( p ) ) {
+                    const lit_level ll = here.get_cache_ref( center.z() ).visibility_cache[p.x()][p.y()];
+                    if( ll != lit_level::BLANK && ll != lit_level::DARK ) {
+                        light = ll == lit_level::LOW ? 1 : 2;
+                    }
+                    if( const optional_vpart_position vp = here.veh_at( p ) ) {
+                        col = vp->vehicle().get_display_of_tile( vp->mount_pos() ).color;
+                    } else if( const furn_id &furn = here.furn( p ) ) {
+                        col = furn->color();
+                    } else {
+                        col = here.ter( p )->color();
+                    }
+                }
+                mm.color.push_back( static_cast<uint32_t>( mp_base_color_index( col ) ) );
+                mm.seen.push_back( light );
+            }
+        }
+        // Critter beacons (same idea as the host's pixel minimap diamonds).
+        for( monster &mon : g->all_monsters() ) {
+            if( !av->sees( here, mon ) ) {
+                continue;
+            }
+            const tripoint_bub_ms mp = mon.pos_bub();
+            const int bx = mp.x() - center.x();
+            const int by = mp.y() - center.y();
+            if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
+                const monster_attitude matt = mon.attitude( av );
+                const bool hostile = matt == MATT_ATTACK || matt == MATT_FOLLOW;
+                mm.beacons.push_back( { bx, by, static_cast<uint32_t>(
+                                           hostile ? 1 : mp_base_color_index( mon.symbol_color() ) ) } );
+            }
+        }
+        for( npc &guy : g->all_npcs() ) {
+            if( &guy == av || !av->sees( here, guy ) ) {
+                continue;
+            }
+            const tripoint_bub_ms mp = guy.pos_bub();
+            const int bx = mp.x() - center.x();
+            const int by = mp.y() - center.y();
+            if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
+                mm.beacons.push_back( { bx, by,
+                                        static_cast<uint32_t>( mp_base_color_index( guy.symbol_color() ) ) } );
+            }
+        }
+        netplay::host_send_minimap_to_sid( sid, mm );
+    }
+#endif
 #if defined(TILES)
     {
         int mp_cols = 0;
