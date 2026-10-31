@@ -2359,6 +2359,26 @@ void run_view_loop()
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
+                                // DDA MP v4.0a-37: the reticle must be drawn in
+                                // the post-canvas overlay pass; the session
+                                // adaptor pass can end up below the tiles.
+                                if( mp_throw_active && mp_canvas_tw > 0.0f &&
+                                    mp_canvas_th > 0.0f ) {
+                                    netplay::overlay_begin();
+                                    ImDrawList *tdl = ImGui::GetForegroundDrawList();
+                                    const float px = mp_canvas_cx + mp_throw_dx * mp_canvas_tw +
+                                                     mp_canvas_tw * 0.5f;
+                                    const float py = mp_canvas_cy + mp_throw_dy * mp_canvas_th +
+                                                     mp_canvas_th * 0.5f;
+                                    const float r = std::max( mp_canvas_tw, mp_canvas_th ) * 0.55f;
+                                    tdl->AddCircle( ImVec2( px, py ), r,
+                                                    IM_COL32( 255, 90, 90, 255 ), 16, 2.0f );
+                                    tdl->AddLine( ImVec2( px - r, py ), ImVec2( px + r, py ),
+                                                  IM_COL32( 255, 90, 90, 220 ), 1.0f );
+                                    tdl->AddLine( ImVec2( px, py - r ), ImVec2( px, py + r ),
+                                                  IM_COL32( 255, 90, 90, 220 ), 1.0f );
+                                    netplay::overlay_end();
+                                }
                                 mp_frame_trace( "end ok" );
                             }
                         }
