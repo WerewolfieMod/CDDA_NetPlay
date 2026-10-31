@@ -84,6 +84,7 @@ enum class frame : int {
     /// DDA MP v4.0a-43: host-authored aiming panel for a client target tile.
     AIM_INFO_REQ = 35,      ///< client -> host: i32 node, gen, dx, dy
     AIM_INFO = 36,          ///< host -> client: str lines ('\n' separated)
+    AIM_PANEL = 37,         ///< host -> client: rendered w_target cells
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -323,6 +324,10 @@ bool host_pop_aim_request( int &sid, int &node, int &generation, int &dx, int &d
 bool host_send_aim_info_to_sid( int sid, const std::string &text );
 /// Client side: latest aiming panel text.
 bool client_aim_info( std::string &out );
+/// Host -> client rendered aiming window cells.
+bool host_send_aim_panel_to_sid( int sid, const sidebar_frame &sb );
+/// Client side: latest rendered aiming window.
+bool client_aim_panel( sidebar_frame &out );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();

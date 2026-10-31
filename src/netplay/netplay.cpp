@@ -364,6 +364,10 @@ struct netplay_state {
     std::mutex aim_mutex;
     std::string aim_text;
     bool have_aim = false;
+    /* DDA MP: rendered aiming window for the client. */
+    std::mutex aim_panel_mutex;
+    sidebar_frame aim_panel;
+    bool have_aim_panel = false;
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
@@ -1465,6 +1469,39 @@ bool client_aim_info( std::string &out )
     return true;
 }
 
+bool host_send_aim_panel_to_sid( int sid, const sidebar_frame &sb )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( sb.width ) );
+    put_u16( p, static_cast<uint16_t>( sb.height ) );
+    for( const sidebar_cell &c : sb.cells ) {
+        put_str8( p, c.text );
+        put_i32( p, static_cast<int32_t>( c.color ) );
+    }
+    if( !send_all( it->second, encode_frame( frame::AIM_PANEL, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool client_aim_panel( sidebar_frame &out )
+{
+    std::lock_guard<std::mutex> lk( state.aim_panel_mutex );
+    if( !state.have_aim_panel ) {
+        return false;
+    }
+    out = state.aim_panel;
+    return true;
+}
+
 void host_broadcast_event( const std::string &text, int msg_type )
 {
     std::vector<int> sids;
@@ -1839,6 +1876,25 @@ static void client_run( socket_t sock )
                 std::lock_guard<std::mutex> lk( state.aim_mutex );
                 state.aim_text = text;
                 state.have_aim = true;
+            }
+        } else if( op == frame::AIM_PANEL ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            sidebar_frame sb;
+            sb.width = static_cast<int>( r.get_u16() );
+            sb.height = static_cast<int>( r.get_u16() );
+            if( r.ok && sb.width > 0 && sb.height > 0 && sb.width <= 200 && sb.height <= 200 ) {
+                sb.cells.resize( static_cast<size_t>( sb.width ) * sb.height );
+                for( sidebar_cell &c : sb.cells ) {
+                    c.text = r.get_str8();
+                    c.color = r.get_i32();
+                }
+                if( r.ok ) {
+                    std::lock_guard<std::mutex> lk( state.aim_panel_mutex );
+                    state.aim_panel = std::move( sb );
+                    state.have_aim_panel = true;
+                }
             }
         } else if( op == frame::SIDEBAR ) {
             reader r;

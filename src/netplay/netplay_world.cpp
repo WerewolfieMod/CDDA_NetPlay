@@ -2104,16 +2104,19 @@ void host_pump_inventory_actions()
         }
         const tripoint_bub_ms target = npc_ptr->pos_bub() +
                                        tripoint_rel_ms( dx, dy, 0 );
-        const std::vector<std::string> lines = target_handler::netplay_throw_aim_lines(
+        const target_handler::netplay_aim_panel panel = target_handler::netplay_throw_panel(
                     *npc_ptr, *loc.get_item(), target );
-        std::string text;
-        for( const std::string &line : lines ) {
-            if( !text.empty() ) {
-                text += '\n';
+        if( panel.width > 0 && panel.height > 0 ) {
+            sidebar_frame sb;
+            sb.width = panel.width;
+            sb.height = panel.height;
+            sb.cells.resize( panel.cells.size() );
+            for( size_t ci = 0; ci < panel.cells.size(); ci++ ) {
+                sb.cells[ci].text = panel.cells[ci].text;
+                sb.cells[ci].color = panel.cells[ci].color;
             }
-            text += line;
+            netplay::host_send_aim_panel_to_sid( sid, sb );
         }
-        netplay::host_send_aim_info_to_sid( sid, text );
     }
 }
 

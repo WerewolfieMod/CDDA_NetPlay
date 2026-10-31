@@ -1574,89 +1574,44 @@ static void mp_run_host_inventory( const std::string &text )
  * stock reticle. Only the chosen offset is sent to the host. */
 /* DDA MP v4.0a-45: host-style aiming panel, drawn after the canvas. The host
  * text carries <color_x> tags; they are parsed here instead of showing tags. */
+/* DDA MP v4.0a-46: the host renders its real w_target aiming window and
+ * streams the cells; the client simply paints that grid, so layout, colours,
+ * target info, steadiness bar and chances match cell for cell. */
+static netplay::sidebar_frame mp_aim_panel;
+static bool mp_have_aim_panel = false;
+
 static void mp_draw_aim_panel()
 {
+    if( !mp_have_aim_panel || mp_aim_panel.width <= 0 || mp_aim_panel.height <= 0 ) {
+        return;
+    }
     const ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
-    const float fs = ImGui::GetFontSize();
-    const float lh = ImGui::GetTextLineHeight();
-    std::vector<std::string> lines;
-    {
-        std::istringstream ls( mp_aim_text );
-        std::string line;
-        while( std::getline( ls, line ) ) {
-            lines.push_back( line );
+    const float cw = ImGui::CalcTextSize( "M" ).x;
+    const float ch = ImGui::GetTextLineHeight();
+    const float pw = mp_aim_panel.width * cw;
+    const float ph = mp_aim_panel.height * ch;
+    const float px = std::max( 0.0f, io.DisplaySize.x - pw );
+    const float py = 0.0f;
+    dl->AddRectFilled( ImVec2( px - 1, py - 1 ), ImVec2( px + pw + 1, py + ph + 1 ),
+                       IM_COL32( 0, 0, 0, 245 ) );
+    for( int row = 0; row < mp_aim_panel.height; row++ ) {
+        float col_px = 0.0f;
+        for( int col = 0; col < mp_aim_panel.width; col++ ) {
+            const netplay::sidebar_cell &c = mp_aim_panel.cells[
+                                                 static_cast<size_t>( row ) * mp_aim_panel.width + col];
+            const float x = px + col * cw;
+            const float y = py + row * ch;
+            if( c.text.empty() || c.text == " " ) {
+                continue;
+            }
+            dl->AddText( ImVec2( x, y ),
+                         cataimgui::ImU32_from_color( decode_cell_color( c.color ) ),
+                         c.text.c_str() );
+            col_px += cw;
         }
+        ( void )col_px;
     }
-    const float pw = std::min( io.DisplaySize.x - 16.0f, fs * 30.0f );
-    const float ph = lh * ( static_cast<float>( lines.size() ) + 3.0f ) + 10.0f;
-    const float px = std::max( 8.0f, io.DisplaySize.x - pw - 8.0f );
-    const float py = 8.0f;
-    dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ), IM_COL32( 0, 0, 0, 235 ) );
-    dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
-                 IM_COL32( 190, 190, 190, 255 ) );
-
-    auto tag_color = []( const std::string & name ) -> ImU32 {
-        if( name == "green" ) {
-            return IM_COL32( 120, 255, 120, 255 );
-        }
-        if( name == "magenta" ) {
-            return IM_COL32( 255, 120, 255, 255 );
-        }
-        if( name == "light_blue" ) {
-            return IM_COL32( 120, 200, 255, 255 );
-        }
-        if( name == "dark_gray" ) {
-            return IM_COL32( 120, 120, 120, 255 );
-        }
-        if( name == "white" ) {
-            return IM_COL32( 255, 255, 255, 255 );
-        }
-        if( name == "red" ) {
-            return IM_COL32( 255, 100, 100, 255 );
-        }
-        return IM_COL32( 200, 200, 200, 255 ); // light_gray
-    };
-    auto draw_tagged = [&]( float y, const std::string & text ) {
-        std::size_t pos = 0;
-        float x = px + 8.0f;
-        ImU32 col = IM_COL32( 210, 210, 210, 255 );
-        while( pos < text.size() ) {
-            const std::size_t lt = text.find( '<', pos );
-            const std::string chunk = text.substr( pos, ( lt == std::string::npos ?
-                                            text.size() : lt ) - pos );
-            if( !chunk.empty() ) {
-                const std::string vis = mp_clip_text( chunk, px + pw - 8.0f - x );
-                dl->AddText( ImVec2( x, y ), col, vis.c_str() );
-                x += ImGui::CalcTextSize( vis.c_str() ).x;
-            }
-            if( lt == std::string::npos ) {
-                break;
-            }
-            const std::size_t gt = text.find( '>', lt );
-            if( gt == std::string::npos ) {
-                break;
-            }
-            const std::string tag = text.substr( lt + 1, gt - lt - 1 );
-            if( tag == "/color" ) {
-                col = IM_COL32( 210, 210, 210, 255 );
-            } else if( tag.compare( 0, 6, "color_" ) == 0 ) {
-                col = tag_color( tag.substr( 6 ) );
-            }
-            pos = gt + 1;
-        }
-    };
-
-    float ty = py + lh * 0.35f;
-    const std::string title = string_format( "< %s >", _( "Aiming" ) );
-    dl->AddText( ImVec2( px + 8, ty ), IM_COL32( 240, 240, 240, 255 ), title.c_str() );
-    ty += lh;
-    for( const std::string &line : lines ) {
-        draw_tagged( ty, line );
-        ty += lh;
-    }
-    dl->AddText( ImVec2( px + 8, ty ), IM_COL32( 190, 190, 190, 255 ),
-                 _( "[Enter] throw   [Esc] cancel" ) );
 }
 
 static void mp_run_client_throw( const item &thrown, int node, int generation,
@@ -2093,6 +2048,13 @@ void run_view_loop()
                     std::string mp_ai;
                     if( netplay::client_aim_info( mp_ai ) ) {
                         mp_aim_text = std::move( mp_ai );
+                    }
+                }
+                {
+                    netplay::sidebar_frame ap;
+                    if( netplay::client_aim_panel( ap ) ) {
+                        mp_aim_panel = std::move( ap );
+                        mp_have_aim_panel = true;
                     }
                 }
                 // Events for the client's own log.
@@ -2665,6 +2627,7 @@ void run_view_loop()
                 if( mp_key == 27 || action == "QUIT" ) {
                     mp_throw_active = false;
                     mp_aim_text.clear();
+                    mp_have_aim_panel = false;
                     continue;
                 }
                 if( action == "UP" ) {

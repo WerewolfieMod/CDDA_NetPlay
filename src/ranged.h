@@ -44,6 +44,20 @@ trajectory mode_throw( Character &you, item &relevant, bool blind_throwing );
 std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
         const tripoint_bub_ms &target );
 
+/// DDA MP: cells of the host's rendered aiming window (w_target) for a remote
+/// client; colour is a base-16 palette index (same encoding as sidebar cells).
+struct netplay_aim_cell {
+    std::string text;
+    int color = 0;
+};
+struct netplay_aim_panel {
+    int width = 0;
+    int height = 0;
+    std::vector<netplay_aim_cell> cells;
+};
+netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
+                                       const tripoint_bub_ms &target );
+
 /** Reach attacking */
 trajectory mode_reach( avatar &you, item_location weapon );
 

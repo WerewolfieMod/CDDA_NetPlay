@@ -30,6 +30,7 @@
 #include "creature.h"
 #include "creature_tracker.h"
 #include "cursesdef.h"
+#include "cursesport.h"
 #include "damage.h"
 #include "debug.h"
 #include "dialogue.h"
@@ -271,6 +272,10 @@ class target_ui
 
         // Initialize UI and run the event loop
         target_handler::trajectory run();
+
+        // DDA MP: render the aiming window for a remote client at one cursor
+        // position and return it (no input loop, no g->draw).
+        catacurses::window netplay_panel( const tripoint_bub_ms &pos );
 
         // returns the currently selected aim type (immediate/careful/precise etc)
         aim_type get_selected_aim_type() const;
@@ -2437,6 +2442,34 @@ std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
     }
     return out;
 }
+netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
+                                       const tripoint_bub_ms &target )
+{
+    netplay_aim_panel out;
+    target_ui ui;
+    ui.you = &you;
+    ui.mode = target_ui::TargetMode::Throw;
+    ui.relevant = &weapon;
+    ui.range = you.throw_range( weapon );
+    catacurses::window w = ui.netplay_panel( target );
+    if( !w ) {
+        return out;
+    }
+    out.width = getmaxx( w );
+    out.height = getmaxy( w );
+    out.cells.resize( static_cast<size_t>( out.width ) * out.height );
+    cata_cursesport::WINDOW *wraw = w.get<cata_cursesport::WINDOW>();
+    for( int y = 0; y < out.height; y++ ) {
+        for( int x = 0; x < out.width; x++ ) {
+            const cata_cursesport::cursecell &raw = wraw->line[y].chars[x];
+            netplay_aim_cell &c = out.cells[static_cast<size_t>( y ) * out.width + x];
+            c.text = raw.ch;
+            c.color = static_cast<int>( raw.FG );
+        }
+    }
+    return out;
+}
+
 } // namespace target_handler
 
 std::vector<aim_type> Character::get_aim_types( const item &gun ) const
@@ -4205,8 +4238,16 @@ void target_ui::draw_ui_window()
     wnoutrefresh( w_target );
 }
 
-aim_type target_ui::get_selected_aim_type() const
+catacurses::window target_ui::netplay_panel( const tripoint_bub_ms &pos )
 {
+    init_window_and_input();
+    src = you->pos_bub();
+    set_cursor_pos( pos );
+    draw_ui_window();
+    return w_target;
+}
+
+aim_type target_ui::get_selected_aim_type() const{
     return this->aim_mode != this->aim_types.end() ? *( this->aim_mode ) : get_default_aim_type();
 }
 
