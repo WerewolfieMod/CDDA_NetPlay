@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1606,10 +1607,16 @@ static void av_send_status( int sid )
     // DDA MP v4.0a-27: the raw NPC saves the client's own @ menu; the client
     // deserializes it into a temp NPC and opens Character::disp_info().
     {
-        std::ostringstream os;
-        JsonOut js( os );
-        av->serialize( js );
-        netplay::host_send_character_json_to_sid( sid, os.str() );
+        static const bool mp_send_info = []() {
+            const char *env = std::getenv( "DDA_MP_NO_INFO_JSON" );
+            return env == nullptr || env[0] == '\0' || std::string( env ) == "0";
+        }();
+        if( mp_send_info ) {
+            std::ostringstream os;
+            JsonOut js( os );
+            av->serialize( js );
+            netplay::host_send_character_json_to_sid( sid, os.str() );
+        }
     }
 #if defined(TILES)
     {

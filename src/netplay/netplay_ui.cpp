@@ -1242,7 +1242,11 @@ static int mp_client_item_menu( Character &you, const item &it )
  * a bad payload can never take the client down. */
 static void mp_run_character_info( const std::string &text )
 {
-    if( text.empty() ) {
+    static const bool mp_info_disabled = []() {
+        const char *env = std::getenv( "DDA_MP_NO_INFO_JSON" );
+        return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+    }();
+    if( mp_info_disabled || text.empty() ) {
         return;
     }
     try {
