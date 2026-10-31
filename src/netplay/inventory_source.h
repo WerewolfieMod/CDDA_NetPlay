@@ -58,6 +58,7 @@ struct inv_header_view {
     int large_free_len_mm = 0;  // longest item that pocket accepts
     int hotkeys_assigned = 0;
     int hotkeys_total = 0;
+    int generation = 0;         // packet version, guards row-index actions
 };
 
 /// Map an nc_color to the 16-colour palette index used by minimap/items.
@@ -354,6 +355,8 @@ inline std::string serialize_inv_packet( const inv_packet &pkt )
     out += inv_wire::field( pkt.header.hotkeys_assigned );
     out += inv_wire::sep;
     out += inv_wire::field( pkt.header.hotkeys_total );
+    out += inv_wire::sep;
+    out += inv_wire::field( pkt.header.generation );
     out += '\n';
     out += serialize_inv_entries( pkt.entries );
     return out;
@@ -388,6 +391,9 @@ inline inv_packet parse_inv_packet( const std::string &text )
             pkt.header.large_free_len_mm = std::atoi( f[6].c_str() );
             pkt.header.hotkeys_assigned = std::atoi( f[7].c_str() );
             pkt.header.hotkeys_total = std::atoi( f[8].c_str() );
+            if( f.size() >= 10 ) {
+                pkt.header.generation = std::atoi( f[9].c_str() );
+            }
         }
     }
     pkt.entries = parse_inv_entries( text.substr( start ) );

@@ -720,6 +720,7 @@ static std::map<int, int> av_sid_to_npc;
  * payload row order. Client actions reference a row index; only the host
  * main thread rebuilds/consumes this map. */
 static std::map<int, std::vector<item_location>> av_inv_nodes;
+static std::map<int, int> av_inv_gen;
 
 /* the living avatar npc a session is bound to, or nullptr */
 static npc *av_session_npc( int sid )
@@ -1710,6 +1711,7 @@ static void av_send_status( int sid )
             walk( loc, *it );
         }
         av_inv_nodes[sid] = std::move( nodes );
+        pkt.header.generation = ++av_inv_gen[sid];
         netplay::host_send_inventory_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
     }
 #if defined(TILES)
@@ -1735,8 +1737,17 @@ void host_pump_inventory_actions()
         int sid = 0;
         int node = 0;
         int action = 0;
-        if( !netplay::host_pop_inventory_action( sid, node, action ) ) {
+        int generation = 0;
+        if( !netplay::host_pop_inventory_action( sid, node, action, generation ) ) {
             break;
+        }
+        if( generation != av_inv_gen[sid] ) {
+            // The row list the client acted on is stale; applying the index
+            // could hit a different item.
+            netplay::host_send_event_to_sid(
+                sid, _( "The inventory changed. Reopen it and try again." ),
+                static_cast<int>( m_info ) );
+            continue;
         }
         npc *av = av_session_npc( sid );
         if( av == nullptr || av->is_dead_state() ) {

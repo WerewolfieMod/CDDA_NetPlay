@@ -294,9 +294,9 @@ bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
 /// DDA MP v4.0a-14: send the inventory listing to a session.
 bool host_send_inventory_to_sid( int sid, const std::string &text );
 /// DDA MP v4.0a-18: client sends one inventory action for the given row index.
-bool client_send_inventory_action( int node, int action );
-/// Host main thread: pop one queued inventory action (sid/node/action).
-bool host_pop_inventory_action( int &sid, int &node, int &action );
+bool client_send_inventory_action( int node, int action, int generation );
+/// Host main thread: pop one queued inventory action (sid/node/action/gen).
+bool host_pop_inventory_action( int &sid, int &node, int &action, int &generation );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();

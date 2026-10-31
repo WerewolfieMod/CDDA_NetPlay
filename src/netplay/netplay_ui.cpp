@@ -1189,7 +1189,7 @@ static int mp_client_item_menu( Character &you, const item &it )
     if( it.is_container() && !it.is_corpse() ) {
         mp_menu_entry( menu, 'i', pgettext( "action", "insert" ), hint_rating::cant );
         if( it.num_item_stacks() > 0 ) {
-            mp_menu_entry( menu, 'o', pgettext( "action", "open" ), hint_rating::cant );
+            mp_menu_entry( menu, 'o', pgettext( "action", "open" ), hint_rating::good );
         }
         mp_menu_entry( menu, 'v', pgettext( "action", "pocket settings" ), hint_rating::cant );
     }
@@ -1294,7 +1294,11 @@ static void mp_run_host_inventory( const std::string &text )
         mp_inv_log( string_format( "warn: %d top-level items lost", lost ) );
     }
 
-    inventory_pick_selector sel( viewer );
+    // Same preset/state as game_menus::inv::common, so the client's category
+    // view/sort mode matches the host's inventory instead of a fresh default.
+    inventory_selector_preset inv_preset = default_preset;
+    inv_preset.save_state = &inventory_ui_default_state;
+    inventory_pick_selector sel( viewer, inv_preset );
     sel.set_title( _( "Inventory" ) );
     int assigned = 0;
     for( const netplay::inv_entry_view &e : pkt.entries ) {
@@ -1317,24 +1321,53 @@ static void mp_run_host_inventory( const std::string &text )
                                static_cast<int>( viewer.inv_dump().size() ),
                                static_cast<int>( viewer.worn.size() ),
                                viewer.is_armed() ? 1 : 0 ) );
-    // Blocks in the game's own inventory loop; Esc/QUIT returns.
-    item_location chosen = sel.execute();
-    mp_inv_log( "closed" );
-    if( chosen ) {
+    // Same flow as game_menus::inv::common: pick an item, show its action
+    // menu, and when "open" is chosen dive into the container and repeat.
+    std::vector<item_location> open_stack;
+    while( true ) {
+        item_location chosen;
+        if( open_stack.empty() ) {
+            sel.clear_items();
+            sel.add_character_items( viewer );
+            chosen = sel.execute();
+        } else {
+            item_location &container = open_stack.back();
+            container_inventory_selector cs( viewer, container );
+            cs.set_title( string_format( _( "Inventory of %s" ), container->tname() ) );
+            cs.set_hint( string_format(
+                             _( "Item hotkeys assigned: <color_light_gray>%d</color>/<color_light_gray>%d</color>" ),
+                             assigned, static_cast<int>( inv_chars.size() ) ) );
+            cs.clear_items();
+            cs.add_contained_items( container );
+            chosen = cs.execute();
+            if( !chosen ) {
+                open_stack.pop_back();
+                continue;
+            }
+        }
+        if( !chosen ) {
+            break;
+        }
         const item &it = *chosen;
         const std::string node_var = it.get_var( "mp_node", std::string() );
         if( node_var.empty() ) {
             mp_inv_log( "action: row has no mp_node id, ignored" );
-        } else {
-            const int node = std::atoi( node_var.c_str() );
-            const int act = mp_client_item_menu( viewer, it );
-            if( act > 0 ) {
-                netplay::client_send_inventory_action( node, act );
-                mp_inv_log( string_format( "action: node=%d key=%c", node,
-                                           static_cast<char>( act ) ) );
-            }
+            break;
         }
+        const int node = std::atoi( node_var.c_str() );
+        const int act = mp_client_item_menu( viewer, it );
+        if( act == 'o' && it.is_container() ) {
+            open_stack.push_back( chosen );
+            continue;
+        }
+        if( act > 0 ) {
+            netplay::client_send_inventory_action( node, act, pkt.header.generation );
+            mp_inv_log( string_format( "action: node=%d key=%c gen=%d", node,
+                                       static_cast<char>( act ), pkt.header.generation ) );
+        }
+        break;
     }
+    mp_inv_log( "closed" );
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "error: " ) + e.what() );
     } catch( ... ) {

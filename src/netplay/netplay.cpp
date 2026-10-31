@@ -373,6 +373,7 @@ struct netplay_state {
         int sid = 0;
         int node = 0;
         int action = 0;
+        int generation = 0;
     };
     std::mutex inv_act_mutex;
     std::deque<inv_action> inv_actions;
@@ -750,10 +751,11 @@ static void host_session_reader( int sid, socket_t sock )
             r.size = payload.size();
             const int node = r.get_i32();
             const int action = r.get_i32();
+            const int generation = r.get_i32();
             if( r.ok ) {
                 std::lock_guard<std::mutex> lk( state.inv_act_mutex );
                 if( state.inv_actions.size() < 8 ) {
-                    state.inv_actions.push_back( { sid, node, action } );
+                    state.inv_actions.push_back( { sid, node, action, generation } );
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1283,7 +1285,7 @@ bool host_send_inventory_to_sid( int sid, const std::string &text )
     return true;
 }
 
-bool client_send_inventory_action( int node, int action )
+bool client_send_inventory_action( int node, int action, int generation )
 {
     if( !state.connected ) {
         return false;
@@ -1291,10 +1293,11 @@ bool client_send_inventory_action( int node, int action )
     std::vector<char> p;
     put_i32( p, node );
     put_i32( p, action );
+    put_i32( p, generation );
     return send_all( state.client_sock, encode_frame( frame::INVENTORY_ACTION, p ) );
 }
 
-bool host_pop_inventory_action( int &sid, int &node, int &action )
+bool host_pop_inventory_action( int &sid, int &node, int &action, int &generation )
 {
     std::lock_guard<std::mutex> lk( state.inv_act_mutex );
     if( state.inv_actions.empty() ) {
@@ -1305,6 +1308,7 @@ bool host_pop_inventory_action( int &sid, int &node, int &action )
     sid = a.sid;
     node = a.node;
     action = a.action;
+    generation = a.generation;
     return true;
 }
 
