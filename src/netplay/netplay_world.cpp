@@ -1837,8 +1837,19 @@ void host_pump_inventory_actions()
             case 'D':   // disassemble
                 changed = av->disassemble( loc, false );
                 break;
+            case 'm':   // mend
+                av->mend_item( item_location( loc ), false );
+                changed = true;
+                break;
             case 'a':   // activate / use
                 changed = av->invoke_item( loc.get_item(), av->pos_bub(), -1 );
+                break;
+            case '=':   // reassign inventory letter
+                if( !targets.empty() ) {
+                    const int ch = targets.front();
+                    loc->invlet = ch == ' ' ? 0 : ch;
+                    changed = true;
+                }
                 break;
             case 'R': { // read
                 std::vector<std::string> fail_messages;

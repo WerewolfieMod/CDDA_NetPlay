@@ -1200,7 +1200,9 @@ static int mp_client_item_menu( Character &you, const item &it )
                    hint_rating::cant : hint_rating::good );
     mp_menu_entry( menu, 'r', pgettext( "action", "reload" ), hint_rating::cant );
     mp_menu_entry( menu, 'p', pgettext( "action", "part reload" ), hint_rating::cant );
-    mp_menu_entry( menu, 'm', pgettext( "action", "mend" ), hint_rating::cant );
+    mp_menu_entry( menu, 'm', pgettext( "action", "mend" ),
+                   !it.faults.empty() ? hint_rating::good :
+                   ( it.faults_potential().empty() ? hint_rating::cant : hint_rating::iffy ) );
     mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::iffy );
     if( it.is_container() && !it.is_corpse() ) {
         mp_menu_entry( menu, 'i', pgettext( "action", "insert" ), hint_rating::cant );
@@ -1214,7 +1216,7 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'V', pgettext( "action", "view recipe" ), hint_rating::cant );
     mp_menu_entry( menu, '>', pgettext( "action", "hide contents" ), hint_rating::cant );
     mp_menu_entry( menu, '<', pgettext( "action", "show contents" ), hint_rating::cant );
-    mp_menu_entry( menu, '=', pgettext( "action", "reassign" ), hint_rating::cant );
+    mp_menu_entry( menu, '=', pgettext( "action", "reassign" ), hint_rating::good );
     // Hide pre-session UI (the main menu we joined from) only while this
     // popup is on screen; keeping it permanently caused a redraw flicker.
     ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
@@ -1401,6 +1403,15 @@ static void mp_run_host_inventory( const std::string &text )
             }
             mp_inv_log( string_format( "action: node=%d key=i targets=%d", node,
                                        static_cast<int>( insert_nodes.size() ) ) );
+            break;
+        }
+        if( act == '=' ) {
+            const int invlet = popup_getkey(
+                                   _( "Enter new letter.  Press SPACE to clear a manually-assigned letter, ESCAPE to cancel." ) );
+            if( invlet != KEY_ESCAPE && ( invlet == ' ' || inv_chars.valid( invlet ) ) ) {
+                netplay::client_send_inventory_action( node, '=', pkt.header.generation,
+                                                       { invlet } );
+            }
             break;
         }
         if( act > 0 ) {
