@@ -1844,6 +1844,16 @@ void host_pump_inventory_actions()
             case 'a':   // activate / use
                 changed = av->invoke_item( loc.get_item(), av->pos_bub(), -1 );
                 break;
+            case 'r': { // reload
+                item::reload_option opt = av->select_ammo( loc, false );
+                if( !opt ) {
+                    deny( _( "You have no compatible ammo for that." ) );
+                    break;
+                }
+                av->assign_activity( reload_activity_actor( std::move( opt ) ) );
+                changed = true;
+                break;
+            }
             case '=':   // reassign inventory letter
                 if( !targets.empty() ) {
                     const int ch = targets.front();
