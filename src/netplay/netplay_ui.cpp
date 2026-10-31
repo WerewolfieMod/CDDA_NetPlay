@@ -1120,6 +1120,22 @@ static hint_rating mp_rate_read( Character &you, const item &it )
 
 static hint_rating mp_rate_eat( Character &you, const item &it )
 {
+    if( it.is_container() ) {
+        hint_rating best = hint_rating::cant;
+        it.visit_items( [&you, &best]( item *node, item * ) {
+            if( you.can_consume_as_is( *node ) ) {
+                const ret_val<edible_rating> rate = you.will_eat( *node );
+                if( rate.success() ) {
+                    best = hint_rating::good;
+                    return VisitResponse::ABORT;
+                } else if( rate.value() != INEDIBLE && rate.value() != INEDIBLE_MUTATION ) {
+                    best = hint_rating::iffy;
+                }
+            }
+            return VisitResponse::NEXT;
+        } );
+        return best;
+    }
     if( !you.can_consume_as_is( it ) ) {
         return hint_rating::cant;
     }
@@ -1359,6 +1375,33 @@ static void mp_run_host_inventory( const std::string &text )
         if( act == 'o' && it.is_container() ) {
             open_stack.push_back( chosen );
             continue;
+        }
+        if( act == 'i' && it.is_container() ) {
+            // Same selector chain as game_menus::inv::insert_items: the stock
+            // insert menu over the temp inventory, then one command per item.
+            inventory_holster_preset holster_preset( chosen, &viewer );
+            inventory_insert_selector insert_menu( viewer, holster_preset,
+                                                   _( "ITEMS TO INSERT" ), false );
+            insert_menu.add_character_items( viewer );
+            insert_menu.set_display_stats( true );
+            insert_menu.set_title( string_format( _( "Put item into %s" ), it.tname() ) );
+            insert_menu.set_hint( string_format( _( "Choose an item to put into your %s" ),
+                                                 it.tname( 1, false ) ) );
+            const drop_locations picked = insert_menu.execute();
+            std::vector<int> insert_nodes;
+            for( const drop_location &dl : picked ) {
+                const std::string src_node = dl.first->get_var( "mp_node", std::string() );
+                if( !src_node.empty() ) {
+                    insert_nodes.push_back( std::atoi( src_node.c_str() ) );
+                }
+            }
+            if( !insert_nodes.empty() ) {
+                netplay::client_send_inventory_action(
+                    node, 'i', pkt.header.generation, insert_nodes );
+            }
+            mp_inv_log( string_format( "action: node=%d key=i targets=%d", node,
+                                       static_cast<int>( insert_nodes.size() ) ) );
+            break;
         }
         if( act > 0 ) {
             netplay::client_send_inventory_action( node, act, pkt.header.generation );

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "avatar.h"
+#include "activity_actor_definitions.h"
 #include "calendar.h"
 #include "catacharset.h"
 #include "color.h"
@@ -1738,7 +1739,8 @@ void host_pump_inventory_actions()
         int node = 0;
         int action = 0;
         int generation = 0;
-        if( !netplay::host_pop_inventory_action( sid, node, action, generation ) ) {
+        std::vector<int> targets;
+        if( !netplay::host_pop_inventory_action( sid, node, action, generation, targets ) ) {
             break;
         }
         if( generation != av_inv_gen[sid] ) {
@@ -1838,6 +1840,50 @@ void host_pump_inventory_actions()
             case 'a':   // activate / use
                 changed = av->invoke_item( loc.get_item(), av->pos_bub(), -1 );
                 break;
+            case 'R': { // read
+                std::vector<std::string> fail_messages;
+                const Character *reader = av->get_book_reader( *loc, fail_messages );
+                if( reader == nullptr ) {
+                    for( const std::string &reason : fail_messages ) {
+                        deny( reason );
+                    }
+                    if( fail_messages.empty() ) {
+                        deny( _( "You can't read that." ) );
+                    }
+                    break;
+                }
+                item_location ereader;
+                av->assign_activity( read_activity_actor(
+                                         av->time_to_read( *loc, *reader ), loc, ereader, false ) );
+                changed = true;
+                break;
+            }
+            case 'i': { // insert source item(s) into this container
+                if( loc->will_spill_if_unsealed() && !av->is_wielding( *loc ) ) {
+                    deny( string_format(
+                              _( "The %s would spill unless it's on the ground or wielded." ),
+                              loc->type_name() ) );
+                    break;
+                }
+                for( const int target : targets ) {
+                    if( target < 0 || target >= static_cast<int>( it->second.size() ) ) {
+                        continue;
+                    }
+                    item_location src = it->second[target];
+                    if( !src || src == loc ) {
+                        continue;
+                    }
+                    const item copy = *src.get_item();
+                    const ret_val<void> put = loc->put_in( copy, pocket_type::CONTAINER );
+                    if( !put.success() ) {
+                        deny( put.str() );
+                        continue;
+                    }
+                    src.remove_item();
+                    changed = true;
+                }
+                break;
+            }
             default:
                 // Actions not wired to the host yet: tell the client instead
                 // of silently doing nothing.
@@ -1877,6 +1923,10 @@ void host_note_world_turn()
             // Exactly one turn of move points, never an accumulated stock.
             av_move_pool[sid] = av->get_speed();
             av->set_moves( av_move_pool[sid] );
+            // DDA MP v4.0a-22: activities (read/reload/mend/disassemble) of a
+            // client avatar are not ticked by the world (it is outside the
+            // host bubble), so advance them with the turn's move points here.
+            av->process_activity();
             // DDA MP v4.0a-8/9: refresh the client's status payloads.
             av_send_status( sid );
         }
