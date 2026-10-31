@@ -1885,6 +1885,16 @@ void host_pump_inventory_actions()
                 changed = true;
                 break;
             }
+            case 'p': { // part reload (do not consider empty magazines)
+                item::reload_option opt = av->select_ammo( loc, false, false );
+                if( !opt ) {
+                    deny( _( "You have no compatible ammo for that." ) );
+                    break;
+                }
+                av->assign_activity( reload_activity_actor( std::move( opt ) ) );
+                changed = true;
+                break;
+            }
             case '=':   // reassign inventory letter
                 if( !targets.empty() ) {
                     const int ch = targets.front();

@@ -1201,7 +1201,9 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'r', pgettext( "action", "reload" ),
                    you.rate_action_reload( it ) == hint_rating::cant ?
                    hint_rating::cant : hint_rating::good );
-    mp_menu_entry( menu, 'p', pgettext( "action", "part reload" ), hint_rating::cant );
+    mp_menu_entry( menu, 'p', pgettext( "action", "part reload" ),
+                   you.rate_action_reload( it ) == hint_rating::cant ?
+                   hint_rating::cant : hint_rating::good );
     mp_menu_entry( menu, 'm', pgettext( "action", "mend" ),
                    !it.faults.empty() ? hint_rating::good :
                    ( it.faults_potential().empty() ? hint_rating::cant : hint_rating::iffy ) );
