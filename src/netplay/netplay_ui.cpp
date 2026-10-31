@@ -4,10 +4,15 @@
 //  * the remote-session fullscreen ASCII viewer (`run_view_loop`).
 
 #include "netplay.h"
+#include "inventory_source.h"
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
 #include <string>
 
 #include "cursesdef.h"
@@ -23,6 +28,10 @@
 #include "game.h"        // g (fat client world data load)
 #include "lightmap.h"    // lit_level (client light overlay)
 #include "input_context.h"
+#include "input.h"
+#include "inventory_ui.h"
+#include "inventory.h"
+#include "npc.h"
 #include "loading_ui.h"  // loading_ui::done (releases the splash adaptors)
 #include "output.h"
 #include "uilist.h"
@@ -768,83 +777,411 @@ std::vector<std::string> mp_sheet_lines( const mp_sheet_data &d )
 }
 } // namespace
 
-/* DDA MP v4.0a-15: a reusable overlay pass drawn AFTER the tiles canvas, so
- * context windows (inventory, menus) appear above the map. */
-static void mp_overlay_inventory( const std::string &text, bool open, int scroll )
+/* DDA MP v4.0a-16: overlay inventory, laid out like the host window. Data
+ * comes from parse_inv_entries() (identical fields the host adapter produced),
+ * so the client draws the same rows without owning any live items. */
+static std::string mp_clip_text( const std::string &s, float max_w )
+{
+    if( max_w <= 0.0f ) {
+        return std::string();
+    }
+    if( ImGui::CalcTextSize( s.c_str() ).x <= max_w ) {
+        return s;
+    }
+    std::string out = s;
+    while( !out.empty() && ImGui::CalcTextSize( ( out + "..." ).c_str() ).x > max_w ) {
+        out.pop_back();
+        while( !out.empty() && ( static_cast<unsigned char>( out.back() ) & 0xC0 ) == 0x80 ) {
+            out.pop_back();
+        }
+    }
+    return out + "...";
+}
+
+static std::string mp_fmt_kg( long g )
+{
+    char b[48];
+    std::snprintf( b, sizeof( b ), "%.2f kg", static_cast<double>( g ) / 1000.0 );
+    return b;
+}
+
+static std::string mp_fmt_l( long ml )
+{
+    char b[48];
+    std::snprintf( b, sizeof( b ), "%.2f L", static_cast<double>( ml ) / 1000.0 );
+    return b;
+}
+
+static std::string mp_fmt_cm( int mm )
+{
+    char b[48];
+    std::snprintf( b, sizeof( b ), "%.1f cm", static_cast<double>( mm ) / 10.0 );
+    return b;
+}
+
+/// Rows belonging to the left (worn/wielded) column, refreshed every draw so
+/// the input handler can jump between columns.
+static int mp_inv_split = 0;
+
+static void mp_overlay_inventory( const std::string &text, bool open, int &sel, int &scroll )
 {
     if( !imclient || !open ) {
         return;
     }
+    const netplay::inv_packet pkt = netplay::parse_inv_packet( text );
+    const std::vector<netplay::inv_entry_view> &items = pkt.entries;
+    ( void )scroll; // scrolling now follows the selection
     netplay::overlay_begin();
     const ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     const float fs = ImGui::GetFontSize();
-    const float pad = fs * 0.6f;
-    const float iw = std::min( io.DisplaySize.x - pad * 2.0f, 520.0f );
-    const float ih = std::min( io.DisplaySize.y - pad * 2.0f, 620.0f );
+    const float lh = ImGui::GetTextLineHeight();
+    const float pad = fs * 0.8f;
+    const float iw = std::min( io.DisplaySize.x - pad * 2.0f, 1100.0f );
+    const float ih = std::min( io.DisplaySize.y - pad * 2.0f, 700.0f );
     const float ix = ( io.DisplaySize.x - iw ) / 2.0f;
     const float iy = ( io.DisplaySize.y - ih ) / 2.0f;
-    dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 0, 0, 0, 255 ) );
-    dl->AddRect( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 190, 190, 190, 255 ) );
-    float ty = iy + pad;
-    dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 255, 255, 255, 255 ), _( "Inventory" ) );
-    // Totals, like the host sidebar header.
+    const float hdr_h = lh * 2.9f;
+    const float foot_h = lh * 1.9f;
+
+    // Frame and header band.
+    dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 8, 10, 10, 255 ) );
+    dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + iw, iy + hdr_h ), IM_COL32( 24, 28, 28, 255 ) );
+    dl->AddRect( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 170, 180, 175, 255 ), 0.0f, 0, 2.0f );
+    dl->AddLine( ImVec2( ix, iy + hdr_h ), ImVec2( ix + iw, iy + hdr_h ),
+                 IM_COL32( 110, 120, 115, 255 ) );
+
+    const ImU32 col_title = IM_COL32( 240, 240, 240, 255 );
+    const ImU32 col_dim = IM_COL32( 145, 150, 145, 255 );
+    const ImU32 col_stat = IM_COL32( 180, 205, 185, 255 );
+    const ImU32 col_section = IM_COL32( 160, 190, 205, 255 );
+    const ImU32 col_qty = IM_COL32( 165, 190, 170, 255 );
+    const ImU32 col_sel = IM_COL32( 42, 74, 62, 255 );
+    const ImU32 col_detail = IM_COL32( 160, 175, 160, 255 );
+
+    // Header line 1: title, hint underneath, stats right-aligned on two rows
+    // (same information the host prints above its columns).
+    const float h1 = iy + pad * 0.35f;
+    dl->AddText( ImVec2( ix + pad, h1 ), col_title, _( "Inventory" ) );
     {
-        long total_g = 0;
-        int total_n = 0;
-        std::istringstream tl( text );
-        std::string tl_line;
-        while( std::getline( tl, tl_line ) ) {
-            ++total_n;
-            const std::size_t p2 = tl_line.rfind( '|' );
-            if( p2 != std::string::npos ) {
-                total_g += std::atol( tl_line.c_str() + p2 + 1 );
-            }
-        }
-        char tb[64];
-        std::snprintf( tb, sizeof( tb ), "%d %s   %.1f kg", total_n, _( "items" ), total_g / 1000.0 );
-        const float tw = ImGui::CalcTextSize( tb ).x;
-        dl->AddText( ImVec2( ix + iw - pad - tw, ty ), IM_COL32( 170, 200, 170, 255 ), tb );
+        const std::string hint = ( pkt.header.hotkeys_total > 0 ) ?
+                                 string_format( _( "Item hotkeys assigned: %d/%d" ),
+                                                pkt.header.hotkeys_assigned, pkt.header.hotkeys_total ) :
+                                 string_format( _( "Items: %d" ), static_cast<int>( items.size() ) );
+        dl->AddText( ImVec2( ix + pad, h1 + lh ), col_dim, hint.c_str() );
     }
-    ty += ImGui::GetTextLineHeight() * 1.5f;
-    if( text.empty() ) {
-        dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 200, 200, 200, 255 ), _( "(empty)" ) );
-    } else {
-        std::istringstream lines( text );
-        std::string line;
-        int skip = scroll;
-        while( std::getline( lines, line ) && ty + fs < iy + ih ) {
-            if( skip > 0 ) { --skip; continue; }
-            // "name|count|weight_grams": two columns like the host list.
-            std::string nm = line;
+    {
+        const std::string s1 = string_format( "%s %s/%s", _( "Total Volume:" ),
+                                              mp_fmt_l( pkt.header.volume_ml ).c_str(),
+                                              mp_fmt_l( pkt.header.volume_cap_ml ).c_str() );
+        const std::string s2 = string_format( "%s %s/%s   %s %s %s", _( "Total Weight:" ),
+                                              mp_fmt_kg( pkt.header.weight_g ).c_str(),
+                                              mp_fmt_kg( pkt.header.weight_cap_g ).c_str(),
+                                              _( "Largest Space" ),
+                                              mp_fmt_l( pkt.header.large_free_ml ).c_str(),
+                                              mp_fmt_cm( pkt.header.large_free_len_mm ).c_str() );
+        const float w1 = ImGui::CalcTextSize( s1.c_str() ).x;
+        const float w2 = ImGui::CalcTextSize( s2.c_str() ).x;
+        dl->AddText( ImVec2( ix + iw - pad - w1, h1 ), col_stat, s1.c_str() );
+        dl->AddText( ImVec2( ix + iw - pad - w2, h1 + lh ), col_stat, s2.c_str() );
+    }
+
+    // Two host-like columns: wielded/worn gear on the left, carried on the right.
+    // Top-level entries are grouped by the host's category ordering, while a
+    // container keeps its nested contents directly underneath (depth > 0).
+    auto build_rows = [&]( bool gear ) {
+        std::vector<std::vector<const netplay::inv_entry_view *>> blocks;
+        for( std::size_t i = 0; i < items.size(); i++ ) {
+            const netplay::inv_entry_view &e = items[i];
+            if( e.depth != 0 || ( e.wielded || e.worn ) != gear ) {
+                continue;
+            }
+            std::vector<const netplay::inv_entry_view *> blk;
+            blk.push_back( &e );
+            for( std::size_t j = i + 1; j < items.size() && items[j].depth > 0; j++ ) {
+                blk.push_back( &items[j] );
+            }
+            blocks.push_back( std::move( blk ) );
+        }
+        std::sort( blocks.begin(), blocks.end(),
+        []( const std::vector<const netplay::inv_entry_view *> &a,
+        const std::vector<const netplay::inv_entry_view *> &b ) {
+            const netplay::inv_entry_view *x = a.front();
+            const netplay::inv_entry_view *y = b.front();
+            if( x->category_rank != y->category_rank ) {
+                return x->category_rank < y->category_rank;
+            }
+            if( x->category != y->category ) {
+                return x->category < y->category;
+            }
+            return x->name < y->name;
+        } );
+        std::vector<const netplay::inv_entry_view *> out;
+        for( const auto &blk : blocks ) {
+            out.insert( out.end(), blk.begin(), blk.end() );
+        }
+        return out;
+    };
+    std::vector<const netplay::inv_entry_view *> worn_rows = build_rows( true );
+    std::vector<const netplay::inv_entry_view *> carried_rows = build_rows( false );
+    std::vector<const netplay::inv_entry_view *> all_rows = worn_rows;
+    all_rows.insert( all_rows.end(), carried_rows.begin(), carried_rows.end() );
+    const int total = static_cast<int>( all_rows.size() );
+    sel = total <= 0 ? 0 : std::min( std::max( sel, 0 ), total - 1 );
+
+    const float body_top = iy + hdr_h + pad * 0.45f;
+    const float body_bot = iy + ih - foot_h;
+    const float gap = pad;
+    const float col_w = ( iw - pad * 2.0f - gap ) / 2.0f;
+    const float lx = ix + pad;
+    const float rx = lx + col_w + gap;
+    dl->AddLine( ImVec2( rx - gap * 0.5f, body_top ), ImVec2( rx - gap * 0.5f, body_bot ),
+                 IM_COL32( 70, 80, 75, 255 ) );
+
+    const int worn_n = static_cast<int>( worn_rows.size() );
+    mp_inv_split = worn_n;
+    const netplay::inv_entry_view *chosen = sel < total ? all_rows[sel] : nullptr;
+
+    auto draw_column = [&]( float x, const std::vector<const netplay::inv_entry_view *> &rows, int base ) {
+        float y = body_top;
+        const bool active = sel >= base && sel < base + static_cast<int>( rows.size() );
+        const int idx = active ? sel - base : 0;
+        // Keep the selection visible; leave room for the expanded details.
+        const int cap = std::max( 1, static_cast<int>( ( body_bot - y ) / lh ) - 3 );
+        const int first = active ? std::max( 0, idx - cap + 1 ) : 0;
+        if( first > 0 ) {
+            dl->AddText( ImVec2( x, y ), col_dim, string_format( "... %d", first ).c_str() );
+            y += lh;
+        }
+        std::string last_cat;
+        for( int i = first; i < static_cast<int>( rows.size() ); i++ ) {
+            const netplay::inv_entry_view *e = rows[i];
+            // Category header row, like the host's "Инструменты"/"Носимые Вещи".
+            if( e->depth == 0 && e->category != last_cat && !e->category.empty() ) {
+                if( y + lh * 1.35f > body_bot ) {
+                    return;
+                }
+                if( !last_cat.empty() ) {
+                    y += lh * 0.25f;
+                }
+                dl->AddRectFilled( ImVec2( x - fs * 0.35f, y - lh * 0.1f ),
+                                   ImVec2( x + col_w, y + lh * 1.0f ), IM_COL32( 30, 40, 48, 255 ) );
+                dl->AddText( ImVec2( x, y ), col_section, e->category.c_str() );
+                last_cat = e->category;
+                y += lh * 1.15f;
+            }
+            if( y + lh > body_bot ) {
+                dl->AddText( ImVec2( x, y ), col_dim,
+                             string_format( "... +%d", static_cast<int>( rows.size() ) - i ).c_str() );
+                return;
+            }
+            const bool is_sel = base + i == sel;
+            const ImU32 col = cataimgui::ImU32_from_color( decode_cell_color( e->color_index ) );
+            if( is_sel ) {
+                dl->AddRectFilled( ImVec2( x - fs * 0.35f, y - lh * 0.12f ),
+                                   ImVec2( x + col_w, y + lh * 1.05f ), col_sel );
+            }
+            // Inventory letter column (the host prints it at the row start).
+            if( e->depth == 0 && e->invlet != '\0' ) {
+                const char ib[2] = { e->invlet, '\0' };
+                dl->AddText( ImVec2( x, y ), IM_COL32( 225, 215, 150, 255 ), ib );
+            }
             std::string qty;
-            ImU32 worn_col = IM_COL32( 220, 220, 220, 255 );
-            const std::size_t p1 = line.find( '|' );
-            if( p1 != std::string::npos ) {
-                nm = line.substr( 0, p1 );
-                const std::size_t p2 = line.find( '|', p1 + 1 );
-                const std::string cnt = line.substr( p1 + 1, ( p2 == std::string::npos ? line.size() : p2 ) - ( p1 + 1 ) );
-                qty = cnt + "x";
-                if( p2 != std::string::npos ) {
-                    const long wg = std::atol( line.c_str() + p2 + 1 );
-                    const std::size_t p3 = line.find( '|', p2 + 1 );
-                    if( p3 != std::string::npos && line[p3 + 1] == '1' ) {
-                        worn_col = IM_COL32( 150, 220, 150, 255 );
-                    }
-                    char wbuf[32];
-                    std::snprintf( wbuf, sizeof( wbuf ), " %.1f kg", wg / 1000.0 );
-                    qty += wbuf;
+            if( e->count > 1 ) {
+                qty = string_format( "%dx", e->count );
+            }
+            const std::string wstr = mp_fmt_kg( e->weight_g );
+            qty += ( qty.empty() ? "" : "  " ) + wstr;
+            const float qw = ImGui::CalcTextSize( qty.c_str() ).x;
+            const float indent = static_cast<float>( e->depth ) * fs * 1.1f;
+            const float name_x = x + fs * 1.15f + indent;
+            const float name_w = col_w - ( name_x - x ) - qw - fs * 0.9f;
+            const std::string nm = mp_clip_text( ( e->depth > 0 ? "> " : "" ) + e->name, name_w );
+            dl->AddText( ImVec2( name_x, y ), col, nm.c_str() );
+            dl->AddText( ImVec2( x + col_w - qw, y ), col_qty, qty.c_str() );
+            y += lh;
+            if( is_sel ) {
+                // Inline details, like the host expands the highlighted entry.
+                std::string d1 = string_format( "%s %s   %s %s", _( "Weight" ),
+                                                mp_fmt_kg( e->weight_g ).c_str(), _( "Volume" ),
+                                                mp_fmt_l( e->volume_ml ).c_str() );
+                if( e->side_mm > 0 ) {
+                    d1 += "   " + string_format( "%s %s", _( "Longest side" ),
+                                                 mp_fmt_cm( e->side_mm ).c_str() );
+                }
+                std::string d2 = e->category;
+                if( e->charges != 0 ) {
+                    d2 += ( d2.empty() ? "" : "   " ) + string_format( "%s %d", _( "Charges" ), e->charges );
+                }
+                if( e->container ) {
+                    d2 += ( d2.empty() ? "" : "   " ) + std::string( _( "Container" ) );
+                }
+                if( y + lh * 1.2f < body_bot ) {
+                    dl->AddText( ImVec2( x + fs * 0.6f, y ), col_detail,
+                                 mp_clip_text( d1, col_w - fs * 0.6f ).c_str() );
+                    y += lh;
+                }
+                if( !d2.empty() && y + lh * 1.2f < body_bot ) {
+                    dl->AddText( ImVec2( x + fs * 0.6f, y ), col_detail,
+                                 mp_clip_text( d2, col_w - fs * 0.6f ).c_str() );
+                    y += lh;
                 }
             }
-            dl->AddText( ImVec2( ix + pad, ty ), worn_col, nm.c_str() );
-            if( !qty.empty() ) {
-                const float qw = ImGui::CalcTextSize( qty.c_str() ).x;
-                dl->AddText( ImVec2( ix + iw - pad - qw, ty ), IM_COL32( 180, 200, 180, 255 ), qty.c_str() );
+        }
+    };
+
+    draw_column( lx, worn_rows, 0 );
+    draw_column( rx, carried_rows, worn_n );
+    if( items.empty() ) {
+        dl->AddText( ImVec2( lx, body_top + lh * 1.6f ), col_dim, _( "(empty)" ) );
+    }
+
+    // Footer hints.
+    const float fy = iy + ih - foot_h + lh * 0.35f;
+    dl->AddLine( ImVec2( ix + pad, fy - lh * 0.3f ), ImVec2( ix + iw - pad, fy - lh * 0.3f ),
+                 IM_COL32( 70, 80, 75, 255 ) );
+    dl->AddText( ImVec2( ix + pad, fy ), col_dim,
+                 _( "[Esc] close   [Up/Down] select   [Tab] column   [PgUp/PgDn] page" ) );
+    if( chosen != nullptr ) {
+        const std::string right = string_format( "%s: %s", _( "Category" ), chosen->category );
+        const float rw = ImGui::CalcTextSize( right.c_str() ).x;
+        dl->AddText( ImVec2( ix + iw - pad - rw, fy ), col_dim, right.c_str() );
+    }
+
+    netplay::overlay_end();
+}
+
+/* DDA MP: debug switch to compare renderers. DDA_MP_LEGACY_INV=1 keeps the
+ * old ImGui approximation instead of the game's real inventory UI. */
+static bool mp_legacy_inventory_enabled()
+{
+    static const bool enabled = []() {
+        const char *env = std::getenv( "DDA_MP_LEGACY_INV" );
+        return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+    }();
+    return enabled;
+}
+
+/* DDA MP v4.0a-17: diagnostics for the client inventory bridge. Always
+ * compiled, gated by DDA_MP_DIAG at runtime. */
+static void mp_inv_log( const std::string &msg )
+{
+    if( !mp_netplay_diag ) {
+        return;
+    }
+    try {
+        std::ofstream f( netplay::mp_diag_dir() + "\\netplay_inventory.log", std::ios::app );
+        if( f ) {
+            f << msg << "\n";
+        }
+    } catch( ... ) {
+    }
+}
+
+/* DDA MP v4.0a-17: exact host inventory on the client.
+ *
+ * Instead of re-drawing an approximation, rebuild the avatar's item tree from
+ * the streamed rows (real itypes, counts, charges, invlets, container nesting)
+ * on a temporary NPC and hand it to the game's own inventory_pick_selector.
+ * The UI is then drawn by the same code path as on the host; actions only ever
+ * touch the temporary copy, so the client avatar and host stay untouched. */
+static void mp_run_host_inventory( const std::string &text )
+{
+    try {
+    const netplay::inv_packet pkt = netplay::parse_inv_packet( text );
+    mp_inv_log( string_format( "open: rows=%d bytes=%d hotkeys=%d/%d",
+                               static_cast<int>( pkt.entries.size() ),
+                               static_cast<int>( text.size() ),
+                               pkt.header.hotkeys_assigned, pkt.header.hotkeys_total ) );
+    npc viewer;
+    viewer.name = "client";
+
+    std::size_t i = 0;
+    std::function<item()> build = [&]() -> item {
+        const netplay::inv_entry_view &e = pkt.entries[i];
+        const int depth = e.depth;
+        ++i;
+        item it( itype_id( e.id ), calendar::turn );
+        if( it.count_by_charges() && e.charges > 0 ) {
+            it.charges = e.charges;
+        }
+        if( e.invlet != '\0' ) {
+            it.invlet = e.invlet;
+        }
+        while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
+            item child = build();
+            pocket_type pk = pocket_type::CONTAINER;
+            if( !it.get_contents().has_pocket_type( pk ) ) {
+                if( it.get_contents().has_pocket_type( pocket_type::MAGAZINE_WELL ) ) {
+                    pk = pocket_type::MAGAZINE_WELL;
+                } else if( it.get_contents().has_pocket_type( pocket_type::MOD ) ) {
+                    pk = pocket_type::MOD;
+                } else {
+                    continue;
+                }
             }
-            ty += ImGui::GetTextLineHeight();
+            it.force_insert_item( child, pk );
+        }
+        return it;
+    };
+
+    while( i < pkt.entries.size() ) {
+        const netplay::inv_entry_view &e = pkt.entries[i];
+        if( e.depth != 0 ) {
+            ++i;
+            continue;
+        }
+        if( !item::type_is_defined( itype_id( e.id ) ) ) {
+            const int depth = e.depth;
+            ++i;
+            while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
+                ++i;
+            }
+            continue;
+        }
+        item it = build();
+        if( e.wielded ) {
+            viewer.set_wielded_item( it );
+        } else if( e.worn ) {
+            if( !viewer.wear_item( it, false, true, false, true ) ) {
+                viewer.i_add( it, false, nullptr, nullptr, false, false );
+            }
+        } else {
+            viewer.i_add( it, false, nullptr, nullptr, false, false );
         }
     }
-    netplay::overlay_end();
+
+    inventory_pick_selector sel( viewer );
+    sel.set_title( _( "Inventory" ) );
+    int assigned = 0;
+    for( const netplay::inv_entry_view &e : pkt.entries ) {
+        if( e.invlet != '\0' ) {
+            ++assigned;
+        }
+    }
+    // Exact host string (with colour tags) so the client's own translation
+    // is used instead of falling back to English.
+    sel.set_hint( string_format(
+                      _( "Item hotkeys assigned: <color_light_gray>%d</color>/<color_light_gray>%d</color>" ),
+                      assigned, static_cast<int>( inv_chars.size() ) ) );
+    sel.show_invlet( true );
+    sel.drag_enabled = true;
+    // The selector constructor does not populate itself; the host's menu does
+    // this explicitly before every pass (see game_menus::inv::common).
+    sel.clear_items();
+    sel.add_character_items( viewer );
+    mp_inv_log( string_format( "built: top=%d worn=%d armed=%d",
+                               static_cast<int>( viewer.inv_dump().size() ),
+                               static_cast<int>( viewer.worn.size() ),
+                               viewer.is_armed() ? 1 : 0 ) );
+    // Blocks in the game's own inventory loop; Esc/QUIT returns.
+    sel.execute();
+    mp_inv_log( "closed" );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "error: unknown" );
+    }
 }
 
 void run_view_loop()
@@ -956,6 +1293,7 @@ void run_view_loop()
     static minimap_frame mp_mini_map;
     static bool mp_inv_open = false;
     static int mp_inv_scroll = 0;
+    static int mp_inv_sel = 0;
     static std::string mp_inv_text;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
@@ -1693,7 +2031,7 @@ void run_view_loop()
             }
 
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
-            mp_overlay_inventory( mp_inv_text, mp_inv_open, mp_inv_scroll );
+            mp_overlay_inventory( mp_inv_text, mp_inv_open, mp_inv_sel, mp_inv_scroll );
 
             // Present the freshly drawn frame. The game's own main loop calls
             // refresh_display() every iteration; here input pumping alone is
@@ -1717,21 +2055,36 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
-            // DDA MP v4.0a-15: inventory input is handled locally; orders are not
-            // sent to the host while the panel is open.
+            // DDA MP v4.0a-16: inventory input is handled locally; orders are
+            // not sent to the host while the window is open.
             if( mp_inv_open ) {
                 const input_event mp_ev = ctxt.get_raw_input();
                 const int mp_key = mp_ev.get_first_input();
-                if( mp_key == 27 || mp_key == 'i' || mp_key == 'I' ) {
+                if( mp_key == 27 || mp_key == 'i' || mp_key == 'I' ||
+                    action == "QUIT" ) {
                     mp_inv_open = false;
                     continue;
                 }
-                if( mp_key == 'w' || mp_key == 'k' || mp_key == '8' ) {
-                    mp_inv_scroll = std::max( 0, mp_inv_scroll - 3 );
+                if( action == "UP" || mp_key == 'w' || mp_key == 'k' || mp_key == '8' ) {
+                    mp_inv_sel = std::max( 0, mp_inv_sel - 1 );
                     continue;
                 }
-                if( mp_key == 's' || mp_key == 'j' || mp_key == '2' ) {
-                    mp_inv_scroll += 3;
+                if( action == "DOWN" || mp_key == 's' || mp_key == 'j' || mp_key == '2' ) {
+                    ++mp_inv_sel;
+                    continue;
+                }
+                if( mp_key == KEY_PPAGE ) {
+                    mp_inv_sel = std::max( 0, mp_inv_sel - 10 );
+                    continue;
+                }
+                if( mp_key == KEY_NPAGE ) {
+                    mp_inv_sel += 10;
+                    continue;
+                }
+                if( action == "LEFT" || action == "RIGHT" || mp_key == '\t' ) {
+                    const bool to_carried = action == "RIGHT" ||
+                                            ( mp_key == '\t' && mp_inv_sel < mp_inv_split );
+                    mp_inv_sel = to_carried ? mp_inv_split : 0;
                     continue;
                 }
                 continue;
@@ -1740,8 +2093,16 @@ void run_view_loop()
                 const input_event mp_ev = ctxt.get_raw_input();
                 const int mp_ch = mp_ev.get_first_input();
                 if( mp_ch == 'i' || mp_ch == 'I' ) {
-                    mp_inv_open = true;
-                    mp_inv_scroll = 0;
+                    // DDA MP v4.0a-17: run the game's real inventory UI on a
+                    // temporary copy built from the host's data. The legacy
+                    // ImGui panel stays available for comparison via env.
+                    if( mp_legacy_inventory_enabled() ) {
+                        mp_inv_open = true;
+                        mp_inv_scroll = 0;
+                        mp_inv_sel = 0;
+                    } else {
+                        mp_run_host_inventory( mp_inv_text );
+                    }
                     continue;
                 }
             }

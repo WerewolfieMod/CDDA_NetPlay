@@ -9,6 +9,7 @@
 // host's own UI is refreshed normally afterwards, so nothing is visible.
 
 #include "netplay/netplay.h"
+#include "netplay/inventory_source.h"
 
 #include <array>
 #include <cstdio>
@@ -1678,35 +1679,14 @@ static void av_send_status( int sid )
         netplay::host_send_minimap_to_sid( sid, mm );
     }
 #endif
-    // DDA MP v4.0a-14: inventory listing for the client's panel.
+    // DDA MP v4.0a-16: inventory rows for the client, built through the shared
+    // source adapter (same fields the client renderer consumes).
     {
-        std::string inv_txt;
-        for( const item *it : av->inv_dump() ) {
-            if( it != nullptr ) {
-                // tname() carries colour markup; strip it for the client panel.
-                const std::string raw = it->tname();
-                std::string clean;
-                for( std::size_t i = 0; i < raw.size(); i++ ) {
-                    if( raw[i] == '<' ) {
-                        const std::size_t e = raw.find( '>', i );
-                        if( e != std::string::npos ) {
-                            i = e;
-                            continue;
-                        }
-                    }
-                    clean += raw[i];
-                }
-                inv_txt += clean;
-                inv_txt += '|';
-                inv_txt += std::to_string( it->count() );
-                inv_txt += '|';
-                inv_txt += std::to_string( units::to_gram( it->weight() ) );
-                inv_txt += '|';
-                inv_txt += av->is_worn( *it ) ? "1" : "0";
-                inv_txt += '\n';
-            }
-        }
-        netplay::host_send_inventory_to_sid( sid, inv_txt );
+        const netplay::character_inventory_source inv_src( *av );
+        netplay::inv_packet pkt;
+        pkt.header = inv_src.header();
+        pkt.entries = inv_src.entries();
+        netplay::host_send_inventory_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
     }
 #if defined(TILES)
     {
