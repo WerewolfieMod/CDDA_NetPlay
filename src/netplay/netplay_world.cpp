@@ -1697,6 +1697,12 @@ static void av_send_status( int sid )
                     clean += raw[i];
                 }
                 inv_txt += clean;
+                inv_txt += '|';
+                inv_txt += std::to_string( it->count() );
+                inv_txt += '|';
+                inv_txt += std::to_string( units::to_gram( it->weight() ) );
+                inv_txt += '|';
+                inv_txt += av->is_worn( *it ) ? "1" : "0";
                 inv_txt += '\n';
             }
         }

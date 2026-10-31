@@ -770,18 +770,12 @@ std::vector<std::string> mp_sheet_lines( const mp_sheet_data &d )
 
 /* DDA MP v4.0a-15: a reusable overlay pass drawn AFTER the tiles canvas, so
  * context windows (inventory, menus) appear above the map. */
-static void mp_overlay_inventory( const std::string &text, bool open )
+static void mp_overlay_inventory( const std::string &text, bool open, int scroll )
 {
     if( !imclient || !open ) {
         return;
     }
-    int bw = static_cast<int>( ImGui::GetIO().DisplaySize.x );
-    int bh = static_cast<int>( ImGui::GetIO().DisplaySize.y );
-    if( bw <= 0 || bh <= 0 ) {
-        bw = 1920;
-        bh = 1080;
-    }
-    imclient->new_frame( bw, bh );
+    netplay::overlay_begin();
     const ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     const float fs = ImGui::GetFontSize();
@@ -790,22 +784,67 @@ static void mp_overlay_inventory( const std::string &text, bool open )
     const float ih = std::min( io.DisplaySize.y - pad * 2.0f, 620.0f );
     const float ix = ( io.DisplaySize.x - iw ) / 2.0f;
     const float iy = ( io.DisplaySize.y - ih ) / 2.0f;
-    dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 0, 0, 0, 240 ) );
+    dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 0, 0, 0, 255 ) );
     dl->AddRect( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 190, 190, 190, 255 ) );
     float ty = iy + pad;
     dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 255, 255, 255, 255 ), _( "Inventory" ) );
+    // Totals, like the host sidebar header.
+    {
+        long total_g = 0;
+        int total_n = 0;
+        std::istringstream tl( text );
+        std::string tl_line;
+        while( std::getline( tl, tl_line ) ) {
+            ++total_n;
+            const std::size_t p2 = tl_line.rfind( '|' );
+            if( p2 != std::string::npos ) {
+                total_g += std::atol( tl_line.c_str() + p2 + 1 );
+            }
+        }
+        char tb[64];
+        std::snprintf( tb, sizeof( tb ), "%d %s   %.1f kg", total_n, _( "items" ), total_g / 1000.0 );
+        const float tw = ImGui::CalcTextSize( tb ).x;
+        dl->AddText( ImVec2( ix + iw - pad - tw, ty ), IM_COL32( 170, 200, 170, 255 ), tb );
+    }
     ty += ImGui::GetTextLineHeight() * 1.5f;
     if( text.empty() ) {
         dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 200, 200, 200, 255 ), _( "(empty)" ) );
     } else {
         std::istringstream lines( text );
         std::string line;
+        int skip = scroll;
         while( std::getline( lines, line ) && ty + fs < iy + ih ) {
-            dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 220, 220, 220, 255 ), line.c_str() );
+            if( skip > 0 ) { --skip; continue; }
+            // "name|count|weight_grams": two columns like the host list.
+            std::string nm = line;
+            std::string qty;
+            ImU32 worn_col = IM_COL32( 220, 220, 220, 255 );
+            const std::size_t p1 = line.find( '|' );
+            if( p1 != std::string::npos ) {
+                nm = line.substr( 0, p1 );
+                const std::size_t p2 = line.find( '|', p1 + 1 );
+                const std::string cnt = line.substr( p1 + 1, ( p2 == std::string::npos ? line.size() : p2 ) - ( p1 + 1 ) );
+                qty = cnt + "x";
+                if( p2 != std::string::npos ) {
+                    const long wg = std::atol( line.c_str() + p2 + 1 );
+                    const std::size_t p3 = line.find( '|', p2 + 1 );
+                    if( p3 != std::string::npos && line[p3 + 1] == '1' ) {
+                        worn_col = IM_COL32( 150, 220, 150, 255 );
+                    }
+                    char wbuf[32];
+                    std::snprintf( wbuf, sizeof( wbuf ), " %.1f kg", wg / 1000.0 );
+                    qty += wbuf;
+                }
+            }
+            dl->AddText( ImVec2( ix + pad, ty ), worn_col, nm.c_str() );
+            if( !qty.empty() ) {
+                const float qw = ImGui::CalcTextSize( qty.c_str() ).x;
+                dl->AddText( ImVec2( ix + iw - pad - qw, ty ), IM_COL32( 180, 200, 180, 255 ), qty.c_str() );
+            }
             ty += ImGui::GetTextLineHeight();
         }
     }
-    imclient->end_frame();
+    netplay::overlay_end();
 }
 
 void run_view_loop()
@@ -916,6 +955,7 @@ void run_view_loop()
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
     static bool mp_inv_open = false;
+    static int mp_inv_scroll = 0;
     static std::string mp_inv_text;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
@@ -1078,31 +1118,6 @@ void run_view_loop()
                                        IM_COL32( 255, 255, 255, 255 ) );
                 }
             }
-        if( mp_inv_open ) {
-            // Temporary: right-hand column (the proper above-canvas layer is next).
-            const float cw_inv = ImGui::CalcTextSize( "M" ).x;
-            const float ipw = 34.0f * cw_inv;
-            const float ix = std::max( 0.0f, io.DisplaySize.x - ipw - 6.0f );
-            const float iy = 4.0f;
-            const float ih = io.DisplaySize.y - 8.0f;
-            dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + ipw, iy + ih ),
-                               IM_COL32( 0, 0, 0, 235 ) );
-            dl->AddRect( ImVec2( ix, iy ), ImVec2( ix + ipw, iy + ih ),
-                         IM_COL32( 180, 180, 180, 255 ) );
-            float ty = iy + pad;
-            if( mp_inv_text.empty() ) {
-                dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 200, 200, 200, 255 ),
-                             _( "(empty)" ) );
-            } else {
-                std::istringstream inv_lines( mp_inv_text );
-                std::string inv_line;
-                while( std::getline( inv_lines, inv_line ) && ty + fs < iy + ih ) {
-                    dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 220, 220, 220, 255 ),
-                                 inv_line.c_str() );
-                    ty += ImGui::GetTextLineHeight();
-                }
-            }
-        }
             mp_sb_overlay_w = io.DisplaySize.x - x0;
             return;
         }
@@ -1677,8 +1692,8 @@ void run_view_loop()
                 wnoutrefresh( mp_hint_win );
             }
 
-            // DDA MP v4.0a-15: context windows above the canvas (second ImGui pass).
-            // NOTE: pending the sdltiles overlay pass; see mp_overlay_inventory.
+            // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
+            mp_overlay_inventory( mp_inv_text, mp_inv_open, mp_inv_scroll );
 
             // Present the freshly drawn frame. The game's own main loop calls
             // refresh_display() every iteration; here input pumping alone is
@@ -1702,12 +1717,31 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
-            // DDA MP v4.0a-14: 'i' toggles the inventory panel (display only).
+            // DDA MP v4.0a-15: inventory input is handled locally; orders are not
+            // sent to the host while the panel is open.
+            if( mp_inv_open ) {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_key = mp_ev.get_first_input();
+                if( mp_key == 27 || mp_key == 'i' || mp_key == 'I' ) {
+                    mp_inv_open = false;
+                    continue;
+                }
+                if( mp_key == 'w' || mp_key == 'k' || mp_key == '8' ) {
+                    mp_inv_scroll = std::max( 0, mp_inv_scroll - 3 );
+                    continue;
+                }
+                if( mp_key == 's' || mp_key == 'j' || mp_key == '2' ) {
+                    mp_inv_scroll += 3;
+                    continue;
+                }
+                continue;
+            }
             {
                 const input_event mp_ev = ctxt.get_raw_input();
                 const int mp_ch = mp_ev.get_first_input();
                 if( mp_ch == 'i' || mp_ch == 'I' ) {
-                    mp_inv_open = !mp_inv_open;
+                    mp_inv_open = true;
+                    mp_inv_scroll = 0;
                     continue;
                 }
             }

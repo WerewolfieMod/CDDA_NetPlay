@@ -8413,6 +8413,8 @@ void drawable_cells( int &cols, int &rows )
 /* DDA MP v4.0a-15: overlay pass drawn after the tiles canvas. A display-buffer
  * scope is mandatory: without it ImGui's end_frame renders nowhere (which is
  * why a naive second frame stays invisible). */
+static std::unique_ptr<display_buffer_draw_scope> mp_overlay_scope;
+
 void overlay_begin()
 {
     if( !imclient ) {

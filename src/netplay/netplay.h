@@ -428,6 +428,9 @@ bool client_inventory( std::string &out );
 void client_status_hint( const std::string &text );
 /// DDA MP v4.0a-10: terminal cells that actually fit the drawable window.
 void drawable_cells( int &cols, int &rows );
+/// DDA MP v4.0a-15: ImGui overlay pass above the tiles canvas (pair them).
+void overlay_begin();
+void overlay_end();
 /// Ask the host to send its current picture right away. The host streams
 /// snapshots only on its own turn, so a freshly-loaded client needs this to
 /// see anything before somebody presses a key. Safe to call often.
