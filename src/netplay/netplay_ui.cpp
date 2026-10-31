@@ -1306,6 +1306,13 @@ static void mp_run_host_inventory( const std::string &text )
             it.invlet = e.invlet;
         }
         it.is_favorite = e.favorite;
+        if( e.damage > 0 ) {
+            it.set_damage( e.damage );
+        }
+        if( e.filthy ) {
+            it.set_flag( flag_FILTHY );
+        }
+        it.active = e.active;
         while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
             item child = build();
             pocket_type pk = pocket_type::CONTAINER;
