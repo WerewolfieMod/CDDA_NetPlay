@@ -1517,15 +1517,22 @@ static void mp_run_host_inventory( const std::string &text )
                 const char *env = std::getenv( "DDA_MP_LEGACY_THROW" );
                 return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
             }();
-            if( mp_legacy_throw || !mp_have_origin ) {
+            // Running the stock target_ui against the client's local map needs
+            // a fully initialised client game/map; it is opt-in until the
+            // client has a real map view (otherwise it can hard-crash).
+            static const bool mp_try_host_aim = []() {
+                const char *env = std::getenv( "DDA_MP_TRY_HOST_AIM" );
+                return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+            }();
+            if( !mp_legacy_throw && mp_try_host_aim && mp_have_origin ) {
+                mp_run_client_throw( it, node, pkt.header.generation,
+                                     tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
+            } else {
                 mp_throw_node = node;
                 mp_throw_gen = pkt.header.generation;
                 mp_throw_dx = 1;
                 mp_throw_dy = 0;
                 mp_throw_active = true;
-            } else {
-                mp_run_client_throw( it, node, pkt.header.generation,
-                                     tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
             }
             break;
         }
