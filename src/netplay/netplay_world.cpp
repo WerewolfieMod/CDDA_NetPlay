@@ -1824,6 +1824,9 @@ void host_pump_inventory_actions()
             case 'D':   // disassemble
                 changed = av->disassemble( loc, false );
                 break;
+            case 'a':   // activate / use
+                changed = av->invoke_item( loc.get_item(), av->pos_bub(), -1 );
+                break;
             default:
                 // Actions not wired to the host yet: tell the client instead
                 // of silently doing nothing.
