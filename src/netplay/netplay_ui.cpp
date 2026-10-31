@@ -1572,6 +1572,93 @@ static void mp_run_host_inventory( const std::string &text )
  * moved to the streamed world origin (the session avatar's position) and the
  * bubble is re-anchored, so g->draw/mode_throw show the host terrain and the
  * stock reticle. Only the chosen offset is sent to the host. */
+/* DDA MP v4.0a-45: host-style aiming panel, drawn after the canvas. The host
+ * text carries <color_x> tags; they are parsed here instead of showing tags. */
+static void mp_draw_aim_panel()
+{
+    const ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const float fs = ImGui::GetFontSize();
+    const float lh = ImGui::GetTextLineHeight();
+    std::vector<std::string> lines;
+    {
+        std::istringstream ls( mp_aim_text );
+        std::string line;
+        while( std::getline( ls, line ) ) {
+            lines.push_back( line );
+        }
+    }
+    const float pw = std::min( io.DisplaySize.x - 16.0f, fs * 30.0f );
+    const float ph = lh * ( static_cast<float>( lines.size() ) + 3.0f ) + 10.0f;
+    const float px = std::max( 8.0f, io.DisplaySize.x - pw - 8.0f );
+    const float py = 8.0f;
+    dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ), IM_COL32( 0, 0, 0, 235 ) );
+    dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
+                 IM_COL32( 190, 190, 190, 255 ) );
+
+    auto tag_color = []( const std::string & name ) -> ImU32 {
+        if( name == "green" ) {
+            return IM_COL32( 120, 255, 120, 255 );
+        }
+        if( name == "magenta" ) {
+            return IM_COL32( 255, 120, 255, 255 );
+        }
+        if( name == "light_blue" ) {
+            return IM_COL32( 120, 200, 255, 255 );
+        }
+        if( name == "dark_gray" ) {
+            return IM_COL32( 120, 120, 120, 255 );
+        }
+        if( name == "white" ) {
+            return IM_COL32( 255, 255, 255, 255 );
+        }
+        if( name == "red" ) {
+            return IM_COL32( 255, 100, 100, 255 );
+        }
+        return IM_COL32( 200, 200, 200, 255 ); // light_gray
+    };
+    auto draw_tagged = [&]( float y, const std::string & text ) {
+        std::size_t pos = 0;
+        float x = px + 8.0f;
+        ImU32 col = IM_COL32( 210, 210, 210, 255 );
+        while( pos < text.size() ) {
+            const std::size_t lt = text.find( '<', pos );
+            const std::string chunk = text.substr( pos, ( lt == std::string::npos ?
+                                            text.size() : lt ) - pos );
+            if( !chunk.empty() ) {
+                const std::string vis = mp_clip_text( chunk, px + pw - 8.0f - x );
+                dl->AddText( ImVec2( x, y ), col, vis.c_str() );
+                x += ImGui::CalcTextSize( vis.c_str() ).x;
+            }
+            if( lt == std::string::npos ) {
+                break;
+            }
+            const std::size_t gt = text.find( '>', lt );
+            if( gt == std::string::npos ) {
+                break;
+            }
+            const std::string tag = text.substr( lt + 1, gt - lt - 1 );
+            if( tag == "/color" ) {
+                col = IM_COL32( 210, 210, 210, 255 );
+            } else if( tag.compare( 0, 6, "color_" ) == 0 ) {
+                col = tag_color( tag.substr( 6 ) );
+            }
+            pos = gt + 1;
+        }
+    };
+
+    float ty = py + lh * 0.35f;
+    const std::string title = string_format( "< %s >", _( "Aiming" ) );
+    dl->AddText( ImVec2( px + 8, ty ), IM_COL32( 240, 240, 240, 255 ), title.c_str() );
+    ty += lh;
+    for( const std::string &line : lines ) {
+        draw_tagged( ty, line );
+        ty += lh;
+    }
+    dl->AddText( ImVec2( px + 8, ty ), IM_COL32( 190, 190, 190, 255 ),
+                 _( "[Enter] throw   [Esc] cancel" ) );
+}
+
 static void mp_run_client_throw( const item &thrown, int node, int generation,
                                  const tripoint_abs_ms &origin )
 {
@@ -1691,7 +1778,6 @@ void run_view_loop()
     std::string mp_hint_text;
     // DDA MP v4.0a-8: character sheet panel (C toggles it).
     catacurses::window mp_sheet_win;
-    catacurses::window mp_aim_win;
     std::string mp_sheet_text;
     bool mp_sheet_open = true; // the status panel is docked by default
     snapshot mp_sidebar;
@@ -1711,38 +1797,6 @@ void run_view_loop()
             mp_log.erase( mp_log.begin() );
         }
         mp_log.push_back( { s, type, mp_cur_turn } );
-    };
-    // DDA MP v4.0a-44: host-style aiming window (right side, curses window).
-    auto mp_draw_aim_window = [&]() {
-        if( !mp_throw_active ) {
-            return;
-        }
-        const int wwid = 55;
-        const int whei = std::min( 33, TERMY );
-        if( !mp_aim_win ) {
-            mp_aim_win = catacurses::newwin( whei, wwid, point( TERMX - wwid, 0 ) );
-        }
-        if( !mp_aim_win ) {
-            return;
-        }
-        werase( mp_aim_win );
-        draw_border( mp_aim_win );
-        mvwprintz( mp_aim_win, point( 2, 0 ), c_white, "< " );
-        trim_and_print( mp_aim_win, point( 4, 0 ), wwid - 7, c_red,
-                        string_format( _( "Throwing %s" ),
-                                       remove_color_tags( mp_throw_name ) ) );
-        wprintz( mp_aim_win, c_white, " >" );
-        int ty = 1;
-        std::istringstream ls( mp_aim_text );
-        std::string line;
-        while( std::getline( ls, line ) && ty < whei - 2 ) {
-            nc_color col = c_light_gray;
-            print_colored_text( mp_aim_win, point( 1, ty ), col, col, line );
-            ++ty;
-        }
-        mvwprintz( mp_aim_win, point( 1, whei - 2 ), c_white,
-                   _( "[Enter] throw   [Esc] cancel" ) );
-        wnoutrefresh( mp_aim_win );
     };
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
@@ -2073,7 +2127,6 @@ void run_view_loop()
             // the screen alternated between stamped tiles and the cleared
             // black buffer (the observed flicker).
             ui_manager::redraw();
-            mp_draw_aim_window();
 
             bool mp_canvas_ok = false;
             snapshot snap;
@@ -2533,6 +2586,11 @@ void run_view_loop()
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
+                                if( mp_throw_active ) {
+                                    netplay::overlay_begin();
+                                    mp_draw_aim_panel();
+                                    netplay::overlay_end();
+                                }
                                 mp_frame_trace( "end ok" );
                             }
                         }
@@ -2634,12 +2692,6 @@ void run_view_loop()
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
-                    const float dist = std::sqrt(
-                                           static_cast<float>( mp_throw_dx * mp_throw_dx +
-                                                   mp_throw_dy * mp_throw_dy ) );
-                    if( dist > mp_throw_range + 0.5f ) {
-                        continue; // host target_ui does not accept out-of-range aims
-                    }
                     netplay::client_send_inventory_action(
                         mp_throw_node, 't', mp_throw_gen,
                         { mp_throw_dx, mp_throw_dy } );
