@@ -1834,8 +1834,8 @@ void host_pump_inventory_actions()
             case 'U':   // unload
                 changed = av->unload( loc );
                 break;
-            case 'D':   // disassemble
-                changed = av->disassemble( loc, false );
+            case 'D':   // disassemble: map-bound, unsafe for an unloaded avatar
+                deny( _( "Disassembly is not available for netplay clients yet." ) );
                 break;
             case 'm':   // mend
                 av->mend_item( item_location( loc ), false );
@@ -1934,10 +1934,21 @@ void host_note_world_turn()
             // Exactly one turn of move points, never an accumulated stock.
             av_move_pool[sid] = av->get_speed();
             av->set_moves( av_move_pool[sid] );
-            // DDA MP v4.0a-22: activities (read/reload/mend/disassemble) of a
-            // client avatar are not ticked by the world (it is outside the
-            // host bubble), so advance them with the turn's move points here.
-            av->process_activity();
+            // DDA MP v4.0a-22: activities that only touch the avatar's own
+            // inventory (reading, reloading, mending) are not ticked by the
+            // world, so advance them here. Map-bound activities such as
+            // disassembly are deliberately not ticked: the avatar may be
+            // outside the host bubble and would act on the wrong map.
+            if( av->activity ) {
+                static const activity_id mp_act_read( "ACT_READ" );
+                static const activity_id mp_act_reload( "ACT_RELOAD" );
+                static const activity_id mp_act_mend( "ACT_MEND_ITEM" );
+                const activity_id &act_id = av->activity.id();
+                if( act_id == mp_act_read || act_id == mp_act_reload ||
+                    act_id == mp_act_mend ) {
+                    av->process_activity();
+                }
+            }
             // DDA MP v4.0a-8/9: refresh the client's status payloads.
             av_send_status( sid );
         }

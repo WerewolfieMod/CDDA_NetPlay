@@ -1203,7 +1203,7 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'm', pgettext( "action", "mend" ),
                    !it.faults.empty() ? hint_rating::good :
                    ( it.faults_potential().empty() ? hint_rating::cant : hint_rating::iffy ) );
-    mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::iffy );
+    mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::cant );
     if( it.is_container() && !it.is_corpse() ) {
         mp_menu_entry( menu, 'i', pgettext( "action", "insert" ), hint_rating::cant );
         if( it.num_item_stacks() > 0 ) {
