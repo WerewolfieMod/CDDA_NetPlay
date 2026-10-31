@@ -77,6 +77,8 @@ enum class frame : int {
     /// DDA MP v4.0a-18: an inventory action picked on the client (raw index
     /// into the last INVENTORY row list + action key, e.g. 'w'/'W'/'T').
     INVENTORY_ACTION = 32,  ///< client -> host: i32 node, i32 action
+    /// DDA MP v4.0a-27: serialized session NPC for the client's own @ menu.
+    CHARACTER_JSON = 33,    ///< host -> client: str json
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -283,6 +285,10 @@ bool host_pop_key( uint32_t &code );
 bool host_send_hover_to_sid( int sid, const std::string &text );
 /// DDA MP v4.0a-8: send the session avatar's character sheet (plain text).
 bool host_send_sheet_to_sid( int sid, const std::string &text );
+/// DDA MP v4.0a-27: send the session avatar serialized as JSON.
+bool host_send_character_json_to_sid( int sid, const std::string &json );
+/// Latest serialized session avatar (client side).
+bool client_character_json( std::string &out );
 /// DDA MP v4.0a-9: send the host-rendered sidebar (colour cells) to a session.
 bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
 /// DDA MP v4.0a-11: send one event line to the client's message log.

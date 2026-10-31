@@ -341,6 +341,10 @@ struct netplay_state {
     std::mutex sheet_mutex;
     std::string sheet_text;
     bool have_sheet = false;
+    /* DDA MP v4.0a-27: serialized session NPC for the client @ menu. */
+    std::mutex char_json_mutex;
+    std::string char_json;
+    bool have_char_json = false;
     /* DDA MP v4.0a-9: latest host-rendered sidebar cells. */
     std::mutex sidebar_mutex;
     sidebar_frame sidebar;
@@ -1382,8 +1386,25 @@ bool host_send_sheet_to_sid( int sid, const std::string &text )
     return true;
 }
 
-bool host_pop_key( uint32_t &code ){
-    std::lock_guard<std::mutex> lk( state.keys_mutex );
+bool host_send_character_json_to_sid( int sid, const std::string &json )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_str( p, json );
+    if( !send_all( it->second, encode_frame( frame::CHARACTER_JSON, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool host_pop_key( uint32_t &code ){    std::lock_guard<std::mutex> lk( state.keys_mutex );
     if( state.host_keys.empty() ) {
         return false;
     }
@@ -1664,6 +1685,16 @@ static void client_run( socket_t sock )
                 state.sheet_text = text;
                 state.have_sheet = true;
             }
+        } else if( op == frame::CHARACTER_JSON ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string text = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.char_json_mutex );
+                state.char_json = text;
+                state.have_char_json = true;
+            }
         } else if( op == frame::SIDEBAR ) {
             reader r;
             r.data = payload.data();
@@ -1928,6 +1959,16 @@ bool client_sidebar( sidebar_frame &out )
         return false;
     }
     out = state.sidebar;
+    return true;
+}
+
+bool client_character_json( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.char_json_mutex );
+    if( !state.have_char_json ) {
+        return false;
+    }
+    out = state.char_json;
     return true;
 }
 

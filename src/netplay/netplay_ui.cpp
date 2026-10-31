@@ -1239,6 +1239,30 @@ static int mp_client_item_menu( Character &you, const item &it )
     return menu.ret;
 }
 
+/* DDA MP v4.0a-27: the client's own @ menu. The host streams the session NPC
+ * as JSON; deserializing it into a temporary NPC gives Character::disp_info()
+ * the real stats/traits/skills instead of a blank shell. Gated by try/catch so
+ * a bad payload can never take the client down. */
+static void mp_run_character_info( const std::string &text )
+{
+    if( text.empty() ) {
+        return;
+    }
+    try {
+        JsonValue jv = json_loader::from_string( text );
+        JsonObject jo = jv.get_object();
+        npc tmp;
+        tmp.deserialize( jo );
+        mp_inv_log( "info: opening @ menu" );
+        tmp.disp_info( false );
+        mp_inv_log( "info: closed" );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "info error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "info error: unknown" );
+    }
+}
+
 /* DDA MP v4.0a-17: exact host inventory on the client.
  *
  * Instead of re-drawing an approximation, rebuild the avatar's item tree from
@@ -1555,6 +1579,7 @@ void run_view_loop()
     static int mp_inv_scroll = 0;
     static int mp_inv_sel = 0;
     static std::string mp_inv_text;
+    static std::string mp_char_json;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
@@ -1830,6 +1855,12 @@ void run_view_loop()
                     std::string mp_inv;
                     if( netplay::client_inventory( mp_inv ) ) {
                         mp_inv_text = std::move( mp_inv );
+                    }
+                }
+                {
+                    std::string mp_cj;
+                    if( netplay::client_character_json( mp_cj ) ) {
+                        mp_char_json = std::move( mp_cj );
                     }
                 }
                 // Events for the client's own log.
@@ -2366,6 +2397,10 @@ void run_view_loop()
                     } else {
                         mp_run_host_inventory( mp_inv_text );
                     }
+                    continue;
+                }
+                if( mp_ch == '@' ) {
+                    mp_run_character_info( mp_char_json );
                     continue;
                 }
             }

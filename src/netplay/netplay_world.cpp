@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdio>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1602,6 +1603,14 @@ static void av_send_status( int sid )
         return;
     }
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
+    // DDA MP v4.0a-27: the raw NPC saves the client's own @ menu; the client
+    // deserializes it into a temp NPC and opens Character::disp_info().
+    {
+        std::ostringstream os;
+        JsonOut js( os );
+        av->serialize( js );
+        netplay::host_send_character_json_to_sid( sid, os.str() );
+    }
 #if defined(TILES)
     {
         // DDA MP v4.0a-12: the host's pixel minimap colours MAP tiles (terrain,
