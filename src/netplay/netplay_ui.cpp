@@ -1174,15 +1174,18 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'w', pgettext( "action", "wield" ),
                    you.can_wield( it ).success() ? hint_rating::good : hint_rating::iffy );
     mp_menu_entry( menu, 't', pgettext( "action", "throw" ), hint_rating::cant );
-    mp_menu_entry( menu, 'c', pgettext( "action", "change side" ), hint_rating::cant );
+    mp_menu_entry( menu, 'c', pgettext( "action", "change side" ),
+                   it.is_armor() ? hint_rating::good : hint_rating::cant );
     mp_menu_entry( menu, 'T', pgettext( "action", "take off" ), mp_rate_take_off( it, worn ) );
     mp_menu_entry( menu, 'd', pgettext( "action", "drop" ),
                    can_drop ? hint_rating::good : hint_rating::cant );
-    mp_menu_entry( menu, 'U', pgettext( "action", "unload" ), hint_rating::cant );
+    mp_menu_entry( menu, 'U', pgettext( "action", "unload" ),
+                   you.rate_action_unload( it ) == hint_rating::cant ?
+                   hint_rating::cant : hint_rating::good );
     mp_menu_entry( menu, 'r', pgettext( "action", "reload" ), hint_rating::cant );
     mp_menu_entry( menu, 'p', pgettext( "action", "part reload" ), hint_rating::cant );
     mp_menu_entry( menu, 'm', pgettext( "action", "mend" ), hint_rating::cant );
-    mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::cant );
+    mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::iffy );
     if( it.is_container() && !it.is_corpse() ) {
         mp_menu_entry( menu, 'i', pgettext( "action", "insert" ), hint_rating::cant );
         if( it.num_item_stacks() > 0 ) {

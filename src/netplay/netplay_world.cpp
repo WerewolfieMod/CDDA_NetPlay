@@ -1815,6 +1815,15 @@ void host_pump_inventory_actions()
                 loc->is_favorite = !loc->is_favorite;
                 changed = true;
                 break;
+            case 'c':   // change side (worn layer / gun mode)
+                changed = av->change_side( loc );
+                break;
+            case 'U':   // unload
+                changed = av->unload( loc );
+                break;
+            case 'D':   // disassemble
+                changed = av->disassemble( loc, false );
+                break;
             default:
                 // Actions not wired to the host yet: tell the client instead
                 // of silently doing nothing.
