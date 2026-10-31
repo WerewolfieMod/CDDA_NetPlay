@@ -40,6 +40,7 @@
 #include "npc.h"
 #include "output.h"
 #include "panels.h"
+#include "projectile.h"
 #include "messages.h"
 #include "cata_utility.h"
 #include "string_formatter.h"
@@ -1929,6 +1930,45 @@ void host_pump_inventory_actions()
                 item_location ereader;
                 av->assign_activity( read_activity_actor(
                                          av->time_to_read( *loc, *reader ), loc, ereader, false ) );
+                changed = true;
+                break;
+            }
+            case 't': { // throw at a tile offset chosen on the client
+                if( targets.size() < 2 ) {
+                    deny( _( "Invalid target." ) );
+                    break;
+                }
+                if( av->is_worn( *loc ) ) {
+                    const ret_val<void> can = av->can_takeoff( *loc );
+                    if( !can.success() ) {
+                        deny( can.str() );
+                        break;
+                    }
+                }
+                if( !av->is_wielding( *loc ) && !av->wield( loc ) ) {
+                    deny( _( "You can't wield that." ) );
+                    break;
+                }
+                item_location weapon = av->get_wielded_item();
+                if( !weapon ) {
+                    deny( _( "You aren't holding something you can throw." ) );
+                    break;
+                }
+                const tripoint_bub_ms from = av->pos_bub();
+                const tripoint_bub_ms target( from.x() + targets[0],
+                                              from.y() + targets[1], from.z() );
+                if( !get_map().inbounds( target ) ) {
+                    deny( _( "You can't throw there." ) );
+                    break;
+                }
+                item thrown = *weapon;
+                if( thrown.count_by_charges() && thrown.charges > 1 ) {
+                    thrown.charges = 1;
+                    weapon->mod_charges( -1 );
+                } else {
+                    av->remove_weapon();
+                }
+                av->throw_item( target, thrown );
                 changed = true;
                 break;
             }

@@ -825,6 +825,19 @@ static std::string mp_fmt_cm( int mm )
 /// the input handler can jump between columns.
 static int mp_inv_split = 0;
 
+/* DDA MP v4.0a-35: throw targeting. The client draws its own crosshair over
+ * the streamed canvas and sends the tile offset; the host performs the throw
+ * with Character::throw_item so range/blocking rules stay authoritative. */
+static bool mp_throw_active = false;
+static int mp_throw_node = 0;
+static int mp_throw_gen = 0;
+static int mp_throw_dx = 1;
+static int mp_throw_dy = 0;
+static float mp_canvas_cx = 0.0f;
+static float mp_canvas_cy = 0.0f;
+static float mp_canvas_tw = 0.0f;
+static float mp_canvas_th = 0.0f;
+
 static void mp_overlay_inventory( const std::string &text, bool open, int &sel, int &scroll )
 {
     if( !imclient || !open ) {
@@ -1189,7 +1202,8 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'W', pgettext( "action", "wear" ), mp_rate_wear( you, it, worn ) );
     mp_menu_entry( menu, 'w', pgettext( "action", "wield" ),
                    you.can_wield( it ).success() ? hint_rating::good : hint_rating::iffy );
-    mp_menu_entry( menu, 't', pgettext( "action", "throw" ), hint_rating::cant );
+    mp_menu_entry( menu, 't', pgettext( "action", "throw" ),
+                   you.can_wield( it ).success() ? hint_rating::good : hint_rating::iffy );
     mp_menu_entry( menu, 'c', pgettext( "action", "change side" ),
                    it.is_armor() ? hint_rating::good : hint_rating::cant );
     mp_menu_entry( menu, 'T', pgettext( "action", "take off" ), mp_rate_take_off( it, worn ) );
@@ -1487,6 +1501,14 @@ static void mp_run_host_inventory( const std::string &text )
                 netplay::client_send_inventory_action( node, '=', pkt.header.generation,
                                                        { invlet } );
             }
+            break;
+        }
+        if( act == 't' ) {
+            mp_throw_node = node;
+            mp_throw_gen = pkt.header.generation;
+            mp_throw_dx = 1;
+            mp_throw_dy = 0;
+            mp_throw_active = true;
             break;
         }
         if( act > 0 ) {
@@ -1806,6 +1828,17 @@ void run_view_loop()
             dl->AddText( ImVec2( x0 + pad, y ), IM_COL32( 220, 220, 220, 255 ), l.c_str() );
             y += ImGui::GetTextLineHeight();
         }
+        // DDA MP v4.0a-35: throw crosshair over the streamed canvas.
+        if( mp_throw_active && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+            const float px = mp_canvas_cx + mp_throw_dx * mp_canvas_tw + mp_canvas_tw * 0.5f;
+            const float py = mp_canvas_cy + mp_throw_dy * mp_canvas_th + mp_canvas_th * 0.5f;
+            const float r = std::max( mp_canvas_tw, mp_canvas_th ) * 0.55f;
+            dl->AddCircle( ImVec2( px, py ), r, IM_COL32( 255, 90, 90, 255 ), 16, 2.0f );
+            dl->AddLine( ImVec2( px - r, py ), ImVec2( px + r, py ),
+                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
+            dl->AddLine( ImVec2( px, py - r ), ImVec2( px, py + r ),
+                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
+        }
     } );
 
     auto ensure_window = [&]( int width, int height ) {
@@ -2032,6 +2065,13 @@ void run_view_loop()
                             const int dest_x = center_px_x - canvas_w / 2 -
                                                static_cast<int>( mp_sb_overlay_w / 2.0f );
                             const int dest_y = center_px_y - canvas_h / 2;
+                            // Throw crosshair anchor: the avatar sits at the
+                            // centre of the streamed canvas.
+                            mp_canvas_cx = static_cast<float>( center_px_x ) -
+                                           mp_sb_overlay_w / 2.0f;
+                            mp_canvas_cy = static_cast<float>( center_px_y );
+                            mp_canvas_tw = static_cast<float>( tw );
+                            mp_canvas_th = static_cast<float>( th );
                             constexpr int PIVOT = 32; // inside the 48-tile bubble
                             // DDA MP v4.0a-4: feed the streamed absolute origin
                             // so sprite variant seeds are world-stable.
@@ -2385,6 +2425,41 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
+            // DDA MP v4.0a-35: throw targeting (arrows move the crosshair).
+            if( mp_throw_active ) {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_key = mp_ev.get_first_input();
+                if( mp_key == 27 || action == "QUIT" ) {
+                    mp_throw_active = false;
+                    continue;
+                }
+                if( action == "UP" ) {
+                    --mp_throw_dy;
+                    continue;
+                }
+                if( action == "DOWN" ) {
+                    ++mp_throw_dy;
+                    continue;
+                }
+                if( action == "LEFT" ) {
+                    --mp_throw_dx;
+                    continue;
+                }
+                if( action == "RIGHT" ) {
+                    ++mp_throw_dx;
+                    continue;
+                }
+                if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
+                    netplay::client_send_inventory_action(
+                        mp_throw_node, 't', mp_throw_gen,
+                        { mp_throw_dx, mp_throw_dy } );
+                    mp_inv_log( string_format( "action: node=%d key=t target=%d,%d",
+                                               mp_throw_node, mp_throw_dx, mp_throw_dy ) );
+                    mp_throw_active = false;
+                    continue;
+                }
+                continue;
+            }
             // DDA MP v4.0a-16: inventory input is handled locally; orders are
             // not sent to the host while the window is open.
             if( mp_inv_open ) {
