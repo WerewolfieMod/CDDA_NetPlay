@@ -1299,7 +1299,8 @@ static void mp_run_host_inventory( const std::string &text )
         // Row index travels with the item; the host uses it to address the
         // very same entry when an action comes back.
         it.set_var( "mp_node", std::to_string( node ) );
-        if( it.count_by_charges() && e.charges > 0 ) {
+        if( e.charges > 0 &&
+            ( it.count_by_charges() || it.is_magazine() || it.is_ammo() || it.is_tool() ) ) {
             it.charges = e.charges;
         }
         if( e.invlet != '\0' ) {
