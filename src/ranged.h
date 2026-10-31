@@ -37,7 +37,7 @@ trajectory mode_select_only( avatar &you, int range );
 trajectory mode_fire( avatar &you, aim_activity_actor &activity );
 
 /** Throwing item */
-trajectory mode_throw( avatar &you, item &relevant, bool blind_throwing );
+trajectory mode_throw( Character &you, item &relevant, bool blind_throwing );
 
 /** Reach attacking */
 trajectory mode_reach( avatar &you, item_location weapon );
@@ -64,7 +64,7 @@ int range_with_even_chance_of_good_hit( int dispersion );
  * @param messages Used to store messages describing failed checks
  * @return True if all conditions are true
  */
-bool gunmode_checks_common( avatar &you, const map &m, std::vector<std::string> &messages,
+bool gunmode_checks_common( Character &you, const map &m, std::vector<std::string> &messages,
                             const gun_mode &gmode );
 
 /**
@@ -72,7 +72,7 @@ bool gunmode_checks_common( avatar &you, const map &m, std::vector<std::string> 
  * @param messages Used to store messages describing failed checks
  * @return True if all conditions are true
  */
-bool gunmode_checks_weapon( avatar &you, const map &m, std::vector<std::string> &messages,
+bool gunmode_checks_weapon( Character &you, const map &m, std::vector<std::string> &messages,
                             const gun_mode &gmode );
 
 int throw_cost( const Character &c, const item &to_throw );

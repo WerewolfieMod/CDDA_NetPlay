@@ -230,8 +230,8 @@ class target_ui
             SelectOnly
         };
 
-        // Avatar
-        avatar *you;
+        // Character doing the aiming (avatar or a netplay session NPC)
+        Character *you;
         // Interface mode
         TargetMode mode = TargetMode::Fire;
         // Weapon being fired/thrown
@@ -501,7 +501,7 @@ target_handler::trajectory target_handler::mode_fire( avatar &you, aim_activity_
     return ui.run();
 }
 
-target_handler::trajectory target_handler::mode_throw( avatar &you, item &relevant,
+target_handler::trajectory target_handler::mode_throw( Character &you, item &relevant,
         bool blind_throwing )
 {
     target_ui ui = target_ui();
@@ -2864,7 +2864,7 @@ target_handler::trajectory target_ui::run()
         draw_turret_lines = vturrets->size() == 1;
     }
 
-    avatar &player_character = get_avatar();
+    Character &player_character = *you;
     on_out_of_scope cleanup( [&here, &player_character]() {
         here.invalidate_map_cache( player_character.posz() + player_character.view_offset.z() );
     } );
@@ -3195,7 +3195,8 @@ void target_ui::init_window_and_input()
         }
         aim_mode = aim_types.begin();
         for( auto it = aim_types.begin(); it != aim_types.end(); ++it ) {
-            if( you->preferred_aiming_mode == it->action ) {
+            if( you->is_avatar() &&
+                static_cast<avatar *>( you )->preferred_aiming_mode == it->action ) {
                 aim_mode = it; // default to persisted mode if possible
             }
         }
@@ -3568,7 +3569,9 @@ void target_ui::set_last_target()
 
     if( !you->last_target_pos.has_value() ||
         you->last_target_pos.value() != here.get_abs( dst ) ) {
-        you->mark_aim_cache_dirty();
+        if( you->is_avatar() ) {
+            static_cast<avatar *>( you )->mark_aim_cache_dirty();
+        }
     }
     you->last_target_pos = here.get_abs( dst );
     if( dst_critter ) {
@@ -3734,7 +3737,9 @@ void target_ui::update_turrets_in_range()
 void target_ui::recalc_aim_turning_penalty()
 {
     // since we are recalcing recoil dirty the aimm cache
-    you->mark_aim_cache_dirty();
+    if( you->is_avatar() ) {
+        static_cast<avatar *>( you )->mark_aim_cache_dirty();
+    }
 
     if( status != Status::Good ) {
         // We don't care about invalid situations
@@ -3879,7 +3884,9 @@ bool target_ui::action_switch_mode()
         // aiming mode select
         aim_mode = aim_types.begin();
         std::advance( aim_mode, menu.ret - aim_modes_range.first );
-        you->preferred_aiming_mode = aim_mode->action;
+        if( you->is_avatar() ) {
+            static_cast<avatar *>( you )->preferred_aiming_mode = aim_mode->action;
+        }
     } // else - just refresh
 
     if( mode == TargetMode::TurretManual ) {
@@ -4571,7 +4578,7 @@ void target_ui::on_target_accepted( bool harmful ) const
     }
 }
 
-bool gunmode_checks_common( avatar &you, const map &m, std::vector<std::string> &messages,
+bool gunmode_checks_common( Character &you, const map &m, std::vector<std::string> &messages,
                             const gun_mode &gmode )
 {
     bool result = true;
@@ -4611,7 +4618,7 @@ bool gunmode_checks_common( avatar &you, const map &m, std::vector<std::string> 
     return result;
 }
 
-bool gunmode_checks_weapon( avatar &you, const map &m, std::vector<std::string> &messages,
+bool gunmode_checks_weapon( Character &you, const map &m, std::vector<std::string> &messages,
                             const gun_mode &gmode )
 {
     bool result = true;
