@@ -1611,7 +1611,11 @@ static void av_send_status( int sid )
             const char *env = std::getenv( "DDA_MP_NO_INFO_JSON" );
             return env == nullptr || env[0] == '\0' || std::string( env ) == "0";
         }();
-        if( mp_send_info ) {
+        // Serializing the whole NPC is comparatively expensive; the @ menu
+        // does not need frame-fresh data, so refresh it roughly every 10
+        // status pushes (the first push after join always sends).
+        static std::map<int, int> mp_info_tick;
+        if( mp_send_info && ( ++mp_info_tick[sid] % 10 ) == 1 ) {
             std::ostringstream os;
             JsonOut js( os );
             av->serialize( js );
