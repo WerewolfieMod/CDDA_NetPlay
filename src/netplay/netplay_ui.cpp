@@ -1216,8 +1216,21 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'f', it.is_favorite ? pgettext( "action", "unfavorite" ) :
                    pgettext( "action", "favorite" ), hint_rating::good );
     mp_menu_entry( menu, 'V', pgettext( "action", "view recipe" ), hint_rating::cant );
-    mp_menu_entry( menu, '>', pgettext( "action", "hide contents" ), hint_rating::cant );
-    mp_menu_entry( menu, '<', pgettext( "action", "show contents" ), hint_rating::cant );
+    {
+        bool can_collapse = false;
+        bool can_expand = false;
+        for( const item_pocket *pocket : it.get_standard_pockets() ) {
+            if( pocket->settings.is_collapsed() ) {
+                can_expand = true;
+            } else {
+                can_collapse = true;
+            }
+        }
+        mp_menu_entry( menu, '>', pgettext( "action", "hide contents" ),
+                       can_collapse ? hint_rating::good : hint_rating::cant );
+        mp_menu_entry( menu, '<', pgettext( "action", "show contents" ),
+                       can_expand ? hint_rating::good : hint_rating::cant );
+    }
     mp_menu_entry( menu, '=', pgettext( "action", "reassign" ), hint_rating::good );
     // Hide pre-session UI (the main menu we joined from) only while this
     // popup is on screen; keeping it permanently caused a redraw flicker.
