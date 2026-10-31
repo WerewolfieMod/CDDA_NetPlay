@@ -1650,6 +1650,18 @@ void run_view_loop()
         ImDrawList *dl = ImGui::GetForegroundDrawList();
         const float fs = ImGui::GetFontSize();
         const float pad = fs * 0.6f;
+        // DDA MP v4.0a-35: throw crosshair over the streamed canvas. Drawn
+        // first so it is independent of the sidebar/sheet early returns.
+        if( mp_throw_active && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+            const float px = mp_canvas_cx + mp_throw_dx * mp_canvas_tw + mp_canvas_tw * 0.5f;
+            const float py = mp_canvas_cy + mp_throw_dy * mp_canvas_th + mp_canvas_th * 0.5f;
+            const float r = std::max( mp_canvas_tw, mp_canvas_th ) * 0.55f;
+            dl->AddCircle( ImVec2( px, py ), r, IM_COL32( 255, 90, 90, 255 ), 16, 2.0f );
+            dl->AddLine( ImVec2( px - r, py ), ImVec2( px + r, py ),
+                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
+            dl->AddLine( ImVec2( px, py - r ), ImVec2( px, py + r ),
+                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
+        }
         // DDA MP v4.0a-14: inventory panel (read-only, toggled with 'i').
         if( !mp_side.cells.empty() ) {
             const float cw = ImGui::CalcTextSize( "M" ).x;
@@ -1827,17 +1839,6 @@ void run_view_loop()
             }
             dl->AddText( ImVec2( x0 + pad, y ), IM_COL32( 220, 220, 220, 255 ), l.c_str() );
             y += ImGui::GetTextLineHeight();
-        }
-        // DDA MP v4.0a-35: throw crosshair over the streamed canvas.
-        if( mp_throw_active && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
-            const float px = mp_canvas_cx + mp_throw_dx * mp_canvas_tw + mp_canvas_tw * 0.5f;
-            const float py = mp_canvas_cy + mp_throw_dy * mp_canvas_th + mp_canvas_th * 0.5f;
-            const float r = std::max( mp_canvas_tw, mp_canvas_th ) * 0.55f;
-            dl->AddCircle( ImVec2( px, py ), r, IM_COL32( 255, 90, 90, 255 ), 16, 2.0f );
-            dl->AddLine( ImVec2( px - r, py ), ImVec2( px + r, py ),
-                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
-            dl->AddLine( ImVec2( px, py - r ), ImVec2( px, py + r ),
-                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
         }
     } );
 
