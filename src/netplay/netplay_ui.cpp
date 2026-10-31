@@ -847,6 +847,7 @@ static int mp_aim_w = 0;
 static int mp_aim_h = 0;
 static std::string mp_throw_name;
 static int mp_throw_range = 1;
+static std::string mp_aim_text;
 /* World origin of the last snapshot (absolute coords of the session avatar). */
 static int mp_origin_x = 0;
 static int mp_origin_y = 0;
@@ -1544,6 +1545,9 @@ static void mp_run_host_inventory( const std::string &text )
                 mp_throw_name = it.display_name();
                 mp_throw_range = std::max( 1, viewer.throw_range( it ) );
                 mp_throw_active = true;
+                mp_aim_text.clear();
+                netplay::client_send_aim_info( node, pkt.header.generation,
+                                               mp_throw_dx, mp_throw_dy );
             }
             break;
         }
@@ -1996,6 +2000,12 @@ void run_view_loop()
                     std::string mp_cj;
                     if( netplay::client_character_json( mp_cj ) ) {
                         mp_char_json = std::move( mp_cj );
+                    }
+                }
+                {
+                    std::string mp_ai;
+                    if( netplay::client_aim_info( mp_ai ) ) {
+                        mp_aim_text = std::move( mp_ai );
                     }
                 }
                 // Events for the client's own log.
@@ -2498,74 +2508,41 @@ void run_view_loop()
                                     ImDrawList *tdl = ImGui::GetForegroundDrawList();
                                     const float fsz = ImGui::GetFontSize();
                                     const float lh = ImGui::GetTextLineHeight();
-                                    // Line of fire from the snapshot's terrain
-                                    // barrier bit (the same wall data the host
-                                    // target_ui checks through the map).
-                                    bool blocked = false;
-                                    const int gx = mp_aim_w / 2 + mp_throw_dx;
-                                    const int gy = mp_aim_h / 2 + mp_throw_dy;
-                                    if( mp_aim_w > 0 && mp_aim_h > 0 && gx >= 0 &&
-                                        gy >= 0 && gx < mp_aim_w && gy < mp_aim_h ) {
-                                        int x0 = mp_aim_w / 2;
-                                        int y0 = mp_aim_h / 2;
-                                        const int dxs = std::abs( gx - x0 );
-                                        const int dys = std::abs( gy - y0 );
-                                        const int sx = x0 < gx ? 1 : -1;
-                                        const int sy = y0 < gy ? 1 : -1;
-                                        int err = dxs - dys;
-                                        while( x0 != gx || y0 != gy ) {
-                                            if( x0 != mp_aim_w / 2 || y0 != mp_aim_h / 2 ) {
-                                                const size_t idx = static_cast<size_t>( y0 ) *
-                                                                   mp_aim_w + x0;
-                                                if( idx < mp_aim_flags.size() &&
-                                                    ( mp_aim_flags[idx] & 8 ) != 0 ) {
-                                                    blocked = true;
-                                                    break;
-                                                }
-                                            }
-                                            const int e2 = 2 * err;
-                                            if( e2 > -dys ) {
-                                                err -= dys;
-                                                x0 += sx;
-                                            }
-                                            if( e2 < dxs ) {
-                                                err += dxs;
-                                                y0 += sy;
-                                            }
+                                    // Host-authored aiming panel (range,
+                                    // target, hit chances) on the right side,
+                                    // like target_ui's w_target window.
+                                    std::vector<std::string> lines;
+                                    {
+                                        std::istringstream ls( mp_aim_text );
+                                        std::string line;
+                                        while( std::getline( ls, line ) ) {
+                                            lines.push_back( line );
                                         }
                                     }
-                                    const float dist = std::sqrt(
-                                                           static_cast<float>( mp_throw_dx * mp_throw_dx +
-                                                                   mp_throw_dy * mp_throw_dy ) );
-                                    const bool in_range = dist <= mp_throw_range + 0.5f;
-                                    const ImU32 aim_col = ( blocked || !in_range ) ?
-                                                          IM_COL32( 255, 80, 80, 255 ) :
-                                                          IM_COL32( 120, 255, 120, 255 );
-                                    // Host-style aiming panel.
-                                    const float pw = fsz * 24.0f;
-                                    const float ph = lh * 4.6f;
-                                    tdl->AddRectFilled( ImVec2( 10, 10 ), ImVec2( 10 + pw, 10 + ph ),
-                                                        IM_COL32( 0, 0, 0, 210 ) );
-                                    tdl->AddRect( ImVec2( 10, 10 ), ImVec2( 10 + pw, 10 + ph ),
-                                                  IM_COL32( 180, 180, 180, 255 ) );
-                                    float ty = 10 + lh * 0.3f;
-                                    const std::string l1 = string_format( "%s %s",
-                                                              _( "Throwing:" ), mp_throw_name );
-                                    const std::string l2 = string_format( "%s %d   %s %.1f",
-                                                              _( "Range:" ), mp_throw_range,
-                                                              _( "Distance:" ), dist );
-                                    const std::string l3 = blocked ? _( "Line of fire: blocked" ) :
-                                                             ( in_range ? _( "Line of fire: clear" ) :
-                                                               _( "Target out of range" ) );
-                                    tdl->AddText( ImVec2( 18, ty ), IM_COL32( 255, 255, 255, 255 ),
-                                                  mp_clip_text( l1, pw - 16 ).c_str() );
+                                    const float pw = fsz * 30.0f;
+                                    const float ph = lh * ( static_cast<float>( lines.size() ) + 2.0f ) +
+                                                     12.0f;
+                                    const float px0 = std::max( 8.0f,
+                                                                ImGui::GetIO().DisplaySize.x - pw - 8.0f );
+                                    tdl->AddRectFilled( ImVec2( px0, 8.0f ),
+                                                        ImVec2( px0 + pw, 8.0f + ph ),
+                                                        IM_COL32( 0, 0, 0, 230 ) );
+                                    tdl->AddRect( ImVec2( px0, 8.0f ),
+                                                  ImVec2( px0 + pw, 8.0f + ph ),
+                                                  IM_COL32( 190, 190, 190, 255 ), 0.0f, 0, 1.0f );
+                                    float ty = 8.0f + lh * 0.4f;
+                                    tdl->AddText( ImVec2( px0 + 8, ty ), IM_COL32( 255, 255, 255, 255 ),
+                                                  mp_clip_text( string_format( "%s %s",
+                                                              _( "Throwing:" ), mp_throw_name ),
+                                                              pw - 16 ).c_str() );
                                     ty += lh;
-                                    tdl->AddText( ImVec2( 18, ty ), IM_COL32( 220, 220, 220, 255 ),
-                                                  l2.c_str() );
-                                    ty += lh;
-                                    tdl->AddText( ImVec2( 18, ty ), aim_col, l3.c_str() );
-                                    ty += lh;
-                                    tdl->AddText( ImVec2( 18, ty ), IM_COL32( 190, 190, 190, 255 ),
+                                    for( const std::string &line : lines ) {
+                                        tdl->AddText( ImVec2( px0 + 8, ty ),
+                                                      IM_COL32( 215, 215, 215, 255 ),
+                                                      mp_clip_text( line, pw - 16 ).c_str() );
+                                        ty += lh;
+                                    }
+                                    tdl->AddText( ImVec2( px0 + 8, ty ), IM_COL32( 190, 190, 190, 255 ),
                                                   _( "[Enter] throw   [Esc] cancel" ) );
                                     netplay::overlay_end();
                                 }
@@ -2642,22 +2619,31 @@ void run_view_loop()
                 const int mp_key = mp_ev.get_first_input();
                 if( mp_key == 27 || action == "QUIT" ) {
                     mp_throw_active = false;
+                    mp_aim_text.clear();
                     continue;
                 }
                 if( action == "UP" ) {
                     --mp_throw_dy;
+                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
+                                                   mp_throw_dx, mp_throw_dy );
                     continue;
                 }
                 if( action == "DOWN" ) {
                     ++mp_throw_dy;
+                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
+                                                   mp_throw_dx, mp_throw_dy );
                     continue;
                 }
                 if( action == "LEFT" ) {
                     --mp_throw_dx;
+                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
+                                                   mp_throw_dx, mp_throw_dy );
                     continue;
                 }
                 if( action == "RIGHT" ) {
                     ++mp_throw_dx;
+                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
+                                                   mp_throw_dx, mp_throw_dy );
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {

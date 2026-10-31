@@ -360,6 +360,10 @@ struct netplay_state {
     std::mutex inv_mutex;
     std::string inv_text;
     bool have_inv = false;
+    /* DDA MP v4.0a-43: latest host aiming panel text. */
+    std::mutex aim_mutex;
+    std::string aim_text;
+    bool have_aim = false;
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
@@ -392,6 +396,16 @@ struct netplay_state {
     };
     std::mutex inv_set_mutex;
     std::deque<inv_settings> inv_settings_q;
+
+    struct aim_req {
+        int sid = 0;
+        int node = 0;
+        int generation = 0;
+        int dx = 0;
+        int dy = 0;
+    };
+    std::mutex aim_req_mutex;
+    std::deque<aim_req> aim_requests;
 };
 
 void netplay_state::stop_host()
@@ -790,6 +804,20 @@ static void host_session_reader( int sid, socket_t sock )
                 std::lock_guard<std::mutex> lk( state.inv_set_mutex );
                 if( state.inv_settings_q.size() < 8 ) {
                     state.inv_settings_q.push_back( { sid, node, generation, json } );
+                }
+            }
+        } else if( op == frame::AIM_INFO_REQ ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int node = r.get_i32();
+            const int generation = r.get_i32();
+            const int dx = r.get_i32();
+            const int dy = r.get_i32();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.aim_req_mutex );
+                if( state.aim_requests.size() < 8 ) {
+                    state.aim_requests.push_back( { sid, node, generation, dx, dy } );
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1380,6 +1408,63 @@ bool client_send_inventory_settings( int node, int generation, const std::string
     return send_all( state.client_sock, encode_frame( frame::INVENTORY_SETTINGS, p ) );
 }
 
+bool host_pop_aim_request( int &sid, int &node, int &generation, int &dx, int &dy )
+{
+    std::lock_guard<std::mutex> lk( state.aim_req_mutex );
+    if( state.aim_requests.empty() ) {
+        return false;
+    }
+    const auto r = state.aim_requests.front();
+    state.aim_requests.pop_front();
+    sid = r.sid;
+    node = r.node;
+    generation = r.generation;
+    dx = r.dx;
+    dy = r.dy;
+    return true;
+}
+
+bool client_send_aim_info( int node, int generation, int dx, int dy )
+{
+    if( !state.connected ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_i32( p, node );
+    put_i32( p, generation );
+    put_i32( p, dx );
+    put_i32( p, dy );
+    return send_all( state.client_sock, encode_frame( frame::AIM_INFO_REQ, p ) );
+}
+
+bool host_send_aim_info_to_sid( int sid, const std::string &text )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_str( p, text );
+    if( !send_all( it->second, encode_frame( frame::AIM_INFO, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool client_aim_info( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.aim_mutex );
+    if( !state.have_aim ) {
+        return false;
+    }
+    out = state.aim_text;
+    return true;
+}
+
 void host_broadcast_event( const std::string &text, int msg_type )
 {
     std::vector<int> sids;
@@ -1744,6 +1829,16 @@ static void client_run( socket_t sock )
                 std::lock_guard<std::mutex> lk( state.char_json_mutex );
                 state.char_json = text;
                 state.have_char_json = true;
+            }
+        } else if( op == frame::AIM_INFO ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string text = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.aim_mutex );
+                state.aim_text = text;
+                state.have_aim = true;
             }
         } else if( op == frame::SIDEBAR ) {
             reader r;

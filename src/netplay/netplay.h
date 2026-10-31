@@ -81,6 +81,9 @@ enum class frame : int {
     CHARACTER_JSON = 33,    ///< host -> client: str json
     /// DDA MP v4.0a-31: pocket settings edited on the client for one row.
     INVENTORY_SETTINGS = 34, ///< client -> host: i32 node, i32 gen, str json
+    /// DDA MP v4.0a-43: host-authored aiming panel for a client target tile.
+    AIM_INFO_REQ = 35,      ///< client -> host: i32 node, gen, dx, dy
+    AIM_INFO = 36,          ///< host -> client: str lines ('\n' separated)
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -312,6 +315,14 @@ bool host_pop_inventory_action( int &sid, int &node, int &action, int &generatio
 bool client_send_inventory_settings( int node, int generation, const std::string &json );
 /// Host main thread: pop one queued pocket-settings update.
 bool host_pop_inventory_settings( int &sid, int &node, int &generation, std::string &json );
+/// DDA MP v4.0a-43: ask the host for the aiming panel of one target tile.
+bool client_send_aim_info( int node, int generation, int dx, int dy );
+/// Host main thread: pop one aiming-panel request.
+bool host_pop_aim_request( int &sid, int &node, int &generation, int &dx, int &dy );
+/// Host -> client aiming panel text.
+bool host_send_aim_info_to_sid( int sid, const std::string &text );
+/// Client side: latest aiming panel text.
+bool client_aim_info( std::string &out );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();

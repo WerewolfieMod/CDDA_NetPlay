@@ -39,6 +39,7 @@
 #include "mtype.h"
 #include "npc.h"
 #include "output.h"
+#include "ranged.h"
 #include "panels.h"
 #include "projectile.h"
 #include "messages.h"
@@ -2068,6 +2069,51 @@ void host_pump_inventory_actions()
         } catch( ... ) {
             // Malformed payload: ignore rather than break the session.
         }
+    }
+
+    // DDA MP v4.0a-43: host-computed aiming panel for the client's cursor.
+    for( int budget = 0; budget < 8; budget++ ) {
+        int sid = 0;
+        int node = 0;
+        int generation = 0;
+        int dx = 0;
+        int dy = 0;
+        if( !netplay::host_pop_aim_request( sid, node, generation, dx, dy ) ) {
+            break;
+        }
+        if( generation != av_inv_gen[sid] ) {
+            continue;
+        }
+        const auto sid_it = av_sid_to_npc.find( sid );
+        if( sid_it == av_sid_to_npc.end() ) {
+            continue;
+        }
+        shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
+        if( !npc_ptr || !av_npc_alive( npc_ptr ) ) {
+            continue;
+        }
+        g->mp_anchor_map_on( *npc_ptr, true );
+        const auto nodes_it = av_inv_nodes.find( sid );
+        if( nodes_it == av_inv_nodes.end() || node < 0 ||
+            node >= static_cast<int>( nodes_it->second.size() ) ) {
+            continue;
+        }
+        item_location loc = nodes_it->second[node];
+        if( !loc ) {
+            continue;
+        }
+        const tripoint_bub_ms target = npc_ptr->pos_bub() +
+                                       tripoint_rel_ms( dx, dy, 0 );
+        const std::vector<std::string> lines = target_handler::netplay_throw_aim_lines(
+                    *npc_ptr, *loc.get_item(), target );
+        std::string text;
+        for( const std::string &line : lines ) {
+            if( !text.empty() ) {
+                text += '\n';
+            }
+            text += line;
+        }
+        netplay::host_send_aim_info_to_sid( sid, text );
     }
 }
 

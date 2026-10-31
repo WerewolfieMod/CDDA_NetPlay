@@ -39,6 +39,11 @@ trajectory mode_fire( avatar &you, aim_activity_actor &activity );
 /** Throwing item */
 trajectory mode_throw( Character &you, item &relevant, bool blind_throwing );
 
+/// DDA MP: plain-text lines of the host's throw aiming panel (range, target,
+/// aim chances, moves) for a remote client. No UI is opened.
+std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
+        const tripoint_bub_ms &target );
+
 /** Reach attacking */
 trajectory mode_reach( avatar &you, item_location weapon );
 

@@ -2368,6 +2368,64 @@ static void draw_throw_aim( const target_ui &ui, const Character &you, const cat
     text_y = print_ranged_chance( w, text_y, aim_chances, 0 );
 }
 
+namespace target_handler {
+std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
+        const tripoint_bub_ms &target_pos )
+{
+    std::vector<std::string> out;
+    const map &here = get_map();
+    Creature *target = get_creature_tracker().creature_at( target_pos, true );
+    if( target != nullptr && !you.sees( here, *target ) ) {
+        target = nullptr;
+    }
+    const double range = rl_dist( you.pos_bub(), target_pos );
+    out.push_back( string_format( _( "Range: %d" ), static_cast<int>( range ) ) );
+    if( target != nullptr ) {
+        out.push_back( string_format( _( "Target: %s" ), target->disp_name() ) );
+    } else {
+        out.push_back( _( "Target: none" ) );
+    }
+    out.push_back( string_format( _( "Targets: %d" ), target != nullptr ? 1 : 0 ) );
+
+    static const std::vector<confidence_rating> confidence_config_critter = {{
+            { accuracy_critical, '*', "green", translate_marker_context( "aim_confidence", "Great" ) },
+            { accuracy_standard, '+', "light_gray", translate_marker_context( "aim_confidence", "Normal" ) },
+            { accuracy_grazing, '|', "magenta", translate_marker_context( "aim_confidence", "Graze" ) }
+        }
+    };
+    static const std::vector<confidence_rating> confidence_config_object = {{
+            { accuracy_grazing, '*', "white", translate_marker_context( "aim_confidence", "Hit" ) }
+        }
+    };
+    const auto &confidence_config = target != nullptr ? confidence_config_critter :
+                                    confidence_config_object;
+    const double target_size = target != nullptr ? target->ranged_target_size() : 1.0f;
+    Target_attributes attributes( range, target_size, here.ambient_light_at( target_pos ),
+                                  you.sees( here, target_pos ) );
+    target_ui ui;
+    ui.you = &you;
+    ui.mode = target_ui::TargetMode::Throw;
+    ui.relevant = &weapon;
+    ui.range = you.throw_range( weapon );
+    input_context ctxt( "TARGET" );
+    ctxt.set_iso( true );
+    ctxt.register_action( "FIRE" );
+    const dispersion_sources dispersion( you.throwing_dispersion( weapon, target, false ) );
+    const std::vector<aim_type_prediction> chances = calculate_ranged_chances(
+                ui, you, target_ui::TargetMode::Throw, ctxt, weapon, dispersion,
+                confidence_config, attributes, target_pos, item_location() );
+    for( const aim_type_prediction &p : chances ) {
+        std::string line = p.name + ":";
+        for( const aim_type_prediction::aim_confidence &c : p.chances ) {
+            line += string_format( " %s %d%%", c.label, c.chance );
+        }
+        line += string_format( " (%d)", p.moves );
+        out.push_back( line );
+    }
+    return out;
+}
+} // namespace target_handler
+
 std::vector<aim_type> Character::get_aim_types( const item &gun ) const
 {
     std::vector<aim_type> aim_types { get_default_aim_type() };
