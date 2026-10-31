@@ -716,6 +716,10 @@ bool av_npc_alive( const shared_ptr_fast<npc> &p );
 /* session id -> the npc id of the avatar that session drives (see the
  * avatar-registry section; main thread only) */
 static std::map<int, int> av_sid_to_npc;
+/* DDA MP v4.0a-18: per-session item locations matching the last INVENTORY
+ * payload row order. Client actions reference a row index; only the host
+ * main thread rebuilds/consumes this map. */
+static std::map<int, std::vector<item_location>> av_inv_nodes;
 
 /* the living avatar npc a session is bound to, or nullptr */
 static npc *av_session_npc( int sid )
@@ -1680,12 +1684,32 @@ static void av_send_status( int sid )
     }
 #endif
     // DDA MP v4.0a-16: inventory rows for the client, built through the shared
-    // source adapter (same fields the client renderer consumes).
+    // source adapter (same fields the client renderer consumes). The parallel
+    // location list lets client actions address rows by index.
     {
         const netplay::character_inventory_source inv_src( *av );
         netplay::inv_packet pkt;
         pkt.header = inv_src.header();
         pkt.entries = inv_src.entries();
+        std::vector<item_location> nodes;
+        std::function<void( const item_location &, const item & )> walk =
+        [&]( const item_location & loc, const item & it ) {
+            nodes.push_back( loc );
+            for( const item *child : it.get_contents().all_items_top() ) {
+                if( child != nullptr ) {
+                    walk( item_location( loc, const_cast<item *>( child ) ), *child );
+                }
+            }
+        };
+        for( item *it : av->inv_dump() ) {
+            if( it == nullptr ) {
+                continue;
+            }
+            const item_location loc = av->is_wielding( *it ) ? av->get_wielded_item() :
+                                      item_location( *av, it );
+            walk( loc, *it );
+        }
+        av_inv_nodes[sid] = std::move( nodes );
         netplay::host_send_inventory_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
     }
 #if defined(TILES)
@@ -1700,6 +1724,116 @@ static void av_send_status( int sid )
         }
     }
 #endif
+}
+
+void host_pump_inventory_actions()
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    for( int budget = 0; budget < 8; budget++ ) {
+        int sid = 0;
+        int node = 0;
+        int action = 0;
+        if( !netplay::host_pop_inventory_action( sid, node, action ) ) {
+            break;
+        }
+        npc *av = av_session_npc( sid );
+        if( av == nullptr || av->is_dead_state() ) {
+            continue;
+        }
+        const auto it = av_inv_nodes.find( sid );
+        if( it == av_inv_nodes.end() || node < 0 ||
+            node >= static_cast<int>( it->second.size() ) ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "sid=%d node=%d key=%c result=invalid-node\n",
+                              sid, node, static_cast<char>( action ) );
+                std::fclose( f );
+            }
+            continue;
+        }
+        item_location loc = it->second[node];
+        if( !loc ) {
+            continue;
+        }
+        const std::string item_id = loc->typeId().str();
+        auto deny = [&]( const std::string & msg ) {
+            if( !msg.empty() ) {
+                netplay::host_send_event_to_sid( sid, msg, static_cast<int>( m_bad ) );
+            }
+        };
+        bool changed = false;
+        switch( action ) {
+            case 'w': { // wield
+                const ret_val<void> can = av->can_wield( *loc );
+                if( !can.success() ) {
+                    deny( can.str() );
+                    break;
+                }
+                changed = av->wield( loc );
+                break;
+            }
+            case 'W': { // wear
+                const ret_val<void> can = av->can_wear( *loc );
+                if( !can.success() ) {
+                    deny( can.str() );
+                    break;
+                }
+                changed = av->wear( loc, false ).has_value();
+                break;
+            }
+            case 'T': { // take off
+                const ret_val<void> can = av->can_takeoff( *loc );
+                if( !can.success() ) {
+                    deny( can.str() );
+                    break;
+                }
+                changed = av->takeoff( loc );
+                break;
+            }
+            case 'd': { // drop
+                const ret_val<void> can = av->can_drop( *loc );
+                if( !can.success() ) {
+                    deny( can.str() );
+                    break;
+                }
+                av->Character::drop( loc, av->pos_bub() );
+                changed = true;
+                break;
+            }
+            case 'E': { // eat / drink
+                const ret_val<edible_rating> can = av->can_eat( *loc );
+                if( !can.success() &&
+                    ( can.value() == INEDIBLE || can.value() == INEDIBLE_MUTATION ) ) {
+                    deny( can.str() );
+                    break;
+                }
+                changed = av->consume( loc ) != trinary::NONE;
+                break;
+            }
+            case 'f':   // favorite
+                loc->is_favorite = !loc->is_favorite;
+                changed = true;
+                break;
+            default:
+                // Actions not wired to the host yet: tell the client instead
+                // of silently doing nothing.
+                netplay::host_send_event_to_sid(
+                    sid, _( "That action is not available to netplay clients yet." ),
+                    static_cast<int>( m_info ) );
+                break;
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "sid=%d node=%d key=%c item=%s result=%s\n",
+                          sid, node, static_cast<char>( action ), item_id.c_str(),
+                          changed ? "ok" : "no-change" );
+            std::fclose( f );
+        }
+        if( changed ) {
+            // New packet also rebuilds av_inv_nodes for the next action.
+            av_send_status( sid );
+        }
+    }
 }
 
 /* DDA MP v4.0a-7: called at the end of every host world turn. A fresh round

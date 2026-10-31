@@ -366,6 +366,16 @@ struct netplay_state {
      * the host main thread (game glue may not run off the main thread). */
     std::mutex avatar_ops_mutex;
     std::deque<avatar_op> avatar_ops;
+
+    /* DDA MP v4.0a-18: inventory actions (row index + action key) queued by
+     * reader threads and applied to the session avatar on the main thread. */
+    struct inv_action {
+        int sid = 0;
+        int node = 0;
+        int action = 0;
+    };
+    std::mutex inv_act_mutex;
+    std::deque<inv_action> inv_actions;
 };
 
 void netplay_state::stop_host()
@@ -732,6 +742,18 @@ static void host_session_reader( int sid, socket_t sock )
                     std::vector<char> d;
                     put_str( d, "Server busy, avatar request dropped. Try again." );
                     send_all( sock, encode_frame( frame::AVATAR_DENIED, d ) );
+                }
+            }
+        } else if( op == frame::INVENTORY_ACTION ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int node = r.get_i32();
+            const int action = r.get_i32();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.inv_act_mutex );
+                if( state.inv_actions.size() < 8 ) {
+                    state.inv_actions.push_back( { sid, node, action } );
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1258,6 +1280,31 @@ bool host_send_inventory_to_sid( int sid, const std::string &text )
         state.id2name.erase( sid );
         return false;
     }
+    return true;
+}
+
+bool client_send_inventory_action( int node, int action )
+{
+    if( !state.connected ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_i32( p, node );
+    put_i32( p, action );
+    return send_all( state.client_sock, encode_frame( frame::INVENTORY_ACTION, p ) );
+}
+
+bool host_pop_inventory_action( int &sid, int &node, int &action )
+{
+    std::lock_guard<std::mutex> lk( state.inv_act_mutex );
+    if( state.inv_actions.empty() ) {
+        return false;
+    }
+    const auto a = state.inv_actions.front();
+    state.inv_actions.pop_front();
+    sid = a.sid;
+    node = a.node;
+    action = a.action;
     return true;
 }
 

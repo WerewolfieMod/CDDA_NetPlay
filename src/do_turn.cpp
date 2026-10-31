@@ -562,6 +562,7 @@ bool game::do_turn()
         netplay::host_pump_snapshot_requests();
         netplay::host_pump_avatar_ops();
         netplay::host_pump_avatar_keys();
+        netplay::host_pump_inventory_actions();
         // Refresh idle clients occasionally, not 17 times a second: each frame
         // is a full 1519-tile payload, and nothing changes while we wait.
         static std::chrono::steady_clock::time_point mp_last_idle_snap;

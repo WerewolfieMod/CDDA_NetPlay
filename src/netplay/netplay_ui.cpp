@@ -31,6 +31,8 @@
 #include "input.h"
 #include "inventory_ui.h"
 #include "inventory.h"
+#include "itype.h"
+#include "flag.h"
 #include "npc.h"
 #include "loading_ui.h"  // loading_ui::done (releases the splash adaptors)
 #include "output.h"
@@ -1078,6 +1080,129 @@ static void mp_inv_log( const std::string &msg )
     }
 }
 
+/* DDA MP v4.0a-18: the item action menu, same entries/hotkeys/texts as the
+ * host's inventory_item_menu. Ratings mirror the host's rate_action_* helpers
+ * (game.cpp) so invalid choices are grey/red exactly like in the original UI. */
+static hint_rating mp_rate_use( Character &you, const item &it )
+{
+    if( it.is_container() && it.item_has_uses_recursive() ) {
+        return hint_rating::good;
+    }
+    if( it.is_broken() ) {
+        return hint_rating::iffy;
+    } else if( it.is_tool() ) {
+        return it.ammo_sufficient( &you ) ? hint_rating::good : hint_rating::iffy;
+    } else if( it.is_gunmod() ) {
+        return static_cast<int>( you.get_skill_level( skill_id( "gun" ) ) ) == 0 ?
+               hint_rating::iffy : hint_rating::good;
+    } else if( it.is_food() || it.is_medication() || it.is_book() || it.is_armor() ) {
+        if( it.is_medication() && !you.can_use_heal_item( it ) ) {
+            return hint_rating::cant;
+        }
+        if( it.is_comestible() && it.is_frozen_liquid() ) {
+            return hint_rating::cant;
+        }
+        return hint_rating::iffy;
+    } else if( it.type->has_use() ) {
+        return hint_rating::good;
+    }
+    return hint_rating::cant;
+}
+
+static hint_rating mp_rate_read( Character &you, const item &it )
+{
+    if( !it.is_book() ) {
+        return hint_rating::cant;
+    }
+    std::vector<std::string> dummy;
+    return you.get_book_reader( it, dummy ) ? hint_rating::good : hint_rating::iffy;
+}
+
+static hint_rating mp_rate_eat( Character &you, const item &it )
+{
+    if( !you.can_consume_as_is( it ) ) {
+        return hint_rating::cant;
+    }
+    const ret_val<edible_rating> rating = you.will_eat( it );
+    if( rating.success() ) {
+        return hint_rating::good;
+    }
+    if( rating.value() == INEDIBLE || rating.value() == INEDIBLE_MUTATION ) {
+        return hint_rating::cant;
+    }
+    return hint_rating::iffy;
+}
+
+static hint_rating mp_rate_wear( Character &you, const item &it, bool worn )
+{
+    if( !it.is_armor() ) {
+        return hint_rating::cant;
+    }
+    if( worn ) {
+        return hint_rating::iffy;
+    }
+    return you.can_wear( it ).success() ? hint_rating::good : hint_rating::iffy;
+}
+
+static hint_rating mp_rate_take_off( const item &it, bool worn )
+{
+    if( !it.is_armor() || it.has_flag( flag_NO_TAKEOFF ) ||
+        it.has_flag( flag_INTEGRATED ) ) {
+        return hint_rating::cant;
+    }
+    return worn ? hint_rating::good : hint_rating::iffy;
+}
+
+static void mp_menu_entry( uilist &menu, char key, const std::string &text,
+                           hint_rating rating )
+{
+    menu.addentry( key, true, key, text );
+    menu.entries.back().text_color = rating == hint_rating::good ? c_light_green :
+                                     ( rating == hint_rating::iffy ? c_light_red : c_light_gray );
+}
+
+static int mp_client_item_menu( Character &you, const item &it )
+{
+    uilist menu;
+    menu.text = it.display_name();
+    const bool worn = you.is_worn( it );
+    const bool can_drop = you.can_drop( it ).success();
+    mp_menu_entry( menu, 'a', pgettext( "action", "activate" ), mp_rate_use( you, it ) );
+    mp_menu_entry( menu, 'R', pgettext( "action", "read" ), mp_rate_read( you, it ) );
+    mp_menu_entry( menu, 'E', pgettext( "action", "eat" ), mp_rate_eat( you, it ) );
+    mp_menu_entry( menu, 'W', pgettext( "action", "wear" ), mp_rate_wear( you, it, worn ) );
+    mp_menu_entry( menu, 'w', pgettext( "action", "wield" ),
+                   you.can_wield( it ).success() ? hint_rating::good : hint_rating::iffy );
+    mp_menu_entry( menu, 't', pgettext( "action", "throw" ), hint_rating::cant );
+    mp_menu_entry( menu, 'c', pgettext( "action", "change side" ), hint_rating::cant );
+    mp_menu_entry( menu, 'T', pgettext( "action", "take off" ), mp_rate_take_off( it, worn ) );
+    mp_menu_entry( menu, 'd', pgettext( "action", "drop" ),
+                   can_drop ? hint_rating::good : hint_rating::cant );
+    mp_menu_entry( menu, 'U', pgettext( "action", "unload" ), hint_rating::cant );
+    mp_menu_entry( menu, 'r', pgettext( "action", "reload" ), hint_rating::cant );
+    mp_menu_entry( menu, 'p', pgettext( "action", "part reload" ), hint_rating::cant );
+    mp_menu_entry( menu, 'm', pgettext( "action", "mend" ), hint_rating::cant );
+    mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::cant );
+    if( it.is_container() && !it.is_corpse() ) {
+        mp_menu_entry( menu, 'i', pgettext( "action", "insert" ), hint_rating::cant );
+        if( it.num_item_stacks() > 0 ) {
+            mp_menu_entry( menu, 'o', pgettext( "action", "open" ), hint_rating::cant );
+        }
+        mp_menu_entry( menu, 'v', pgettext( "action", "pocket settings" ), hint_rating::cant );
+    }
+    mp_menu_entry( menu, 'f', it.is_favorite ? pgettext( "action", "unfavorite" ) :
+                   pgettext( "action", "favorite" ), hint_rating::good );
+    mp_menu_entry( menu, 'V', pgettext( "action", "view recipe" ), hint_rating::cant );
+    mp_menu_entry( menu, '>', pgettext( "action", "hide contents" ), hint_rating::cant );
+    mp_menu_entry( menu, '<', pgettext( "action", "show contents" ), hint_rating::cant );
+    mp_menu_entry( menu, '=', pgettext( "action", "reassign" ), hint_rating::cant );
+    // Hide pre-session UI (the main menu we joined from) only while this
+    // popup is on screen; keeping it permanently caused a redraw flicker.
+    ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
+    menu.query();
+    return menu.ret;
+}
+
 /* DDA MP v4.0a-17: exact host inventory on the client.
  *
  * Instead of re-drawing an approximation, rebuild the avatar's item tree from
@@ -1100,14 +1225,19 @@ static void mp_run_host_inventory( const std::string &text )
     std::function<item()> build = [&]() -> item {
         const netplay::inv_entry_view &e = pkt.entries[i];
         const int depth = e.depth;
+        const std::size_t node = i;
         ++i;
         item it( itype_id( e.id ), calendar::turn );
+        // Row index travels with the item; the host uses it to address the
+        // very same entry when an action comes back.
+        it.set_var( "mp_node", std::to_string( node ) );
         if( it.count_by_charges() && e.charges > 0 ) {
             it.charges = e.charges;
         }
         if( e.invlet != '\0' ) {
             it.invlet = e.invlet;
         }
+        it.is_favorite = e.favorite;
         while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
             item child = build();
             pocket_type pk = pocket_type::CONTAINER;
@@ -1125,6 +1255,7 @@ static void mp_run_host_inventory( const std::string &text )
         return it;
     };
 
+    int lost = 0;
     while( i < pkt.entries.size() ) {
         const netplay::inv_entry_view &e = pkt.entries[i];
         if( e.depth != 0 ) {
@@ -1144,11 +1275,20 @@ static void mp_run_host_inventory( const std::string &text )
             viewer.set_wielded_item( it );
         } else if( e.worn ) {
             if( !viewer.wear_item( it, false, true, false, true ) ) {
-                viewer.i_add( it, false, nullptr, nullptr, false, false );
+                if( !viewer.i_add( it, false, nullptr, nullptr, false, false ) ) {
+                    ++lost;
+                    mp_inv_log( "warn: cannot wear/store " + e.id );
+                }
             }
         } else {
-            viewer.i_add( it, false, nullptr, nullptr, false, false );
+            if( !viewer.i_add( it, false, nullptr, nullptr, false, false ) ) {
+                ++lost;
+                mp_inv_log( "warn: cannot store " + e.id );
+            }
         }
+    }
+    if( lost > 0 ) {
+        mp_inv_log( string_format( "warn: %d top-level items lost", lost ) );
     }
 
     inventory_pick_selector sel( viewer );
@@ -1175,8 +1315,23 @@ static void mp_run_host_inventory( const std::string &text )
                                static_cast<int>( viewer.worn.size() ),
                                viewer.is_armed() ? 1 : 0 ) );
     // Blocks in the game's own inventory loop; Esc/QUIT returns.
-    sel.execute();
+    item_location chosen = sel.execute();
     mp_inv_log( "closed" );
+    if( chosen ) {
+        const item &it = *chosen;
+        const std::string node_var = it.get_var( "mp_node", std::string() );
+        if( node_var.empty() ) {
+            mp_inv_log( "action: row has no mp_node id, ignored" );
+        } else {
+            const int node = std::atoi( node_var.c_str() );
+            const int act = mp_client_item_menu( viewer, it );
+            if( act > 0 ) {
+                netplay::client_send_inventory_action( node, act );
+                mp_inv_log( string_format( "action: node=%d key=%c", node,
+                                           static_cast<char>( act ) ) );
+            }
+        }
+    }
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "error: " ) + e.what() );
     } catch( ... ) {
@@ -1298,6 +1453,9 @@ void run_view_loop()
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
+    // DDA MP v4.0a-18: a permanent disable_uis_below made the client redraw
+    // the whole frame every iteration (visible flicker), so the main menu is
+    // hidden only while a popup is open (see mp_client_item_menu).
     ui_adaptor mp_sb_adaptor;
     mp_sb_adaptor.on_redraw( [&]( const ui_adaptor & ) {
         const ImGuiIO &io = ImGui::GetIO();

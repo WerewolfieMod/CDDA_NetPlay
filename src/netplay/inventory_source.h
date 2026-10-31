@@ -44,6 +44,7 @@ struct inv_entry_view {
     char invlet = '\0';         // assigned inventory letter, as shown by the host
     int depth = 0;              // 0 = top level, >0 = nested inside a container
     int color_index = 8;        // base-16 palette index of the host item colour
+    bool favorite = false;      // host favorite flag (drives the * marker/menu)
 };
 
 /// Header numbers shown above the host inventory (volume/weight/space).
@@ -154,6 +155,7 @@ class character_inventory_source : public inventory_source
                 e.invlet = it.invlet;
                 e.depth = depth;
                 e.color_index = inv_color_index( it.color_in_inventory() );
+                e.favorite = it.is_favorite;
                 const item_category &cat = it.get_category_shallow();
                 e.category = cat.name_header();
                 e.category_id = cat.get_id().str();
@@ -264,6 +266,8 @@ inline std::string serialize_inv_entries( const std::vector<inv_entry_view> &ent
         out += inv_wire::field( e.depth );
         out += inv_wire::sep;
         out += inv_wire::field( e.color_index );
+        out += inv_wire::sep;
+        out += inv_wire::field( e.favorite ? 1 : 0 );
         out += '\n';
     }
     return out;
@@ -317,6 +321,9 @@ inline std::vector<inv_entry_view> parse_inv_entries( const std::string &text )
         }
         if( f.size() > 15 ) {
             e.color_index = std::atoi( f[15].c_str() );
+        }
+        if( f.size() > 16 ) {
+            e.favorite = std::atoi( f[16].c_str() ) != 0;
         }
         out.push_back( std::move( e ) );
     }

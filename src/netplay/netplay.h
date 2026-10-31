@@ -74,6 +74,9 @@ enum class frame : int {
     MINIMAP = 30,           ///< host -> client: [w][h][u32 color]*
     /// DDA MP v4.0a-14: inventory listing of the session avatar (text).
     INVENTORY = 31,         ///< host -> client: str text
+    /// DDA MP v4.0a-18: an inventory action picked on the client (raw index
+    /// into the last INVENTORY row list + action key, e.g. 'w'/'W'/'T').
+    INVENTORY_ACTION = 32,  ///< client -> host: i32 node, i32 action
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -290,6 +293,10 @@ void host_broadcast_event( const std::string &text, int msg_type );
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
 /// DDA MP v4.0a-14: send the inventory listing to a session.
 bool host_send_inventory_to_sid( int sid, const std::string &text );
+/// DDA MP v4.0a-18: client sends one inventory action for the given row index.
+bool client_send_inventory_action( int node, int action );
+/// Host main thread: pop one queued inventory action (sid/node/action).
+bool host_pop_inventory_action( int &sid, int &node, int &action );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
@@ -326,6 +333,9 @@ void host_pump_avatar_ops();
 /// step that avatar in the host world, others fall back to the legacy
 /// watcher queue. Called from the game loop next to the avatar ops pump.
 void host_pump_avatar_keys();
+
+/// Pump queued inventory actions for session avatars (main thread).
+void host_pump_inventory_actions();
 
 /* ---- DDA MP v4.0a-2: per-session input routing ---- */
 
