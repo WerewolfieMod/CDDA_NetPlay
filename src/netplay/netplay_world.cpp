@@ -1967,6 +1967,58 @@ void host_pump_inventory_actions()
             av_send_status( sid );
         }
     }
+
+    // DDA MP v4.0a-31: pocket settings edited on the client.
+    for( int budget = 0; budget < 4; budget++ ) {
+        int sid = 0;
+        int node = 0;
+        int generation = 0;
+        std::string json;
+        if( !netplay::host_pop_inventory_settings( sid, node, generation, json ) ) {
+            break;
+        }
+        if( generation != av_inv_gen[sid] ) {
+            netplay::host_send_event_to_sid(
+                sid, _( "The inventory changed. Reopen it and try again." ),
+                static_cast<int>( m_info ) );
+            continue;
+        }
+        const auto sid_it = av_sid_to_npc.find( sid );
+        if( sid_it == av_sid_to_npc.end() ) {
+            continue;
+        }
+        shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
+        if( !npc_ptr || !av_npc_alive( npc_ptr ) ) {
+            continue;
+        }
+        g->mp_anchor_map_on( *npc_ptr, true );
+        const auto nodes_it = av_inv_nodes.find( sid );
+        if( nodes_it == av_inv_nodes.end() || node < 0 ||
+            node >= static_cast<int>( nodes_it->second.size() ) ) {
+            continue;
+        }
+        item_location loc = nodes_it->second[node];
+        if( !loc ) {
+            continue;
+        }
+        try {
+            JsonValue jv = json_loader::from_string( json );
+            JsonArray ja = jv.get_array();
+            std::vector<item_pocket *> pockets = loc->get_pockets(
+            []( const item_pocket & ) {
+                return true;
+            } );
+            std::size_t idx = 0;
+            while( ja.has_more() && idx < pockets.size() ) {
+                JsonObject jo = ja.next_object();
+                pockets[idx]->settings.deserialize( jo );
+                ++idx;
+            }
+            av_send_status( sid );
+        } catch( ... ) {
+            // Malformed payload: ignore rather than break the session.
+        }
+    }
 }
 
 /* DDA MP v4.0a-7: called at the end of every host world turn. A fresh round

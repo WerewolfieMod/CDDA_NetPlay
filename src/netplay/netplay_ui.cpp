@@ -1211,7 +1211,7 @@ static int mp_client_item_menu( Character &you, const item &it )
         if( it.num_item_stacks() > 0 ) {
             mp_menu_entry( menu, 'o', pgettext( "action", "open" ), hint_rating::good );
         }
-        mp_menu_entry( menu, 'v', pgettext( "action", "pocket settings" ), hint_rating::cant );
+        mp_menu_entry( menu, 'v', pgettext( "action", "pocket settings" ), hint_rating::good );
     }
     mp_menu_entry( menu, 'f', it.is_favorite ? pgettext( "action", "unfavorite" ) :
                    pgettext( "action", "favorite" ), hint_rating::good );
@@ -1450,6 +1450,24 @@ static void mp_run_host_inventory( const std::string &text )
             }
             mp_inv_log( string_format( "action: node=%d key=i targets=%d", node,
                                        static_cast<int>( insert_nodes.size() ) ) );
+            break;
+        }
+        if( act == 'v' && it.is_container() ) {
+            // Stock pocket menu on the temp item, then stream the resulting
+            // per-pocket settings back so the host item stays authoritative.
+            chosen->get_contents().favorite_settings_menu( chosen );
+            std::ostringstream os;
+            JsonOut js( os );
+            js.start_array();
+            for( item_pocket *pocket : chosen->get_pockets(
+            []( const item_pocket & ) {
+            return true;
+            } ) ) {
+                pocket->settings.serialize( js );
+            }
+            js.end_array();
+            netplay::client_send_inventory_settings( node, pkt.header.generation, os.str() );
+            mp_inv_log( string_format( "action: node=%d key=v settings", node ) );
             break;
         }
         if( act == '=' ) {

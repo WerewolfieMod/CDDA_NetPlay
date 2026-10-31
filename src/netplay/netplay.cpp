@@ -382,6 +382,16 @@ struct netplay_state {
     };
     std::mutex inv_act_mutex;
     std::deque<inv_action> inv_actions;
+
+    /* DDA MP v4.0a-31: pocket-settings payloads (JSON) queued likewise. */
+    struct inv_settings {
+        int sid = 0;
+        int node = 0;
+        int generation = 0;
+        std::string json;
+    };
+    std::mutex inv_set_mutex;
+    std::deque<inv_settings> inv_settings_q;
 };
 
 void netplay_state::stop_host()
@@ -767,6 +777,19 @@ static void host_session_reader( int sid, socket_t sock )
                 if( state.inv_actions.size() < 8 ) {
                     state.inv_actions.push_back( { sid, node, action, generation,
                                                    std::move( targets ) } );
+                }
+            }
+        } else if( op == frame::INVENTORY_SETTINGS ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int node = r.get_i32();
+            const int generation = r.get_i32();
+            const std::string json = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.inv_set_mutex );
+                if( state.inv_settings_q.size() < 8 ) {
+                    state.inv_settings_q.push_back( { sid, node, generation, json } );
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1328,6 +1351,33 @@ bool host_pop_inventory_action( int &sid, int &node, int &action, int &generatio
     generation = a.generation;
     targets = std::move( a.targets );
     return true;
+}
+
+bool host_pop_inventory_settings( int &sid, int &node, int &generation, std::string &json )
+{
+    std::lock_guard<std::mutex> lk( state.inv_set_mutex );
+    if( state.inv_settings_q.empty() ) {
+        return false;
+    }
+    auto s = std::move( state.inv_settings_q.front() );
+    state.inv_settings_q.pop_front();
+    sid = s.sid;
+    node = s.node;
+    generation = s.generation;
+    json = std::move( s.json );
+    return true;
+}
+
+bool client_send_inventory_settings( int node, int generation, const std::string &json )
+{
+    if( !state.connected ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_i32( p, node );
+    put_i32( p, generation );
+    put_str( p, json );
+    return send_all( state.client_sock, encode_frame( frame::INVENTORY_SETTINGS, p ) );
 }
 
 void host_broadcast_event( const std::string &text, int msg_type )

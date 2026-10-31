@@ -79,6 +79,8 @@ enum class frame : int {
     INVENTORY_ACTION = 32,  ///< client -> host: i32 node, i32 action
     /// DDA MP v4.0a-27: serialized session NPC for the client's own @ menu.
     CHARACTER_JSON = 33,    ///< host -> client: str json
+    /// DDA MP v4.0a-31: pocket settings edited on the client for one row.
+    INVENTORY_SETTINGS = 34, ///< client -> host: i32 node, i32 gen, str json
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -306,6 +308,10 @@ bool client_send_inventory_action( int node, int action, int generation,
 /// Host main thread: pop one queued inventory action.
 bool host_pop_inventory_action( int &sid, int &node, int &action, int &generation,
                                 std::vector<int> &targets );
+/// DDA MP v4.0a-31: client sends edited pocket settings (JSON array, per pocket).
+bool client_send_inventory_settings( int node, int generation, const std::string &json );
+/// Host main thread: pop one queued pocket-settings update.
+bool host_pop_inventory_settings( int &sid, int &node, int &generation, std::string &json );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
