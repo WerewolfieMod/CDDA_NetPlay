@@ -768,6 +768,46 @@ std::vector<std::string> mp_sheet_lines( const mp_sheet_data &d )
 }
 } // namespace
 
+/* DDA MP v4.0a-15: a reusable overlay pass drawn AFTER the tiles canvas, so
+ * context windows (inventory, menus) appear above the map. */
+static void mp_overlay_inventory( const std::string &text, bool open )
+{
+    if( !imclient || !open ) {
+        return;
+    }
+    int bw = static_cast<int>( ImGui::GetIO().DisplaySize.x );
+    int bh = static_cast<int>( ImGui::GetIO().DisplaySize.y );
+    if( bw <= 0 || bh <= 0 ) {
+        bw = 1920;
+        bh = 1080;
+    }
+    imclient->new_frame( bw, bh );
+    const ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const float fs = ImGui::GetFontSize();
+    const float pad = fs * 0.6f;
+    const float iw = std::min( io.DisplaySize.x - pad * 2.0f, 520.0f );
+    const float ih = std::min( io.DisplaySize.y - pad * 2.0f, 620.0f );
+    const float ix = ( io.DisplaySize.x - iw ) / 2.0f;
+    const float iy = ( io.DisplaySize.y - ih ) / 2.0f;
+    dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 0, 0, 0, 240 ) );
+    dl->AddRect( ImVec2( ix, iy ), ImVec2( ix + iw, iy + ih ), IM_COL32( 190, 190, 190, 255 ) );
+    float ty = iy + pad;
+    dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 255, 255, 255, 255 ), _( "Inventory" ) );
+    ty += ImGui::GetTextLineHeight() * 1.5f;
+    if( text.empty() ) {
+        dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 200, 200, 200, 255 ), _( "(empty)" ) );
+    } else {
+        std::istringstream lines( text );
+        std::string line;
+        while( std::getline( lines, line ) && ty + fs < iy + ih ) {
+            dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 220, 220, 220, 255 ), line.c_str() );
+            ty += ImGui::GetTextLineHeight();
+        }
+    }
+    imclient->end_frame();
+}
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -875,6 +915,8 @@ void run_view_loop()
     };
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
+    static bool mp_inv_open = false;
+    static std::string mp_inv_text;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
@@ -884,8 +926,7 @@ void run_view_loop()
         ImDrawList *dl = ImGui::GetForegroundDrawList();
         const float fs = ImGui::GetFontSize();
         const float pad = fs * 0.6f;
-        // DDA MP v4.0a-10: prefer the host-rendered panels (identical look:
-        // same widgets, layout, colours), drawn here in the pixel layer.
+        // DDA MP v4.0a-14: inventory panel (read-only, toggled with 'i').
         if( !mp_side.cells.empty() ) {
             const float cw = ImGui::CalcTextSize( "M" ).x;
             const float ch = ImGui::GetTextLineHeight();
@@ -1037,6 +1078,31 @@ void run_view_loop()
                                        IM_COL32( 255, 255, 255, 255 ) );
                 }
             }
+        if( mp_inv_open ) {
+            // Temporary: right-hand column (the proper above-canvas layer is next).
+            const float cw_inv = ImGui::CalcTextSize( "M" ).x;
+            const float ipw = 34.0f * cw_inv;
+            const float ix = std::max( 0.0f, io.DisplaySize.x - ipw - 6.0f );
+            const float iy = 4.0f;
+            const float ih = io.DisplaySize.y - 8.0f;
+            dl->AddRectFilled( ImVec2( ix, iy ), ImVec2( ix + ipw, iy + ih ),
+                               IM_COL32( 0, 0, 0, 235 ) );
+            dl->AddRect( ImVec2( ix, iy ), ImVec2( ix + ipw, iy + ih ),
+                         IM_COL32( 180, 180, 180, 255 ) );
+            float ty = iy + pad;
+            if( mp_inv_text.empty() ) {
+                dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 200, 200, 200, 255 ),
+                             _( "(empty)" ) );
+            } else {
+                std::istringstream inv_lines( mp_inv_text );
+                std::string inv_line;
+                while( std::getline( inv_lines, inv_line ) && ty + fs < iy + ih ) {
+                    dl->AddText( ImVec2( ix + pad, ty ), IM_COL32( 220, 220, 220, 255 ),
+                                 inv_line.c_str() );
+                    ty += ImGui::GetTextLineHeight();
+                }
+            }
+        }
             mp_sb_overlay_w = io.DisplaySize.x - x0;
             return;
         }
@@ -1144,6 +1210,12 @@ void run_view_loop()
                 // Host-rendered panels (preferred: identical look).
                 netplay::client_sidebar( mp_side );
                 netplay::client_minimap( mp_mini_map );
+                {
+                    std::string mp_inv;
+                    if( netplay::client_inventory( mp_inv ) ) {
+                        mp_inv_text = std::move( mp_inv );
+                    }
+                }
                 // Events for the client's own log.
                 std::string mp_ev_text;
                 int mp_ev_type = 0;
@@ -1605,6 +1677,9 @@ void run_view_loop()
                 wnoutrefresh( mp_hint_win );
             }
 
+            // DDA MP v4.0a-15: context windows above the canvas (second ImGui pass).
+            // NOTE: pending the sdltiles overlay pass; see mp_overlay_inventory.
+
             // Present the freshly drawn frame. The game's own main loop calls
             // refresh_display() every iteration; here input pumping alone is
             // not a reliable present trigger, so the first frame would sit
@@ -1627,6 +1702,26 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
+            // DDA MP v4.0a-14: 'i' toggles the inventory panel (display only).
+            {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_ch = mp_ev.get_first_input();
+                if( mp_ch == 'i' || mp_ch == 'I' ) {
+                    mp_inv_open = !mp_inv_open;
+                    continue;
+                }
+            }
+            // DDA MP v4.0a-14: '.' / '5' passes the turn (WAIT action).
+            {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_ch = mp_ev.get_first_input();
+                if( mp_ch == '.' || mp_ch == '5' ) {
+                    key_event ke;
+                    ke.code = 20;
+                    client_send_keys( { ke } );
+                    continue;
+                }
+            }
             if( action == "QUIT" ) {
                 // DDA MP: ESC opens an in-game-style menu instead of instantly
                 // disconnecting the session.

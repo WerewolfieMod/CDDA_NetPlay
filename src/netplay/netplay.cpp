@@ -352,6 +352,10 @@ struct netplay_state {
     std::mutex minimap_mutex;
     minimap_frame minimap;
     bool have_minimap = false;
+    /* DDA MP v4.0a-14: inventory listing text. */
+    std::mutex inv_mutex;
+    std::string inv_text;
+    bool have_inv = false;
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
@@ -1239,6 +1243,24 @@ bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
     return true;
 }
 
+bool host_send_inventory_to_sid( int sid, const std::string &text )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_str( p, text );
+    if( !send_all( it->second, encode_frame( frame::INVENTORY, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
 void host_broadcast_event( const std::string &text, int msg_type )
 {
     std::vector<int> sids;
@@ -1643,8 +1665,7 @@ static void client_run( socket_t sock )
                     std::lock_guard<std::mutex> lk( state.minimap_mutex );
                     state.minimap = std::move( mm );
                     state.have_minimap = true;
-                    if( mp_diag_enabled() ) {
-                        static int mp_mm_rx = 0;
+                    if( mp_diag_enabled() ) {                        static int mp_mm_rx = 0;
                         if( mp_mm_rx < 3 ) {
                             ++mp_mm_rx;
                             if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
@@ -1659,6 +1680,16 @@ static void client_run( socket_t sock )
                         }
                     }
                 }
+            }
+        } else if( op == frame::INVENTORY ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string text = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.inv_mutex );
+                state.inv_text = text;
+                state.have_inv = true;
             }
         } else if( op == frame::BYE ) {
             break;
@@ -1792,6 +1823,16 @@ void client_status_hint( const std::string &text )
     ( void )text;
 }
 #endif
+
+bool client_inventory( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.inv_mutex );
+    if( !state.have_inv ) {
+        return false;
+    }
+    out = state.inv_text;
+    return true;
+}
 
 bool client_minimap( minimap_frame &out )
 {

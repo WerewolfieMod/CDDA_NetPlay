@@ -855,6 +855,9 @@ static std::string mp_key_action( uint32_t code )
             return "LEFTUP";
         case 15:
             return "LEFTDOWN";
+        case 20:
+            // DDA MP v4.0a-14: pass the turn without moving.
+            return "WAIT";
         default:
             return {};
     }
@@ -1135,6 +1138,13 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             jo.allow_omitted_members();
             npc_ptr = make_shared_fast<npc>();
             npc_ptr->deserialize( jo );
+            // DDA MP: player profiles carry no NPC class, leaving `myclass` at
+            // NC_NONE; dialogue and related lookups then resolve an invalid NPC
+            // template ("Tried to get invalid npc: NC_NONE"). Assign a valid
+            // class so talking to NPCs works.
+            if( npc_ptr->myclass.is_null() || npc_ptr->myclass == npc_class_id( "NC_NONE" ) ) {
+                npc_ptr->myclass = npc_class_id( "NC_SHOPKEEP" );
+            }
             if( !npc_ptr->get_fac_id().str().empty() ) {
                 npc_ptr->set_fac( npc_ptr->get_fac_id() );
             }
@@ -1250,6 +1260,14 @@ void host_pump_avatar_keys()
             continue;
         }
         const std::string act = mp_key_action( sk.code );
+        if( act == "WAIT" ) {
+            // Pass the turn: spend the pool, mark the order, refresh the picture.
+            av_acted_since_tick[sk.sid] = true;
+            av_move_pool[sk.sid] = 0;
+            netplay::host_send_hover_to_sid( sk.sid, "" );
+            av_send_session_picture( sk.sid, av_session_center( sk.sid ), npc_ptr.get() );
+            continue;
+        }
         static const std::map<std::string, tripoint_rel_ms> dirs = {
             { "LEFT",  tripoint_rel_ms( -1, 0, 0 ) },
             { "RIGHT", tripoint_rel_ms( 1, 0, 0 ) },
@@ -1524,17 +1542,26 @@ static void build_sidebar_snapshot( sidebar_frame &out, Character &who,
         }
         for( int row = 0; row < out.height; row++ ) {
             std::string rowtext;
+            bool clear_row = false;
             for( int col = 0; col < out.width; col++ ) {
                 rowtext += out.cells[static_cast<size_t>( row ) * out.width + col].text;
             }
             for( const std::string &nm : mp_names ) {
                 if( !nm.empty() && rowtext.find( nm ) != std::string::npos ) {
-                    for( int col = 0; col < out.width; col++ ) {
-                        sidebar_cell &c = out.cells[static_cast<size_t>( row ) * out.width + col];
-                        c.text.clear();
-                        c.color = 0;
-                    }
+                    clear_row = true;
                     break;
+                }
+            }
+            // Also drop any creature-list style rows ("@ Name"), which the host's
+            // panel prints for creatures that are not in all_npcs() right now.
+            if( !clear_row && rowtext.find( "@ " ) != std::string::npos ) {
+                clear_row = true;
+            }
+            if( clear_row ) {
+                for( int col = 0; col < out.width; col++ ) {
+                    sidebar_cell &c = out.cells[static_cast<size_t>( row ) * out.width + col];
+                    c.text.clear();
+                    c.color = 0;
                 }
             }
         }
@@ -1651,6 +1678,30 @@ static void av_send_status( int sid )
         netplay::host_send_minimap_to_sid( sid, mm );
     }
 #endif
+    // DDA MP v4.0a-14: inventory listing for the client's panel.
+    {
+        std::string inv_txt;
+        for( const item *it : av->inv_dump() ) {
+            if( it != nullptr ) {
+                // tname() carries colour markup; strip it for the client panel.
+                const std::string raw = it->tname();
+                std::string clean;
+                for( std::size_t i = 0; i < raw.size(); i++ ) {
+                    if( raw[i] == '<' ) {
+                        const std::size_t e = raw.find( '>', i );
+                        if( e != std::string::npos ) {
+                            i = e;
+                            continue;
+                        }
+                    }
+                    clean += raw[i];
+                }
+                inv_txt += clean;
+                inv_txt += '\n';
+            }
+        }
+        netplay::host_send_inventory_to_sid( sid, inv_txt );
+    }
 #if defined(TILES)
     {
         int mp_cols = 0;

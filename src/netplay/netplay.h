@@ -72,6 +72,8 @@ enum class frame : int {
     EVENT_TEXT = 29,        ///< host -> client: str text
     /// DDA MP v4.0a-12: overmap minimap block around the session avatar.
     MINIMAP = 30,           ///< host -> client: [w][h][u32 color]*
+    /// DDA MP v4.0a-14: inventory listing of the session avatar (text).
+    INVENTORY = 31,         ///< host -> client: str text
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -286,6 +288,8 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 
 void host_broadcast_event( const std::string &text, int msg_type );
 /// DDA MP v4.0a-12: send the overmap minimap block to a session.
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
+/// DDA MP v4.0a-14: send the inventory listing to a session.
+bool host_send_inventory_to_sid( int sid, const std::string &text );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
@@ -418,6 +422,8 @@ bool client_sidebar( sidebar_frame &out );
 bool client_take_event( std::string &out, int &msg_type );
 /// DDA MP v4.0a-12: latest overmap minimap block (copied per call).
 bool client_minimap( minimap_frame &out );
+/// DDA MP v4.0a-14: latest inventory listing (copied per call).
+bool client_inventory( std::string &out );
 /// Show a short status hint on the client's screen (empty clears it).
 void client_status_hint( const std::string &text );
 /// DDA MP v4.0a-10: terminal cells that actually fit the drawable window.

@@ -8410,5 +8410,32 @@ void drawable_cells( int &cols, int &rows )
     }
 }
 
+/* DDA MP v4.0a-15: overlay pass drawn after the tiles canvas. A display-buffer
+ * scope is mandatory: without it ImGui's end_frame renders nowhere (which is
+ * why a naive second frame stays invisible). */
+void overlay_begin()
+{
+    if( !imclient ) {
+        return;
+    }
+    if( display_buffer_scope_is_invalid() ) {
+        return;
+    }
+    mp_overlay_scope = std::make_unique<display_buffer_draw_scope>();
+    int w = 0;
+    int h = 0;
+    get_display_buffer_dims( &w, &h );
+    imclient->new_frame( w, h );
+}
+
+void overlay_end()
+{
+    if( !mp_overlay_scope ) {
+        return;
+    }
+    imclient->end_frame();
+    mp_overlay_scope.reset();
+}
+
 } // namespace netplay
 #endif // TILES
