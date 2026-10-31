@@ -33,6 +33,7 @@
 #include "inventory.h"
 #include "itype.h"
 #include "flag.h"
+#include "ranged.h"
 #include "npc.h"
 #include "loading_ui.h"  // loading_ui::done (releases the splash adaptors)
 #include "output.h"
@@ -837,6 +838,11 @@ static float mp_canvas_cx = 0.0f;
 static float mp_canvas_cy = 0.0f;
 static float mp_canvas_tw = 0.0f;
 static float mp_canvas_th = 0.0f;
+/* World origin of the last snapshot (absolute coords of the session avatar). */
+static int mp_origin_x = 0;
+static int mp_origin_y = 0;
+static int mp_origin_z = 0;
+static bool mp_have_origin = false;
 
 static void mp_overlay_inventory( const std::string &text, bool open, int &sel, int &scroll )
 {
@@ -1092,6 +1098,9 @@ static void mp_inv_log( const std::string &msg )
     } catch( ... ) {
     }
 }
+
+static void mp_run_client_throw( const item &thrown, int node, int generation,
+                                 const tripoint_abs_ms &origin );
 
 /* DDA MP v4.0a-18: the item action menu, same entries/hotkeys/texts as the
  * host's inventory_item_menu. Ratings mirror the host's rate_action_* helpers
@@ -1504,11 +1513,20 @@ static void mp_run_host_inventory( const std::string &text )
             break;
         }
         if( act == 't' ) {
-            mp_throw_node = node;
-            mp_throw_gen = pkt.header.generation;
-            mp_throw_dx = 1;
-            mp_throw_dy = 0;
-            mp_throw_active = true;
+            static const bool mp_legacy_throw = []() {
+                const char *env = std::getenv( "DDA_MP_LEGACY_THROW" );
+                return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+            }();
+            if( mp_legacy_throw || !mp_have_origin ) {
+                mp_throw_node = node;
+                mp_throw_gen = pkt.header.generation;
+                mp_throw_dx = 1;
+                mp_throw_dy = 0;
+                mp_throw_active = true;
+            } else {
+                mp_run_client_throw( it, node, pkt.header.generation,
+                                     tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
+            }
             break;
         }
         if( act > 0 ) {
@@ -1524,6 +1542,46 @@ static void mp_run_host_inventory( const std::string &text )
     } catch( ... ) {
         mp_inv_log( "error: unknown" );
     }
+}
+
+/* DDA MP v4.0a-39: the host's real aiming UI on the client.
+ *
+ * target_ui is now Character-based. The client's local avatar is temporarily
+ * moved to the streamed world origin (the session avatar's position) and the
+ * bubble is re-anchored, so g->draw/mode_throw show the host terrain and the
+ * stock reticle. Only the chosen offset is sent to the host. */
+static void mp_run_client_throw( const item &thrown, int node, int generation,
+                                 const tripoint_abs_ms &origin )
+{
+    avatar &cli = get_avatar();
+    const tripoint_abs_ms old_pos = cli.pos_abs();
+    item copy = thrown;
+    try {
+        // Block UI that existed before the session while the stock aiming
+        // window is open (same rule as inventory/@).
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        cli.setpos( origin, false );
+        g->mp_anchor_map_on( cli, false );
+        const target_handler::trajectory traj = target_handler::mode_throw( cli, copy, false );
+        if( !traj.empty() ) {
+            const tripoint_bub_ms tgt = traj.back();
+            const tripoint_bub_ms from = cli.pos_bub();
+            netplay::client_send_inventory_action(
+                node, 't', generation,
+                { tgt.x() - from.x(), tgt.y() - from.y() } );
+            mp_inv_log( string_format( "throw: aim %d,%d", tgt.x() - from.x(),
+                                       tgt.y() - from.y() ) );
+        } else {
+            mp_inv_log( "throw: cancelled" );
+        }
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "throw error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "throw error: unknown" );
+    }
+    // Put the client back where it was; the session stream owns the bubble.
+    cli.setpos( old_pos, false );
+    g->mp_anchor_map_on( cli, true );
 }
 
 void run_view_loop()
@@ -1975,6 +2033,12 @@ void run_view_loop()
                 // ASCII window. A valid picture also stops the snapshot
                 // request loop above.
                 mp_have_picture = true;
+                if( snap.has_origin ) {
+                    mp_origin_x = snap.origin_x;
+                    mp_origin_y = snap.origin_y;
+                    mp_origin_z = snap.origin_z;
+                    mp_have_origin = true;
+                }
                 ensure_window( snap.width, snap.height );
                 // DDA MP diag: when did the client actually adopt a picture
                 // (signature of a few cells tells changed frames apart).
