@@ -1232,9 +1232,6 @@ static int mp_client_item_menu( Character &you, const item &it )
                        can_expand ? hint_rating::good : hint_rating::cant );
     }
     mp_menu_entry( menu, '=', pgettext( "action", "reassign" ), hint_rating::good );
-    // Hide pre-session UI (the main menu we joined from) only while this
-    // popup is on screen; keeping it permanently caused a redraw flicker.
-    ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
     menu.query();
     return menu.ret;
 }
@@ -1254,6 +1251,9 @@ static void mp_run_character_info( const std::string &text )
         npc tmp;
         tmp.deserialize( jo );
         mp_inv_log( "info: opening @ menu" );
+        // Same layering rule as the inventory: hide the pre-session main menu,
+        // keep the @ menu and its own submenus above the blocker.
+        ui_adaptor mp_info_blocker( ui_adaptor::disable_uis_below{} );
         tmp.disp_info( false );
         mp_inv_log( "info: closed" );
     } catch( const std::exception &e ) {
@@ -1273,6 +1273,10 @@ static void mp_run_character_info( const std::string &text )
 static void mp_run_host_inventory( const std::string &text )
 {
     try {
+    // Block only the UI that existed before the session (the main menu we
+    // joined from). Created before the inventory windows, so every session
+    // window and popup draws above it while pre-session UI stays hidden.
+    ui_adaptor mp_session_blocker( ui_adaptor::disable_uis_below{} );
     const netplay::inv_packet pkt = netplay::parse_inv_packet( text );
     mp_inv_log( string_format( "open: rows=%d bytes=%d hotkeys=%d/%d",
                                static_cast<int>( pkt.entries.size() ),

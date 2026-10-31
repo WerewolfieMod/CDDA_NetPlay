@@ -1760,10 +1760,21 @@ void host_pump_inventory_actions()
                 static_cast<int>( m_info ) );
             continue;
         }
-        npc *av = av_session_npc( sid );
-        if( av == nullptr || av->is_dead_state() ) {
+        shared_ptr_fast<npc> npc_ptr;
+        {
+            const auto sid_it = av_sid_to_npc.find( sid );
+            if( sid_it != av_sid_to_npc.end() ) {
+                npc_ptr = av_find_npc( sid_it->second );
+            }
+        }
+        if( !npc_ptr || !av_npc_alive( npc_ptr ) ) {
             continue;
         }
+        npc *av = npc_ptr.get();
+        // Map-bound actions (drop, spill checks) must see the avatar's own
+        // reality bubble, exactly like a movement key does. Keep the shared
+        // pointer alive: anchoring can unload/reload tracker entries.
+        g->mp_anchor_map_on( *av, true );
         const auto it = av_inv_nodes.find( sid );
         if( it == av_inv_nodes.end() || node < 0 ||
             node >= static_cast<int>( it->second.size() ) ) {
