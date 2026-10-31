@@ -1726,18 +1726,7 @@ void run_view_loop()
         ImDrawList *dl = ImGui::GetForegroundDrawList();
         const float fs = ImGui::GetFontSize();
         const float pad = fs * 0.6f;
-        // DDA MP v4.0a-35: throw crosshair over the streamed canvas. Drawn
-        // first so it is independent of the sidebar/sheet early returns.
-        if( mp_throw_active && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
-            const float px = mp_canvas_cx + mp_throw_dx * mp_canvas_tw + mp_canvas_tw * 0.5f;
-            const float py = mp_canvas_cy + mp_throw_dy * mp_canvas_th + mp_canvas_th * 0.5f;
-            const float r = std::max( mp_canvas_tw, mp_canvas_th ) * 0.55f;
-            dl->AddCircle( ImVec2( px, py ), r, IM_COL32( 255, 90, 90, 255 ), 16, 2.0f );
-            dl->AddLine( ImVec2( px - r, py ), ImVec2( px + r, py ),
-                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
-            dl->AddLine( ImVec2( px, py - r ), ImVec2( px, py + r ),
-                         IM_COL32( 255, 90, 90, 200 ), 1.0f );
-        }
+        // (throw reticle is drawn by the tileset pass, see line_trail/cursor)
         // DDA MP v4.0a-14: inventory panel (read-only, toggled with 'i').
         if( !mp_side.cells.empty() ) {
             const float cw = ImGui::CalcTextSize( "M" ).x;
@@ -2456,6 +2445,49 @@ void run_view_loop()
                                         }
                                     }
                                 }
+                                // DDA MP v4.0a-42: host target_ui draws its
+                                // feedback through the tileset, not ImGui:
+                                // "line_trail" sprites along the trajectory and
+                                // the "cursor" sprite on the target tile.
+                                if( mp_throw_active ) {
+                                    const int acx = snap.width / 2;
+                                    const int acy = snap.height / 2;
+                                    int tx = acx + mp_throw_dx;
+                                    int ty = acy + mp_throw_dy;
+                                    if( tx >= 0 && ty >= 0 && tx < snap.width &&
+                                        ty < snap.height ) {
+                                        int x0 = acx;
+                                        int y0 = acy;
+                                        const int dxs = std::abs( tx - x0 );
+                                        const int dys = std::abs( ty - y0 );
+                                        const int sx = x0 < tx ? 1 : -1;
+                                        const int sy = y0 < ty ? 1 : -1;
+                                        int err = dxs - dys;
+                                        while( x0 != tx || y0 != ty ) {
+                                            const int e2 = 2 * err;
+                                            if( e2 > -dys ) {
+                                                err -= dys;
+                                                x0 += sx;
+                                            }
+                                            if( e2 < dxs ) {
+                                                err += dxs;
+                                                y0 += sy;
+                                            }
+                                            if( x0 == tx && y0 == ty ) {
+                                                break;
+                                            }
+                                            netplay::tiles_backend_draw(
+                                                tiles_backend, 6, "line_trail", "",
+                                                x0 - snap.width / 2, y0 - snap.height / 2,
+                                                static_cast<int>( lit_level::LIT ), 0, 0,
+                                                true );
+                                        }
+                                        netplay::tiles_backend_draw(
+                                            tiles_backend, 6, "cursor", "",
+                                            tx - snap.width / 2, ty - snap.height / 2,
+                                            static_cast<int>( lit_level::LIT ), 0, 0, true );
+                                    }
+                                }
                                 netplay::tiles_backend_end( tiles_backend );
                                 // DDA MP v4.0a-37: the reticle must be drawn in
                                 // the post-canvas overlay pass; the session
@@ -2466,12 +2498,6 @@ void run_view_loop()
                                     ImDrawList *tdl = ImGui::GetForegroundDrawList();
                                     const float fsz = ImGui::GetFontSize();
                                     const float lh = ImGui::GetTextLineHeight();
-                                    const float px = mp_canvas_cx + mp_throw_dx * mp_canvas_tw +
-                                                     mp_canvas_tw * 0.5f;
-                                    const float py = mp_canvas_cy + mp_throw_dy * mp_canvas_th +
-                                                     mp_canvas_th * 0.5f;
-                                    const float cx = mp_canvas_cx + mp_canvas_tw * 0.5f;
-                                    const float cy = mp_canvas_cy + mp_canvas_th * 0.5f;
                                     // Line of fire from the snapshot's terrain
                                     // barrier bit (the same wall data the host
                                     // target_ui checks through the map).
@@ -2515,10 +2541,6 @@ void run_view_loop()
                                     const ImU32 aim_col = ( blocked || !in_range ) ?
                                                           IM_COL32( 255, 80, 80, 255 ) :
                                                           IM_COL32( 120, 255, 120, 255 );
-                                    tdl->AddLine( ImVec2( cx, cy ), ImVec2( px, py ), aim_col, 2.0f );
-                                    const float r = std::max( mp_canvas_tw, mp_canvas_th ) * 0.6f;
-                                    tdl->AddRect( ImVec2( px - r, py - r ), ImVec2( px + r, py + r ),
-                                                  aim_col, 0.0f, 0, 2.0f );
                                     // Host-style aiming panel.
                                     const float pw = fsz * 24.0f;
                                     const float ph = lh * 4.6f;
