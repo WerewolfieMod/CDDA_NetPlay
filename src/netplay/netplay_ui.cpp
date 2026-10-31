@@ -1691,6 +1691,7 @@ void run_view_loop()
     std::string mp_hint_text;
     // DDA MP v4.0a-8: character sheet panel (C toggles it).
     catacurses::window mp_sheet_win;
+    catacurses::window mp_aim_win;
     std::string mp_sheet_text;
     bool mp_sheet_open = true; // the status panel is docked by default
     snapshot mp_sidebar;
@@ -1710,6 +1711,38 @@ void run_view_loop()
             mp_log.erase( mp_log.begin() );
         }
         mp_log.push_back( { s, type, mp_cur_turn } );
+    };
+    // DDA MP v4.0a-44: host-style aiming window (right side, curses window).
+    auto mp_draw_aim_window = [&]() {
+        if( !mp_throw_active ) {
+            return;
+        }
+        const int wwid = 55;
+        const int whei = std::min( 33, TERMY );
+        if( !mp_aim_win ) {
+            mp_aim_win = catacurses::newwin( whei, wwid, point( TERMX - wwid, 0 ) );
+        }
+        if( !mp_aim_win ) {
+            return;
+        }
+        werase( mp_aim_win );
+        draw_border( mp_aim_win );
+        mvwprintz( mp_aim_win, point( 2, 0 ), c_white, "< " );
+        trim_and_print( mp_aim_win, point( 4, 0 ), wwid - 7, c_red,
+                        string_format( _( "Throwing %s" ),
+                                       remove_color_tags( mp_throw_name ) ) );
+        wprintz( mp_aim_win, c_white, " >" );
+        int ty = 1;
+        std::istringstream ls( mp_aim_text );
+        std::string line;
+        while( std::getline( ls, line ) && ty < whei - 2 ) {
+            nc_color col = c_light_gray;
+            print_colored_text( mp_aim_win, point( 1, ty ), col, col, line );
+            ++ty;
+        }
+        mvwprintz( mp_aim_win, point( 1, whei - 2 ), c_white,
+                   _( "[Enter] throw   [Esc] cancel" ) );
+        wnoutrefresh( mp_aim_win );
     };
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
@@ -2040,6 +2073,7 @@ void run_view_loop()
             // the screen alternated between stamped tiles and the cleared
             // black buffer (the observed flicker).
             ui_manager::redraw();
+            mp_draw_aim_window();
 
             bool mp_canvas_ok = false;
             snapshot snap;
@@ -2499,53 +2533,6 @@ void run_view_loop()
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
-                                // DDA MP v4.0a-37: the reticle must be drawn in
-                                // the post-canvas overlay pass; the session
-                                // adaptor pass can end up below the tiles.
-                                if( mp_throw_active && mp_canvas_tw > 0.0f &&
-                                    mp_canvas_th > 0.0f ) {
-                                    netplay::overlay_begin();
-                                    ImDrawList *tdl = ImGui::GetForegroundDrawList();
-                                    const float fsz = ImGui::GetFontSize();
-                                    const float lh = ImGui::GetTextLineHeight();
-                                    // Host-authored aiming panel (range,
-                                    // target, hit chances) on the right side,
-                                    // like target_ui's w_target window.
-                                    std::vector<std::string> lines;
-                                    {
-                                        std::istringstream ls( mp_aim_text );
-                                        std::string line;
-                                        while( std::getline( ls, line ) ) {
-                                            lines.push_back( line );
-                                        }
-                                    }
-                                    const float pw = fsz * 30.0f;
-                                    const float ph = lh * ( static_cast<float>( lines.size() ) + 2.0f ) +
-                                                     12.0f;
-                                    const float px0 = std::max( 8.0f,
-                                                                ImGui::GetIO().DisplaySize.x - pw - 8.0f );
-                                    tdl->AddRectFilled( ImVec2( px0, 8.0f ),
-                                                        ImVec2( px0 + pw, 8.0f + ph ),
-                                                        IM_COL32( 0, 0, 0, 230 ) );
-                                    tdl->AddRect( ImVec2( px0, 8.0f ),
-                                                  ImVec2( px0 + pw, 8.0f + ph ),
-                                                  IM_COL32( 190, 190, 190, 255 ), 0.0f, 0, 1.0f );
-                                    float ty = 8.0f + lh * 0.4f;
-                                    tdl->AddText( ImVec2( px0 + 8, ty ), IM_COL32( 255, 255, 255, 255 ),
-                                                  mp_clip_text( string_format( "%s %s",
-                                                              _( "Throwing:" ), mp_throw_name ),
-                                                              pw - 16 ).c_str() );
-                                    ty += lh;
-                                    for( const std::string &line : lines ) {
-                                        tdl->AddText( ImVec2( px0 + 8, ty ),
-                                                      IM_COL32( 215, 215, 215, 255 ),
-                                                      mp_clip_text( line, pw - 16 ).c_str() );
-                                        ty += lh;
-                                    }
-                                    tdl->AddText( ImVec2( px0 + 8, ty ), IM_COL32( 190, 190, 190, 255 ),
-                                                  _( "[Enter] throw   [Esc] cancel" ) );
-                                    netplay::overlay_end();
-                                }
                                 mp_frame_trace( "end ok" );
                             }
                         }

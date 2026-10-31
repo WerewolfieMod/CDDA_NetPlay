@@ -2379,13 +2379,16 @@ std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
         target = nullptr;
     }
     const double range = rl_dist( you.pos_bub(), target_pos );
-    out.push_back( string_format( _( "Range: %d" ), static_cast<int>( range ) ) );
+    out.push_back( string_format( "<color_light_gray>%s</color>",
+                                  string_format( _( "Range: %d" ), static_cast<int>( range ) ) ) );
     if( target != nullptr ) {
-        out.push_back( string_format( _( "Target: %s" ), target->disp_name() ) );
+        out.push_back( string_format( "<color_white>%s</color>",
+                                      string_format( _( "Target: %s" ), target->disp_name() ) ) );
     } else {
-        out.push_back( _( "Target: none" ) );
+        out.push_back( string_format( "<color_light_gray>%s</color>", _( "Target: none" ) ) );
     }
-    out.push_back( string_format( _( "Targets: %d" ), target != nullptr ? 1 : 0 ) );
+    out.push_back( string_format( "<color_light_gray>%s</color>",
+                                  string_format( _( "Targets: %d" ), target != nullptr ? 1 : 0 ) ) );
 
     static const std::vector<confidence_rating> confidence_config_critter = {{
             { accuracy_critical, '*', "green", translate_marker_context( "aim_confidence", "Great" ) },
@@ -2415,11 +2418,21 @@ std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
                 ui, you, target_ui::TargetMode::Throw, ctxt, weapon, dispersion,
                 confidence_config, attributes, target_pos, item_location() );
     for( const aim_type_prediction &p : chances ) {
-        std::string line = p.name + ":";
+        std::string line = string_format( "<color_light_gray>%s:</color>", p.name );
         for( const aim_type_prediction::aim_confidence &c : p.chances ) {
-            line += string_format( " %s %d%%", c.label, c.chance );
+            const char *col = "light_gray";
+            if( c.label == "Great" ) {
+                col = "green";
+            } else if( c.label == "Graze" ) {
+                col = "magenta";
+            } else if( c.label == "Miss" ) {
+                col = "dark_gray";
+            } else if( c.label == "Hit" ) {
+                col = "white";
+            }
+            line += string_format( " <color_%s>%s %d%%</color>", col, c.label, c.chance );
         }
-        line += string_format( " (%d)", p.moves );
+        line += string_format( " <color_light_blue>(%d)</color>", p.moves );
         out.push_back( line );
     }
     return out;
