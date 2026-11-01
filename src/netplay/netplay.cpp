@@ -1705,9 +1705,18 @@ static void client_run( socket_t sock )
             snap.width = static_cast<int>( r.get_u16() );
             snap.height = static_cast<int>( r.get_u16() );
             snap.status_line = r.get_str();
-            if( r.ok && snap.width > 0 && snap.height > 0
-                && snap.width * snap.height * 8/* bytes/cell */ <= body.size() - r.off ) {
-                const size_t cells = snap.width * snap.height;
+            // DDA MP v4.0a-82: validate dimensions in size_t; the u16 fields
+            // could overflow the old int product and let a malformed frame
+            // drive the cell reader past the payload.
+            constexpr int mp_snap_max_dim = 400;
+            const int mp_sw = snap.width;
+            const int mp_sh = snap.height;
+            if( r.ok && mp_sw > 0 && mp_sh > 0
+                && mp_sw <= mp_snap_max_dim && mp_sh <= mp_snap_max_dim
+                && r.off <= body.size()
+                && static_cast<size_t>( mp_sw ) * static_cast<size_t>( mp_sh ) * 8u
+                <= body.size() - r.off ) {
+                const size_t cells = static_cast<size_t>( mp_sw ) * mp_sh;
                 snap.cells.reserve( cells );
                 for( size_t i = 0; i < cells; i++ ) {
                     cell c;

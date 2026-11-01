@@ -2720,7 +2720,14 @@ void run_view_loop()
             {
                 int mp_cols = TERMX;
                 int mp_rows = TERMY;
-                netplay::drawable_cells( mp_cols, mp_rows );
+                // Curses-only builds report 0x0; keep the terminal fallback.
+                int dc = 0;
+                int dr = 0;
+                netplay::drawable_cells( dc, dr );
+                if( dc > 0 && dr > 0 ) {
+                    mp_cols = dc;
+                    mp_rows = dr;
+                }
                 if( mp_cols != mp_last_cols || mp_rows != mp_last_rows ) {
                     mp_last_cols = mp_cols;
                     mp_last_rows = mp_rows;
