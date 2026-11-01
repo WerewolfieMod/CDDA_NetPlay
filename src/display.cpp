@@ -1443,10 +1443,9 @@ static std::string get_compass_for_direction( const monster_visible_info &mon_vi
     for( const std::pair<const mtype *, int> &m : mon_visible.unique_mons[d] ) {
         syms.emplace_back( m.first->sym, m.first->color );
     }
-    for( const std::string &name : mp_compass_avatars[d] ) {
-        ( void )name;
-        syms.emplace_back( "@", c_light_green );
-    }
+    // DDA MP v4.0a-79: player characters visible in this direction.
+    syms.insert( syms.end(), mp_compass_avatars[d].size(),
+                 std::make_pair( std::string( "@" ), c_light_green ) );
 
     std::string ret;
     for( int i = 0; i < static_cast<int>( syms.size() ); i++ ) {
