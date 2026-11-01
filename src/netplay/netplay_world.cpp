@@ -35,6 +35,7 @@
 #include "lightmap.h"
 #include "map.h"
 #include "map_memory.h"
+#include "map_selector.h"
 #include "memory_fast.h"
 #include "monster.h"
 #include "mtype.h"
@@ -2306,6 +2307,37 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_PICKUP:
+            case ACTION_PICKUP_ALL: {
+                map &here = get_map();
+                const tripoint_bub_ms pos = av->pos_bub();
+                const bool nearby = static_cast<action_id>( action ) == ACTION_PICKUP_ALL;
+                drop_locations what;
+                const auto add_tile = [&]( const tripoint_bub_ms &p ) {
+                    if( !here.inbounds( p ) ) {
+                        return;
+                    }
+                    for( item &it : here.i_at( p ) ) {
+                        what.emplace_back( item_location( map_cursor( p ), &it ), it.count() );
+                    }
+                };
+                if( nearby ) {
+                    for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
+                        add_tile( p );
+                    }
+                } else {
+                    add_tile( pos );
+                }
+                if( what.empty() ) {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "There is nothing to pick up here." ),
+                        static_cast<int>( m_info ) );
+                    break;
+                }
+                av->pick_up( what );
+                changed = true;
+                break;
+            }
             default:
                 netplay::host_send_event_to_sid(
                     sid, _( "That action is not available to netplay clients yet." ),
@@ -2359,9 +2391,10 @@ void host_note_world_turn()
                 static const activity_id mp_act_read( "ACT_READ" );
                 static const activity_id mp_act_reload( "ACT_RELOAD" );
                 static const activity_id mp_act_mend( "ACT_MEND_ITEM" );
+                static const activity_id mp_act_pickup( "ACT_PICKUP" );
                 const activity_id &act_id = av->activity.id();
                 if( act_id == mp_act_read || act_id == mp_act_reload ||
-                    act_id == mp_act_mend ) {
+                    act_id == mp_act_mend || act_id == mp_act_pickup ) {
                     av->process_activity();
                 }
             }
