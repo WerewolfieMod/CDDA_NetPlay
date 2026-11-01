@@ -27,6 +27,7 @@
 #include "sdl_wrappers.h" // GetTicks (view probe timestamps)
 #include "game.h"        // g (fat client world data load)
 #include "lightmap.h"    // lit_level (client light overlay)
+#include "mtype.h"
 #include "input_context.h"
 #include "input.h"
 #include "inventory_ui.h"
@@ -1612,19 +1613,38 @@ static void mp_draw_aim_panel()
     const float ph = ( mp_aim_panel.height + 2 ) * ch;
     const float px = std::max( 0.0f, io.DisplaySize.x - pw );
     const float py = 0.0f;
+    // Client-side target focus: the snapshot carries the creature id per cell,
+    // so this line updates even while the host is busy in its own UI.
+    std::string target_name;
+    if( mp_aim_w > 0 && mp_aim_h > 0 ) {
+        const int tx = mp_aim_w / 2 + mp_throw_dx;
+        const int ty = mp_aim_h / 2 + mp_throw_dy;
+        if( tx >= 0 && ty >= 0 && tx < mp_aim_w && ty < mp_aim_h ) {
+            const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
+            if( idx < mp_aim_critters.size() && !mp_aim_critters[idx].empty() ) {
+                target_name = mtype_id( mp_aim_critters[idx] ).obj().nname();
+            }
+        }
+    }
     dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                        IM_COL32( 0, 0, 0, 245 ) );
     for( int row = 0; row < mp_aim_panel.height; row++ ) {
+        const float row_y = py + ( row == 0 ? 1.0f : static_cast<float>( row + 1 ) ) * ch;
         for( int col = 0; col < mp_aim_panel.width; col++ ) {
             const netplay::sidebar_cell &c = mp_aim_panel.cells[
                                                  static_cast<size_t>( row ) * mp_aim_panel.width + col];
             if( c.text.empty() || c.text == " " ) {
                 continue;
             }
-            dl->AddText( ImVec2( px + ( col + 1 ) * cw, py + ( row + 1 ) * ch ),
+            dl->AddText( ImVec2( px + ( col + 1 ) * cw, row_y ),
                          cataimgui::ImU32_from_color( decode_cell_color( c.color ) ),
                          c.text.c_str() );
         }
+    }
+    if( !target_name.empty() ) {
+        dl->AddText( ImVec2( px + cw, py + ( mp_aim_panel.height + 0.5f ) * ch ),
+                     IM_COL32( 120, 220, 255, 255 ),
+                     string_format( "%s %s", _( "Target:" ), target_name ).c_str() );
     }
     dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                  IM_COL32( 190, 190, 190, 255 ) );

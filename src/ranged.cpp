@@ -2458,7 +2458,7 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
     if( !w ) {
         return out;
     }
-    out.title = ui.netplay_title();
+    out.title = remove_color_tags( ui.netplay_title() );
     // Send only the interior; the client draws its own rectangle border (the
     // curses ACS line glyphs are not in the client's font). The first row is
     // the window title that normally sits on the border.
