@@ -1408,17 +1408,32 @@ static void mp_run_pickup( const std::string &text )
         if( pkt.entries.empty() ) {
             return;
         }
-        avatar &cli = get_avatar();
-        map &here = get_map();
-        g->mp_anchor_map_on( cli, false );
-        const tripoint_bub_ms base = cli.pos_bub();
-        // The items are only a display copy: remember and restore the scratch
-        // tile so the client's own world is untouched after the menu closes.
-        std::vector<item> saved;
-        for( const item &it : here.i_at( base ) ) {
-            saved.push_back( it );
+        // DDA MP v4.0a-93: the client's local map is a replay scratch space and
+        // is not safe to spawn items on (anchoring it logs unloaded-submap
+        // errors and can crash). Keep the display copies in a synthetic wielded
+        // container on a temporary NPC instead: force insertion bypasses
+        // capacity, so every streamed row is listed regardless of its volume.
+        npc viewer;
+        viewer.name = "client";
+        if( !item::type_is_defined( itype_id( "backpack" ) ) ) {
+            mp_inv_log( "pickup: backpack itype missing" );
+            return;
         }
-        here.i_clear( base );
+        item bag( itype_id( "backpack" ), calendar::turn );
+        bag.set_var( "mp_can_take", "0" ); // the wrapper itself is not a row
+        viewer.set_wielded_item( bag );
+        item *bag_item = nullptr;
+        if( item_location w = viewer.get_wielded_item() ) {
+            bag_item = w.get_item();
+        }
+        if( bag_item == nullptr ) {
+            return;
+        }
+        // Contents are hidden by default for collapsed pockets; show them.
+        for( item_pocket *pocket : bag_item->get_standard_pockets() ) {
+            pocket->settings.set_collapse( false );
+        }
+        int added = 0;
         for( size_t i = 0; i < pkt.entries.size(); i++ ) {
             const netplay::inv_entry_view &e = pkt.entries[i];
             if( !item::type_is_defined( itype_id( e.id ) ) ) {
@@ -1438,17 +1453,22 @@ static void mp_run_pickup( const std::string &text )
             if( e.filthy ) {
                 it.set_flag( flag_FILTHY );
             }
-            here.add_item_or_charges( base, it );
+            bag_item->force_insert_item( it, pocket_type::CONTAINER );
+            ++added;
+        }
+        if( added == 0 ) {
+            return;
         }
         std::vector<int> nodes;
         {
             ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
             mp_pickup_preset preset;
-            inventory_multiselector sel( cli, preset, _( "ITEMS TO PICK UP" ) );
+            inventory_multiselector sel( viewer, preset, _( "ITEMS TO PICK UP" ), {},
+                                         /*allow_select_contained=*/true );
             sel.set_title( _( "Pickup" ) );
             sel.set_hint( _( "Select the items to pick up" ) );
             sel.clear_items();
-            sel.add_map_items( base );
+            sel.add_character_items( viewer );
             const drop_locations picked = sel.execute();
             for( const drop_location &dl : picked ) {
                 const std::string nv = dl.first->get_var( "mp_node", std::string() );
@@ -1456,10 +1476,6 @@ static void mp_run_pickup( const std::string &text )
                     nodes.push_back( std::atoi( nv.c_str() ) );
                 }
             }
-        }
-        here.i_clear( base );
-        for( item &it : saved ) {
-            here.add_item_or_charges( base, it );
         }
         mp_inv_log( string_format( "pickup: rows=%d chosen=%d",
                                    static_cast<int>( pkt.entries.size() ),
