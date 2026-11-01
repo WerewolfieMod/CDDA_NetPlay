@@ -2053,7 +2053,7 @@ static int mp_client_action_menu()
         ctxt.get_action_name( action_ident( name ) ) );
 #define MP_REGISTER_CATEGORY( text ) categories_by_int[last_category] = text; \
     catgname = text; \
-    catgname += "�?�"; \
+    catgname += "\xE2\x80\xA6"; \
     entries.emplace_back( last_category, true, -1, catgname ); \
     last_category++;
 
@@ -2073,7 +2073,7 @@ static int mp_client_action_menu()
             MP_REGISTER_CATEGORY( _( "Misc" ) );
             MP_REGISTER_ACTION( ACTION_HELP );
             if( !entries.empty() ) {
-                entries.back().txt += "�?�"; // help _is_a menu
+                entries.back().txt += "\xE2\x80\xA6"; // help _is_a menu
             }
         } else if( category == _( "Look" ) ) {
             MP_REGISTER_ACTION( ACTION_LOOK );
@@ -2175,7 +2175,7 @@ static int mp_client_action_menu()
 
         if( category != "back" ) {
             std::string msg = _( "Back" );
-            msg += "�?�";
+            msg += "\xE2\x80\xA6";
             entries.emplace_back( 2 * NUM_ACTIONS, true,
                                   hotkey_for_action( ACTION_ACTIONMENU, 1 ), msg );
         }
