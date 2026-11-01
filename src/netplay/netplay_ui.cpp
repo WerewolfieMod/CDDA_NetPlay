@@ -1642,13 +1642,17 @@ static void mp_client_aim_recalc()
     }
     const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
     const std::string critter = idx < mp_aim_critters.size() ? mp_aim_critters[idx] : "";
+    const bool on_char_glyph = idx < mp_aim_glyphs.size() && mp_aim_glyphs[idx] == '@';
+    const bool is_character = on_char_glyph ||
+                              critter.rfind( "npc_", 0 ) == 0 ||
+                              critter.rfind( "player_", 0 ) == 0;
     const int light = idx < mp_aim_light.size() ? mp_aim_light[idx] : 0;
     const bool sees = ( idx < mp_aim_flags.size() && ( mp_aim_flags[idx] & 32 ) != 0 ) ||
                       light > 0;
     const double range = std::sqrt( static_cast<double>( mp_throw_dx * mp_throw_dx +
                                    mp_throw_dy * mp_throw_dy ) );
     mp_client_aim_lines = target_handler::netplay_throw_aim_client(
-                              *mp_aim_char, mp_aim_item, critter, range,
+                              *mp_aim_char, mp_aim_item, critter, is_character, range,
                               mp_throw_range, light * 50.0f, sees );
     mp_build_client_aim_panel();
 }

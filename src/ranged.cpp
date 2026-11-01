@@ -2492,11 +2492,12 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
 }
 
 std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
-        const std::string &mtype, double range, int max_range, float ambient_light, bool sees )
+        const std::string &mtype, bool is_character, double range, int max_range,
+        float ambient_light, bool sees )
 {
     std::vector<std::string> out;
     std::unique_ptr<monster> critter;
-    if( !mtype.empty() && mtype_id( mtype ).is_valid() ) {
+    if( !is_character && !mtype.empty() && mtype_id( mtype ).is_valid() ) {
         critter = std::make_unique<monster>( mtype_id( mtype ),
                                              you.pos_bub() + tripoint_rel_ms(
                                                  static_cast<int>( range ), 0, 0 ) );
@@ -2513,7 +2514,7 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
             { accuracy_grazing, '*', "white", translate_marker_context( "aim_confidence", "Hit" ) }
         }
     };
-    const auto &conf = target != nullptr ? conf_critter : conf_object;
+    const auto &conf = ( target != nullptr || is_character ) ? conf_critter : conf_object;
     Target_attributes attributes( range, target_size, ambient_light, sees );
     target_ui ui;
     ui.you = &you;

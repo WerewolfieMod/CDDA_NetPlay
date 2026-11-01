@@ -62,8 +62,8 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
 /// DDA MP: the same chances computed client-side from a temp Character and
 /// snapshot facts (no host round-trip). Returns plain lines with <color_x>.
 std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
-        const std::string &mtype, double range, int max_range, float ambient_light,
-        bool sees );
+        const std::string &mtype, bool is_character, double range, int max_range,
+        float ambient_light, bool sees );
 
 /** Reach attacking */
 trajectory mode_reach( avatar &you, item_location weapon );
