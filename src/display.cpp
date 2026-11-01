@@ -1417,6 +1417,11 @@ point display::mission_arrow_offset( const Character &you, int width, int height
     }
 }
 
+/* DDA MP v4.0a-79: visible player characters (avatars) per compass direction.
+ * The monster_visible_info buckets hold npc pointers only, so the host player
+ * and any other process-local avatar are collected here by name. */
+static thread_local std::array<std::vector<std::string>, 9> mp_compass_avatars;
+
 static std::string get_compass_for_direction( const monster_visible_info &mon_visible,
         cardinal_direction dir, int max_width )
 {
@@ -1438,6 +1443,10 @@ static std::string get_compass_for_direction( const monster_visible_info &mon_vi
     for( const std::pair<const mtype *, int> &m : mon_visible.unique_mons[d] ) {
         syms.emplace_back( m.first->sym, m.first->color );
     }
+    for( const std::string &name : mp_compass_avatars[d] ) {
+        ( void )name;
+        syms.emplace_back( "@", c_light_green );
+    }
 
     std::string ret;
     for( int i = 0; i < static_cast<int>( syms.size() ); i++ ) {
@@ -1457,6 +1466,9 @@ static std::string get_compass_for_direction( const monster_visible_info &mon_vi
  * buckets from the character's own view instead. */
 static monster_visible_info &mp_compass_info( const Character &u )
 {
+    for( auto &a : mp_compass_avatars ) {
+        a.clear();
+    }
     if( const avatar *av = dynamic_cast<const avatar *>( &u ) ) {
         return const_cast<avatar *>( av )->get_mon_visible();
     }
@@ -1541,6 +1553,11 @@ static monster_visible_info &mp_compass_info( const Character &u )
             }
         } else if( npc *p = dynamic_cast<npc *>( c ) ) {
             info.unique_types[index].push_back( p );
+        } else if( dynamic_cast<const avatar *>( c ) != nullptr ) {
+            // DDA MP v4.0a-79: the host player (and any other process-local
+            // player character) is an avatar, not an npc, so unique_types
+            // cannot hold it. Keep its name for the compass and legend.
+            mp_compass_avatars[index].push_back( c->get_name() );
         }
     }
     return info;
@@ -1575,6 +1592,12 @@ std::string display::colorized_compass_legend_text( const Character &u, int widt
             }
             name = string_format( "%s %s", name, n->get_name() );
             names.emplace_back( name );
+        }
+    }
+    // DDA MP v4.0a-79: player characters visible to this character.
+    for( const std::vector<std::string> &nv : mp_compass_avatars ) {
+        for( const std::string &nm : nv ) {
+            names.emplace_back( string_format( "%s %s", colorize( "@", c_light_green ), nm ) );
         }
     }
     std::map<const mtype *, int> mlist;
