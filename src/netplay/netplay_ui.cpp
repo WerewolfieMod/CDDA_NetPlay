@@ -846,6 +846,7 @@ static float mp_canvas_th = 0.0f;
 static std::vector<uint8_t> mp_aim_flags;
 static std::vector<std::string> mp_aim_critters;
 static std::vector<int> mp_aim_light;
+static std::vector<uint32_t> mp_aim_glyphs;
 static std::vector<uint8_t> mp_aim_badges;
 static int mp_aim_w = 0;
 static int mp_aim_h = 0;
@@ -1701,6 +1702,30 @@ static void mp_build_client_aim_panel()
     int ty = 1;
     const double dist = std::sqrt( static_cast<double>( mp_throw_dx * mp_throw_dx +
                                    mp_throw_dy * mp_throw_dy ) );
+    // If the cursor is on a character glyph but the target list offset is one
+    // tile off, resolve the nearest character target.
+    if( target_char == nullptr && mp_aim_w > 0 && mp_aim_h > 0 ) {
+        const int cx = mp_aim_w / 2 + mp_throw_dx;
+        const int cy = mp_aim_h / 2 + mp_throw_dy;
+        if( cx >= 0 && cy >= 0 && cx < mp_aim_w && cy < mp_aim_h ) {
+            const size_t cidx = static_cast<size_t>( cy ) * mp_aim_w + cx;
+            if( cidx < mp_aim_glyphs.size() && mp_aim_glyphs[cidx] == '@' ) {
+                int best = 2;
+                for( const netplay::aim_target &t : mp_aim_targets ) {
+                    if( !t.is_character ) {
+                        continue;
+                    }
+                    const int d = std::abs( t.dx - mp_throw_dx ) +
+                                  std::abs( t.dy - mp_throw_dy );
+                    if( d < best ) {
+                        best = d;
+                        target_char = &t;
+                        target_name = t.name;
+                    }
+                }
+            }
+        }
+    }
     int targets_in_range = 0;
     for( const netplay::aim_target &t : mp_aim_targets ) {
         if( t.dx * t.dx + t.dy * t.dy <= mp_throw_range * mp_throw_range ) {
@@ -1851,13 +1876,14 @@ static void mp_draw_aim_panel()
     const float help_w = ImGui::CalcTextSize( help.c_str() ).x;
     const float help_x = px + pw - help_w - cw;
     const ImU32 border = IM_COL32( 190, 190, 190, 255 );
-    dl->AddLine( ImVec2( px, py ), ImVec2( gap_start, py ), border );
-    dl->AddLine( ImVec2( gap_end, py ), ImVec2( px + pw, py ), border );
+    const float top_y = py + ch * 0.5f;
+    dl->AddLine( ImVec2( px, top_y ), ImVec2( gap_start, top_y ), border );
+    dl->AddLine( ImVec2( gap_end, top_y ), ImVec2( px + pw, top_y ), border );
     dl->AddLine( ImVec2( px, py + ph ), ImVec2( help_x + cw * 0.5f, py + ph ), border );
     dl->AddLine( ImVec2( help_x + help_w - cw * 0.5f, py + ph ),
                  ImVec2( px + pw, py + ph ), border );
-    dl->AddLine( ImVec2( px, py ), ImVec2( px, py + ph ), border );
-    dl->AddLine( ImVec2( px + pw, py ), ImVec2( px + pw, py + ph ), border );
+    dl->AddLine( ImVec2( px, top_y ), ImVec2( px, py + ph ), border );
+    dl->AddLine( ImVec2( px + pw, top_y ), ImVec2( px + pw, py + ph ), border );
     for( size_t x = 0; x < mp_aim_title_cells.size(); x++ ) {
         const netplay::sidebar_cell &c = mp_aim_title_cells[x];
         if( c.bg != 0 ) {
@@ -2391,11 +2417,15 @@ void run_view_loop()
                                             std::string() );
                     mp_aim_light.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
                     mp_aim_badges.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
+                    mp_aim_glyphs.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
                     for( size_t ci = 0; ci < snap.tiles.size() &&
                          ci < mp_aim_critters.size(); ci++ ) {
                         mp_aim_critters[ci] = snap.tiles[ci].critter;
                         mp_aim_light[ci] = static_cast<int>( snap.tiles[ci].light );
                         mp_aim_badges[ci] = snap.tiles[ci].critter_badge;
+                    }
+                    for( size_t ci = 0; ci < snap.cells.size() && ci < mp_aim_glyphs.size(); ci++ ) {
+                        mp_aim_glyphs[ci] = snap.cells[ci].glyph;
                     }
                     if( snap.tiles.size() == snap.cells.size() ) {
                         for( size_t ti = 0; ti < snap.tiles.size(); ti++ ) {
