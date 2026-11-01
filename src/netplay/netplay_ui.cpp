@@ -2223,10 +2223,15 @@ void run_view_loop()
                     if( bb.name.empty() ) {
                         continue;
                     }
-                    dl->AddText( ImVec2( x0 + slot * ( mp_list_w * 0.5f ), ly ),
+                    const float slot_x = x0 + slot * ( mp_list_w * 0.5f );
+                    dl->AddText( ImVec2( slot_x, ly ),
                                  cataimgui::ImU32_from_color(
                                      decode_cell_color( static_cast<int>( bb.color ) ) ),
-                                 ( bb.sym + " " + bb.name ).c_str() );
+                                 bb.sym.c_str() );
+                    const float sym_w = ImGui::CalcTextSize( bb.sym.c_str() ).x;
+                    dl->AddText( ImVec2( slot_x + sym_w + cw * 0.5f, ly ),
+                                 IM_COL32( 180, 180, 180, 255 ),
+                                 bb.name.c_str() );
                     ++mp_shown;
                 }
                 ly += ch;

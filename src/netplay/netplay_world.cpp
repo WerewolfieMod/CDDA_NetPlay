@@ -2237,7 +2237,21 @@ void host_note_world_turn()
     // so pay its one turn of speed here — exactly like Character::process_turn
     // does for a processed NPC, and only when it wasn't processed already.
     for( int sid : netplay::host_session_ids() ) {
-        if( npc *av = av_session_npc( sid ); av != nullptr && !av->is_dead_state() ) {
+        shared_ptr_fast<npc> npc_ptr;
+        {
+            const auto sid_it = av_sid_to_npc.find( sid );
+            if( sid_it != av_sid_to_npc.end() ) {
+                npc_ptr = av_find_npc( sid_it->second );
+            }
+        }
+        if( npc_ptr && av_npc_alive( npc_ptr ) && !npc_ptr->is_dead_state() ) {
+            npc *av = npc_ptr.get();
+            // Per-turn state (body temperature, effects, activity, needs) is
+            // normally advanced by the NPC turn pass; an out-of-bubble session
+            // avatar never gets it, so do the base Character pass here with the
+            // bubble anchored on the avatar.
+            g->mp_anchor_map_on( *av, true );
+            av->Character::process_turn();
             // Exactly one turn of move points, never an accumulated stock.
             av_move_pool[sid] = av->get_speed();
             av->set_moves( av_move_pool[sid] );
