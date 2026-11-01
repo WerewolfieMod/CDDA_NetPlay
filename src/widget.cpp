@@ -1007,7 +1007,7 @@ std::string widget::show( const Character &ava, const unsigned int max_width )
         // For normal widgets, get current numeric value and potential maximum,
         // and return a color string rendering of that value in the appropriate style.
         int value = get_var_value( ava );
-        return color_value_string( value, max_width );
+        return color_value_string( ava, value, max_width );
     }
 }
 
@@ -1394,9 +1394,9 @@ std::string widget::color_text_function_string( const Character &ava, unsigned i
     return ret;
 }
 
-std::string widget::color_value_string( int value, int width_max )
+std::string widget::color_value_string( const Character &u, int value, int width_max )
 {
-    std::string val_string = value_string( value, width_max );
+    std::string val_string = value_string( u, value, width_max );
     const nc_color cur_color = value_color( value );
     if( cur_color == c_unset ) {
         return val_string;
@@ -1405,7 +1405,7 @@ std::string widget::color_value_string( int value, int width_max )
     }
 }
 
-std::string widget::value_string( int value, int width_max )
+std::string widget::value_string( const Character &u, int value, int width_max )
 {
     std::string ret;
     // Use the available horizontal space unless widget has an explicit width
@@ -1413,11 +1413,11 @@ std::string widget::value_string( int value, int width_max )
     if( _style == "graph" ) {
         ret += graph( value );
     } else if( _style == "text" ) {
-        ret += text( !_clauses.empty(), w );
+        ret += text( u, !_clauses.empty(), w );
     } else if( _style == "symbol" ) {
         ret += sym( !_clauses.empty() );
     } else if( _style == "legend" ) {
-        ret += sym_text( !_clauses.empty(), w );
+        ret += sym_text( u, !_clauses.empty(), w );
     } else if( _style == "number" ) {
         ret += number( value, !_clauses.empty() );
     } else {
@@ -1494,23 +1494,23 @@ std::string widget::number( int value, bool from_condition ) const
     return from_condition ? number_cond() : string_format( "%d", value );
 }
 
-std::string widget::text( bool from_condition, int width )
+std::string widget::text( const Character &u, bool from_condition, int width )
 {
     if( from_condition ) {
-        return text_cond( false, width );
+        return text_cond( u, false, width );
     }
     return _string.translated();
 }
 
 std::string widget::sym( bool from_condition )
 {
-    return from_condition ? sym_cond() : text( from_condition, 0 );
+    return from_condition ? sym_cond() : text( get_player_character(), from_condition, 0 );
 }
 
-std::string widget::sym_text( bool from_condition, int width )
+std::string widget::sym_text( const Character &u, bool from_condition, int width )
 {
     if( from_condition ) {
-        return sym_text_cond( true, width );
+        return sym_text_cond( u, true, width );
     }
     return _string.translated();
 }
@@ -1539,7 +1539,7 @@ std::string widget::number_cond( enumeration_conjunction join_type ) const
     }, join_type );
 }
 
-std::string widget::text_cond( bool no_join, int width )
+std::string widget::text_cond( const Character &u, bool no_join, int width )
 {
     std::vector<const widget_clause *> wplist = get_clauses();
     if( wplist.empty() ) {
@@ -1553,7 +1553,7 @@ std::string widget::text_cond( bool no_join, int width )
     for( const widget_clause *wp : wplist ) {
         std::string txt = wp->text.translated();
         if( wp->should_parse_tags ) {
-            parse_tags( txt, get_player_character(), get_player_character() );
+            parse_tags( txt, u, u );
         }
         txt = wp->color == c_unset ? txt : colorize(
                   txt, wp->color );
@@ -1591,7 +1591,7 @@ std::string widget::sym_cond( bool no_join, enumeration_conjunction join_type ) 
     }, join_type );
 }
 
-std::string widget::sym_text_cond( bool no_join, int width )
+std::string widget::sym_text_cond( const Character &u, bool no_join, int width )
 {
     std::vector<const widget_clause *> wplist = get_clauses();
     if( wplist.empty() ) {
@@ -1607,7 +1607,7 @@ std::string widget::sym_text_cond( bool no_join, int width )
         std::string s = wp->color == c_unset ? wp->sym : colorize( wp->sym, wp->color );
         std::string txt_str = wp->text.translated();
         if( wp->should_parse_tags ) {
-            parse_tags( txt_str, get_player_character(), get_player_character() );
+            parse_tags( txt_str, u, u );
         }
         std::string txt = string_format( "%s %s", s, txt_str );
         strings.emplace_back( txt );

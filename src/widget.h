@@ -366,9 +366,9 @@ class widget
         void set_default_var_range( const Character &ava );
 
         // Return a color-enhanced value_string
-        std::string color_value_string( int value, int width_max = 0 );
+        std::string color_value_string( const Character &u, int value, int width_max = 0 );
         // Return a string for how a given value will render in the UI
-        std::string value_string( int value, int width_max = 0 );
+        std::string value_string( const Character &u, int value, int width_max = 0 );
         // Return a suitable color for a given value
         nc_color value_color( int value );
 
@@ -377,18 +377,18 @@ class widget
         // Return the numeric value(s) from all true conditional clauses in this widget
         std::string number_cond( enumeration_conjunction join_type = enumeration_conjunction::none ) const;
         // Return the text clause for "text" style
-        std::string text( bool from_condition, int width = 0 );
+        std::string text( const Character &u, bool from_condition, int width = 0 );
         // Return the text clause(s) from all true conditional clauses in this widget
-        std::string text_cond( bool no_join = false, int width = 0 );
+        std::string text_cond( const Character &u, bool no_join = false, int width = 0 );
         // Return the symbol mapped to a given value for "symbol" style
         std::string sym( bool from_condition );
         // Return the symbol(s) from all true conditional clauses in this widget
         std::string sym_cond( bool no_join = true,
                               enumeration_conjunction join_type = enumeration_conjunction::none ) const;
         // Return the text/symbols as list for this widget
-        std::string sym_text( bool from_condition, int width = 0 );
+        std::string sym_text( const Character &u, bool from_condition, int width = 0 );
         // Return the text/symbols from all true conditional clauses in this widget
-        std::string sym_text_cond( bool no_join = true, int width = 0 );
+        std::string sym_text_cond( const Character &u, bool no_join = true, int width = 0 );
         // Return the widgets clause for "layout" style
         std::vector<string_id<widget>> widgets( bool from_condition );
         // Return the widgets from all true conditional clauses in this widget
