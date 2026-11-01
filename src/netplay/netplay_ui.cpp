@@ -9,6 +9,7 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1582,6 +1583,19 @@ static void mp_run_host_inventory( const std::string &text )
                     mp_throw_range = std::max( 1, std::atoi( tr_var.c_str() ) );
                 }
                 mp_throw_active = true;
+                // Same idea as target_ui::choose_initial_target: start on the
+                // nearest visible target in range instead of an arbitrary tile.
+                {
+                    int best = INT_MAX;
+                    for( const netplay::aim_target &t : mp_aim_targets ) {
+                        const int d = std::abs( t.dx ) + std::abs( t.dy );
+                        if( d > 0 && d <= mp_throw_range && d < best ) {
+                            best = d;
+                            mp_throw_dx = t.dx;
+                            mp_throw_dy = t.dy;
+                        }
+                    }
+                }
                 mp_aim_text.clear();
                 mp_client_aim_lines.clear();
                 mp_aim_char.reset();
@@ -1765,7 +1779,7 @@ static void mp_build_client_aim_panel()
         mvwprintz( w, point( 1, ty ), bar.second, bar.first );
         mvwhline( w, point( 4, ty ), c_white, '.',
                   std::max( 0, 5 - utf8_width( bar.first ) ) );
-        trim_and_print( w, point( 6, ty ), wwid - 8,
+        trim_and_print( w, point( 7, ty ), wwid - 9,
                         decode_cell_color( target_char->name_color ),
                         target_char->name );
         ++ty;

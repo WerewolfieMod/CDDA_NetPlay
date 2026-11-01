@@ -2527,7 +2527,7 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
     const dispersion_sources dispersion( you.throwing_dispersion( weapon, target, false ) );
     const tripoint_bub_ms aim_pos = you.pos_bub() +
                                     tripoint_rel_ms( static_cast<int>( range ), 0, 0 );
-    const double aim_cap = ( target != nullptr && sees ) ? 0.0 :
+    const double aim_cap = ( ( target != nullptr || is_character ) && sees ) ? 0.0 :
                            calculate_aim_cap_without_target( you, aim_pos );
     const std::vector<aim_type_prediction> chances = calculate_ranged_chances(
                 ui, you, target_ui::TargetMode::Throw, ctxt, weapon, dispersion, conf,
@@ -2545,7 +2545,7 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
                                   chances.front().steadiness;
         const std::string bar = get_labeled_bar( steadiness, 53,
                                 _( "Steadiness" ), '*' );
-        out.push_back( string_format( "<color_light_gray>%s</color>", bar ) );
+        out.push_back( string_format( "<color_dark_gray>%s</color>", bar ) );
     }
     std::vector<aim_type_prediction> sorted = chances;
     std::sort( sorted.begin(), sorted.end(),
@@ -2554,7 +2554,7 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
     } );
     // Legend first, exactly like print_ranged_chance's non-narrow layout.
     if( !sorted.empty() ) {
-        std::string legend = string_format( "<color_light_gray>%s</color>", _( "Symbols:" ) );
+        std::string legend = string_format( "<color_dark_gray>%s</color>", _( "Symbols:" ) );
         for( const confidence_rating &cr : sorted.front().ratings ) {
             legend += string_format( " <color_%s>%c</color> = %s", cr.color, cr.symbol,
                                      pgettext( "aim_confidence", cr.label.c_str() ) );
