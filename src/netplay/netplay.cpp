@@ -368,6 +368,9 @@ struct netplay_state {
     std::mutex aim_panel_mutex;
     sidebar_frame aim_panel;
     bool have_aim_panel = false;
+    std::mutex aim_targets_mutex;
+    std::vector<aim_target> aim_targets;
+    bool have_aim_targets = false;
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
@@ -1499,13 +1502,43 @@ bool host_send_aim_panel_to_sid( int sid, const sidebar_frame &sb )
     return true;
 }
 
-bool client_aim_panel( sidebar_frame &out )
+bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list )
 {
-    std::lock_guard<std::mutex> lk( state.aim_panel_mutex );
-    if( !state.have_aim_panel ) {
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
         return false;
     }
-    out = state.aim_panel;
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( list.size() ) );
+    for( const aim_target &t : list ) {
+        put_i32( p, t.dx );
+        put_i32( p, t.dy );
+        p.push_back( static_cast<char>( t.is_character ) );
+        p.push_back( static_cast<char>( t.sees_you ) );
+        p.push_back( static_cast<char>( t.name_color ) );
+        put_i32( p, t.attitude );
+        put_i32( p, t.npc_attitude );
+        put_i32( p, t.hp_pct );
+        put_str8( p, t.name );
+        put_str8( p, t.wielded );
+    }
+    if( !send_all( it->second, encode_frame( frame::AIM_TARGETS, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool client_aim_targets( std::vector<aim_target> &out )
+{
+    std::lock_guard<std::mutex> lk( state.aim_targets_mutex );
+    if( !state.have_aim_targets ) {
+        return false;
+    }
+    out = state.aim_targets;
     return true;
 }
 
@@ -1902,6 +1935,31 @@ static void client_run( socket_t sock )
                     state.aim_panel = std::move( sb );
                     state.have_aim_panel = true;
                 }
+            }
+        } else if( op == frame::AIM_TARGETS ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const uint16_t n = r.get_u16();
+            std::vector<aim_target> list;
+            for( uint16_t i = 0; i < n && r.ok; i++ ) {
+                aim_target t;
+                t.dx = r.get_i32();
+                t.dy = r.get_i32();
+                t.is_character = static_cast<uint8_t>( r.get_u8() );
+                t.sees_you = static_cast<uint8_t>( r.get_u8() );
+                t.name_color = static_cast<uint8_t>( r.get_u8() );
+                t.attitude = r.get_i32();
+                t.npc_attitude = r.get_i32();
+                t.hp_pct = r.get_i32();
+                t.name = r.get_str8();
+                t.wielded = r.get_str8();
+                list.push_back( std::move( t ) );
+            }
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.aim_targets_mutex );
+                state.aim_targets = std::move( list );
+                state.have_aim_targets = true;
             }
         } else if( op == frame::SIDEBAR ) {
             reader r;

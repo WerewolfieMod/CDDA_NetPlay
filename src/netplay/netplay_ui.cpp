@@ -854,6 +854,7 @@ static item mp_aim_item;
 static std::vector<std::string> mp_client_aim_lines;
 static std::string mp_char_json_cache;
 static netplay::minimap_frame mp_aim_minimap;
+static std::vector<netplay::aim_target> mp_aim_targets;
 static std::string mp_throw_name;
 static int mp_throw_range = 1;
 static std::string mp_aim_text;
@@ -1672,11 +1673,13 @@ static void mp_build_client_aim_panel()
     // is not in the snapshot; otherwise fall back to the critter type.
     std::string target_name;
     std::string target_id;
-    const netplay::minimap_frame::beacon *target_beacon = nullptr;
-    for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
-        if( b.dx == mp_throw_dx && b.dy == mp_throw_dy && !b.name.empty() ) {
-            target_name = b.name;
-            target_beacon = &b;
+    const netplay::aim_target *target_char = nullptr;
+    for( const netplay::aim_target &t : mp_aim_targets ) {
+        if( t.dx == mp_throw_dx && t.dy == mp_throw_dy ) {
+            target_name = t.name;
+            if( t.is_character ) {
+                target_char = &t;
+            }
             break;
         }
     }
@@ -1699,8 +1702,8 @@ static void mp_build_client_aim_panel()
     const double dist = std::sqrt( static_cast<double>( mp_throw_dx * mp_throw_dx +
                                    mp_throw_dy * mp_throw_dy ) );
     int targets_in_range = 0;
-    for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
-        if( b.dx * b.dx + b.dy * b.dy <= mp_throw_range * mp_throw_range ) {
+    for( const netplay::aim_target &t : mp_aim_targets ) {
+        if( t.dx * t.dx + t.dy * t.dy <= mp_throw_range * mp_throw_range ) {
             ++targets_in_range;
         }
     }
@@ -1711,34 +1714,34 @@ static void mp_build_client_aim_panel()
                                        string_format( _( "Elevation: %d" ), 0 ),
                                        string_format( _( "Targets: %d" ), targets_in_range ) ) );
     ++ty; // blank line after the cursor stats, as in target_ui
-    if( target_beacon != nullptr ) {
-        // Raw NPC facts from the minimap beacon, laid out like npc::print_info.
+    if( target_char != nullptr ) {
+        // Raw NPC facts from the AIM_TARGETS packet, laid out like npc::print_info.
         mvwprintz( w, point( 1, ty++ ), c_light_blue, _( "-----CHARACTER-----" ) );
-        const std::pair<std::string, nc_color> bar = get_hp_bar( target_beacon->hp_pct, 100 );
+        const std::pair<std::string, nc_color> bar = get_hp_bar( target_char->hp_pct, 100 );
         mvwprintz( w, point( 1, ty ), bar.second, bar.first );
         mvwhline( w, point( 4, ty ), c_white, '.',
                   std::max( 0, 5 - utf8_width( bar.first ) ) );
         trim_and_print( w, point( 6, ty ), wwid - 8,
-                        decode_cell_color( target_beacon->name_color ),
-                        target_beacon->name );
+                        decode_cell_color( target_char->name_color ),
+                        target_char->name );
         ++ty;
         const auto att = Creature::get_attitude_ui_data(
-                             static_cast<Creature::Attitude>( target_beacon->attitude ) );
+                             static_cast<Creature::Attitude>( target_char->attitude ) );
         mvwprintz( w, point( 1, ty ), att.second, "%s", att.first.translated() );
         wprintz( w, c_light_gray, ";" );
         wprintz( w, c_white, " %s",
-                 npc_attitude_name( static_cast<npc_attitude>( target_beacon->npc_attitude ) ) );
+                 npc_attitude_name( static_cast<npc_attitude>( target_char->npc_attitude ) ) );
         ++ty;
-        const bool sees_you = target_beacon->sees_you != 0;
+        const bool sees_you = target_char->sees_you != 0;
         print_colored_text( w, point( 1, ty++ ), col, col,
                             string_format( "<color_%s>%s</color>",
                                            sees_you ? "yellow" : "green",
                                            sees_you ? _( "Aware of your presence" ) :
                                            _( "Unaware of you" ) ) );
-        if( !target_beacon->wielded.empty() ) {
+        if( !target_char->wielded.empty() ) {
             print_colored_text( w, point( 1, ty++ ), col, col,
                                 std::string( "<color_light_gray>" ) + _( "Wielding: " ) +
-                                std::string( "</color>" ) + target_beacon->wielded );
+                                std::string( "</color>" ) + target_char->wielded );
         }
     } else if( !target_id.empty() && mp_aim_char ) {
         monster tmp( mtype_id( target_id ), mp_aim_char->pos_bub() );
@@ -1767,7 +1770,8 @@ static void mp_build_client_aim_panel()
                "%s %s", _( "Mouse: LMB: Target, Wheel: Cycle," ), _( "RMB: Fire" ) );
     mvwprintz( w, point( 1, whei - 3 ), c_white,
                "%s %s", string_format( _( "[%s] Cycle targets;" ), "TAB" ),
-               string_format( _( "[%s] %s." ), "f", _( "to throw" ) ) );
+               string_format( _( "[%s] %s." ), "f",
+                              to_translation( "[Hotkey] to throw", "to throw" ).translated() ) );
     mvwprintz( w, point( 1, whei - 2 ), c_white,
                _( "[0] target self; [*] toggle snap-to-target" ) );
 
@@ -1813,9 +1817,21 @@ static void mp_draw_aim_panel()
     dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                        IM_COL32( 0, 0, 0, 255 ) );
     auto is_box_glyph = []( const std::string & s ) {
-        return s.size() >= 3 && static_cast<unsigned char>( s[0] ) == 0xE2 &&
-               ( static_cast<unsigned char>( s[1] ) == 0x94 ||
-                 static_cast<unsigned char>( s[1] ) == 0x95 );
+        if( s.empty() ) {
+            return true;
+        }
+        const unsigned char c = static_cast<unsigned char>( s[0] );
+        if( c >= 0x20 && c < 0x7F ) {
+            return false; // ASCII text/punctuation
+        }
+        if( c == 0xD0 || c == 0xD1 ) {
+            return false; // Cyrillic
+        }
+        if( c == 0xE2 && s.size() >= 3 &&
+            static_cast<unsigned char>( s[1] ) == 0x80 ) {
+            return false; // dashes/quotes
+        }
+        return true; // box drawing / unknown glyph -> skip (tofu)
     };
     // Title sits on the top border, like draw_window_title.
     for( size_t x = 0; x < mp_aim_title_cells.size(); x++ ) {
@@ -1842,7 +1858,10 @@ static void mp_draw_aim_panel()
     // Bottom border label, like draw_help_notice.
     const std::string help = string_format( _( "[%s] show all controls" ), "?" );
     const float hw = ImGui::CalcTextSize( help.c_str() ).x;
-    dl->AddText( ImVec2( px + pw - hw - cw, py + ph - ch ),
+    const float ly = py + ph - ch * 0.8f;
+    dl->AddRectFilled( ImVec2( px + pw - hw - cw - 2, ly - 1 ),
+                       ImVec2( px + pw - cw + 2, ly + ch ), IM_COL32( 0, 0, 0, 255 ) );
+    dl->AddText( ImVec2( px + pw - hw - cw, ly ),
                  IM_COL32( 230, 230, 230, 255 ), help.c_str() );
     dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                  IM_COL32( 190, 190, 190, 255 ) );
@@ -2266,6 +2285,7 @@ void run_view_loop()
                 netplay::client_sidebar( mp_side );
                 netplay::client_minimap( mp_mini_map );
                 mp_aim_minimap = mp_mini_map;
+                netplay::client_aim_targets( mp_aim_targets );
                 {
                     std::string mp_inv;
                     if( netplay::client_inventory( mp_inv ) ) {

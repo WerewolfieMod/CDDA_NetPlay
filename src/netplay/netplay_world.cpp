@@ -1743,6 +1743,70 @@ static void av_send_status( int sid )
                 }
             }
         }
+        // DDA MP: local-frame creature facts for the client aim panel.
+        {
+            std::vector<netplay::aim_target> targets;
+            const tripoint_bub_ms ac = av->pos_bub();
+            auto add_target = [&]( const Creature & cr, bool is_character ) {
+                if( !av->sees( here, cr.pos_bub() ) ) {
+                    return;
+                }
+                const tripoint_bub_ms cp = cr.pos_bub();
+                const int dx = cp.x() - ac.x();
+                const int dy = cp.y() - ac.y();
+                if( std::abs( dx ) > 60 || std::abs( dy ) > 60 ) {
+                    return;
+                }
+                netplay::aim_target t;
+                t.dx = dx;
+                t.dy = dy;
+                t.is_character = is_character ? 1 : 0;
+                t.attitude = static_cast<int32_t>( cr.attitude_to( *av ) );
+                t.npc_attitude = 0;
+                t.sees_you = cr.sees( here, *av ) ? 1 : 0;
+                t.hp_pct = cr.get_hp_max() > 0 ? 100 * cr.get_hp() / cr.get_hp_max() : 0;
+                t.name_color = static_cast<uint8_t>(
+                                   mp_base_color_index( cr.symbol_color() ) );
+                t.name = cr.get_name();
+                if( const npc *n = dynamic_cast<const npc *>( &cr ); n != nullptr ) {
+                    t.is_character = 1;
+                    t.npc_attitude = static_cast<int32_t>( n->get_attitude() );
+                    if( n->is_armed() ) {
+                        t.wielded = n->get_wielded_item()->tname();
+                    }
+                }
+                targets.push_back( std::move( t ) );
+            };
+            for( monster &mon : g->all_monsters() ) {
+                add_target( mon, false );
+            }
+            for( npc &guy : g->all_npcs() ) {
+                if( &guy != av ) {
+                    add_target( guy, true );
+                }
+            }
+            {
+                avatar &host_u = get_avatar();
+                if( host_u.pos_bub() != ac && av->sees( here, host_u.pos_bub() ) ) {
+                    netplay::aim_target t;
+                    t.dx = host_u.pos_bub().x() - ac.x();
+                    t.dy = host_u.pos_bub().y() - ac.y();
+                    t.is_character = 1;
+                    t.attitude = static_cast<int32_t>( host_u.attitude_to( *av ) );
+                    t.sees_you = 1;
+                    t.hp_pct = host_u.get_hp_max() > 0 ?
+                               100 * host_u.get_hp() / host_u.get_hp_max() : 0;
+                    t.name_color = static_cast<uint8_t>(
+                                       mp_base_color_index( host_u.symbol_color() ) );
+                    t.name = host_u.get_name();
+                    if( host_u.is_armed() ) {
+                        t.wielded = host_u.get_wielded_item()->tname();
+                    }
+                    targets.push_back( std::move( t ) );
+                }
+            }
+            netplay::host_send_aim_targets_to_sid( sid, targets );
+        }
         netplay::host_send_minimap_to_sid( sid, mm );
     }
 #endif

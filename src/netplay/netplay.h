@@ -85,6 +85,8 @@ enum class frame : int {
     AIM_INFO_REQ = 35,      ///< client -> host: i32 node, gen, dx, dy
     AIM_INFO = 36,          ///< host -> client: str lines ('\n' separated)
     AIM_PANEL = 37,         ///< host -> client: rendered w_target cells
+    /// DDA MP: local-space creature facts for the client aim panel.
+    AIM_TARGETS = 38,       ///< host -> client: [n]{i32 dx,dy,...}
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -113,6 +115,21 @@ struct minimap_frame {
         std::string wielded;       // tname with colour tags
     };
     std::vector<beacon> beacons;
+};
+
+/// DDA MP: one creature in the session avatar's local frame, raw facts for the
+/// aiming panel (dx/dy are relative to the avatar, not overmap tiles).
+struct aim_target {
+    int dx = 0;
+    int dy = 0;
+    uint8_t is_character = 0;
+    int32_t attitude = 0;
+    int32_t npc_attitude = 0;
+    uint8_t sees_you = 0;
+    int32_t hp_pct = 0;
+    uint8_t name_color = 8;
+    std::string name;
+    std::string wielded;
 };
 
 /// DDA MP v3.9.1: one item-layer sprite the host's tileset draws on a cell
@@ -311,6 +328,10 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 
 void host_broadcast_event( const std::string &text, int msg_type );
 /// DDA MP v4.0a-12: send the overmap minimap block to a session.
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
+/// DDA MP: send local-frame creature facts for the aim panel.
+bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list );
+/// Client side: latest aim target list.
+bool client_aim_targets( std::vector<aim_target> &out );
 /// DDA MP v4.0a-14: send the inventory listing to a session.
 bool host_send_inventory_to_sid( int sid, const std::string &text );
 /// DDA MP v4.0a-18: client sends one inventory action for the given row index.
