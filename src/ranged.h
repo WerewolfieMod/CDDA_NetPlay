@@ -105,7 +105,7 @@ int throw_cost( const Character &c, const item &to_throw );
 
 // check for steadiness for a given pos
 double calc_steadiness( const Character &you, const item &weapon, const tripoint_bub_ms &pos,
-                        double predicted_recoil );
+                        double predicted_recoil, double aim_cap );
 
 double calculate_aim_cap( const Character &you, const tripoint_bub_ms &target );
 

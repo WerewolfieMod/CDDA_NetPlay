@@ -1471,10 +1471,9 @@ double calculate_aim_cap( const Character &you, const tripoint_bub_ms &target )
     return 0.0;
 }
 
-double calc_steadiness( const Character &you, const item &weapon, const tripoint_bub_ms &pos,
-                        double predicted_recoil )
+double calc_steadiness( const Character &you, const item &weapon, const tripoint_bub_ms &/*pos*/,
+                        double predicted_recoil, double min_recoil )
 {
-    const double min_recoil = calculate_aim_cap( you, pos );
     const double effective_recoil = you.most_accurate_aiming_method_limit( weapon );
     const double min_dispersion = std::max( min_recoil, effective_recoil );
     const double steadiness_range = MAX_RECOIL - min_dispersion;
@@ -2047,7 +2046,8 @@ static std::vector<aim_type_prediction> calculate_ranged_chances(
     const target_ui &ui, const Character &you,
     target_ui::TargetMode mode, const input_context &ctxt, const item &weapon,
     const dispersion_sources &dispersion, const std::vector<confidence_rating> &confidence_ratings,
-    const Target_attributes &target, const tripoint_bub_ms &pos, const item_location &load_loc )
+    const Target_attributes &target, const tripoint_bub_ms &pos, double aim_cap,
+    const item_location &load_loc )
 {
     std::vector<aim_type> aim_types { get_default_aim_type() };
     std::vector<aim_type_prediction> aim_outputs;
@@ -2062,7 +2062,8 @@ static std::vector<aim_type_prediction> calculate_ranged_chances(
     recoil_prediction aim_to_selected = predict_recoil( you, weapon, target,
                                         ui.get_sight_dispersion(), ui.get_selected_aim_type(), you.recoil );
 
-    const double selected_steadiness = calc_steadiness( you, weapon, pos, aim_to_selected.recoil );
+    const double selected_steadiness = calc_steadiness( you, weapon, pos,
+                                        aim_to_selected.recoil, aim_cap );
 
     const int throw_moves = throw_cost( you, weapon );
 
@@ -2098,7 +2099,7 @@ static std::vector<aim_type_prediction> calculate_ranged_chances(
             // to the current aim mode's threshold.
             const recoil_prediction aim_to_type = ( aim_type == ui.get_selected_aim_type() ) ? aim_to_selected :
                                                   predict_recoil( you, weapon, target, ui.get_sight_dispersion(), aim_type, you.recoil );
-            prediction.steadiness = calc_steadiness( you, weapon, pos, aim_to_type.recoil );
+            prediction.steadiness = calc_steadiness( you, weapon, pos, aim_to_type.recoil, aim_cap );
         }
 
         // make a copy of the given dispersion, apply the aiming and calculate hit confidence
@@ -2324,9 +2325,10 @@ static int print_aim( const target_ui &ui, Character &you, const catacurses::win
         }
     };
 
+    const double aim_cap = calculate_aim_cap( you, pos );
     const std::vector<aim_type_prediction> aim_chances = calculate_ranged_chances( ui, you,
             target_ui::TargetMode::Fire, ctxt, weapon, dispersion, confidence_config,
-            Target_attributes( you.pos_bub(), pos ), pos, load_loc );
+            Target_attributes( you.pos_bub(), pos ), pos, aim_cap, load_loc );
 
     int time = RAS_time( you, load_loc );
 
@@ -2369,9 +2371,10 @@ static void draw_throw_aim( const target_ui &ui, const Character &you, const cat
                                   here.ambient_light_at( target_pos ),
                                   you.sees( here, target_pos ) );
 
+    const double aim_cap = calculate_aim_cap( you, target_pos );
     const std::vector<aim_type_prediction> aim_chances = calculate_ranged_chances( ui, you,
             throwing_target_mode, ctxt, weapon, dispersion, confidence_config, attributes, target_pos,
-            item_location() );
+            aim_cap, item_location() );
 
     text_y = print_ranged_chance( w, text_y, aim_chances, 0 );
 }
@@ -2424,7 +2427,8 @@ std::vector<std::string> netplay_throw_aim_lines( Character &you, item &weapon,
     const dispersion_sources dispersion( you.throwing_dispersion( weapon, target, false ) );
     const std::vector<aim_type_prediction> chances = calculate_ranged_chances(
                 ui, you, target_ui::TargetMode::Throw, ctxt, weapon, dispersion,
-                confidence_config, attributes, target_pos, item_location() );
+                confidence_config, attributes, target_pos,
+                calculate_aim_cap( you, target_pos ), item_location() );
     for( const aim_type_prediction &p : chances ) {
         std::string line = string_format( "<color_light_gray>%s:</color>", p.name );
         for( const aim_type_prediction::aim_confidence &c : p.chances ) {
@@ -2520,10 +2524,13 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
     ctxt.set_iso( true );
     ctxt.register_action( "FIRE" );
     const dispersion_sources dispersion( you.throwing_dispersion( weapon, target, false ) );
+    const tripoint_bub_ms aim_pos = you.pos_bub() +
+                                    tripoint_rel_ms( static_cast<int>( range ), 0, 0 );
+    const double aim_cap = ( target != nullptr && sees ) ? 0.0 :
+                           calculate_aim_cap_without_target( you, aim_pos );
     const std::vector<aim_type_prediction> chances = calculate_ranged_chances(
                 ui, you, target_ui::TargetMode::Throw, ctxt, weapon, dispersion, conf,
-                attributes, you.pos_bub() + tripoint_rel_ms( static_cast<int>( range ), 0, 0 ),
-                item_location() );
+                attributes, aim_pos, aim_cap, item_location() );
     out.push_back( string_format( "<color_light_gray>%s</color>",
                                   string_format( _( "Range: %d/%d" ),
                                           static_cast<int>( range ),
