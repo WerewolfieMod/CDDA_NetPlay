@@ -456,7 +456,7 @@ class target_ui
         void draw_terrain_overlay();
 
         // Draw aiming window
-        void draw_ui_window();
+        void draw_ui_window( bool refresh = true );
 
         // Generate ui window title
         std::string uitext_title() const;
@@ -4261,7 +4261,7 @@ void target_ui::draw_terrain_overlay()
     }
 }
 
-void target_ui::draw_ui_window()
+void target_ui::draw_ui_window( bool refresh )
 {
     // Clear target window and make it non-transparent.
     int width = getmaxx( w_target );
@@ -4311,7 +4311,9 @@ void target_ui::draw_ui_window()
         draw_controls_list( text_y );
     }
 
-    wnoutrefresh( w_target );
+    if( refresh ) {
+        wnoutrefresh( w_target );
+    }
 }
 
 catacurses::window target_ui::netplay_panel( const tripoint_bub_ms &pos )
@@ -4319,7 +4321,7 @@ catacurses::window target_ui::netplay_panel( const tripoint_bub_ms &pos )
     init_window_and_input();
     src = you->pos_bub();
     set_cursor_pos( pos );
-    draw_ui_window();
+    draw_ui_window( false );
     return w_target;
 }
 

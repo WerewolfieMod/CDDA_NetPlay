@@ -851,6 +851,7 @@ static std::unique_ptr<npc> mp_aim_char;
 static item mp_aim_item;
 static std::vector<std::string> mp_client_aim_lines;
 static std::string mp_char_json_cache;
+static netplay::minimap_frame mp_aim_minimap;
 static std::string mp_throw_name;
 static int mp_throw_range = 1;
 static std::string mp_aim_text;
@@ -1658,12 +1659,19 @@ static void mp_draw_aim_panel()
     // Client-side target focus: the snapshot carries the creature id per cell,
     // so this line updates even while the host is busy in its own UI.
     std::string target_name;
+    for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
+        if( b.dx == mp_throw_dx && b.dy == mp_throw_dy && !b.name.empty() ) {
+            target_name = b.name;
+            break;
+        }
+    }
     if( mp_aim_w > 0 && mp_aim_h > 0 ) {
         const int tx = mp_aim_w / 2 + mp_throw_dx;
         const int ty = mp_aim_h / 2 + mp_throw_dy;
         if( tx >= 0 && ty >= 0 && tx < mp_aim_w && ty < mp_aim_h ) {
             const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
-            if( idx < mp_aim_critters.size() && !mp_aim_critters[idx].empty() ) {
+            if( target_name.empty() && idx < mp_aim_critters.size() &&
+                !mp_aim_critters[idx].empty() ) {
                 target_name = mtype_id( mp_aim_critters[idx] ).obj().nname();
             }
         }
@@ -2117,6 +2125,7 @@ void run_view_loop()
                 // Host-rendered panels (preferred: identical look).
                 netplay::client_sidebar( mp_side );
                 netplay::client_minimap( mp_mini_map );
+                mp_aim_minimap = mp_mini_map;
                 {
                     std::string mp_inv;
                     if( netplay::client_inventory( mp_inv ) ) {
@@ -2717,6 +2726,14 @@ void run_view_loop()
                     mp_throw_active = false;
                     mp_aim_text.clear();
                     mp_have_aim_panel = false;
+                    continue;
+                }
+                if( mp_key == '0' ) { // host TARGET: CENTER -> target self
+                    mp_throw_dx = 0;
+                    mp_throw_dy = 0;
+                    mp_client_aim_recalc();
+                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
+                                                   mp_throw_dx, mp_throw_dy );
                     continue;
                 }
                 if( action == "UP" ) {
