@@ -1674,7 +1674,14 @@ static void mp_build_client_aim_panel()
     std::string target_name;
     std::string target_id;
     const netplay::aim_target *target_char = nullptr;
+    const netplay::aim_target *best_target = nullptr;
+    int best_dist = 3;
     for( const netplay::aim_target &t : mp_aim_targets ) {
+        const int d = std::abs( t.dx - mp_throw_dx ) + std::abs( t.dy - mp_throw_dy );
+        if( d < best_dist ) {
+            best_dist = d;
+            best_target = &t;
+        }
         if( t.dx == mp_throw_dx && t.dy == mp_throw_dy ) {
             target_name = t.name;
             if( t.is_character ) {
@@ -1682,6 +1689,14 @@ static void mp_build_client_aim_panel()
             }
             break;
         }
+    }
+    if( target_char == nullptr && best_target != nullptr && best_target->is_character ) {
+        // One-tile tolerance: snapshot centre and avatar cell can differ by a
+        // tile depending on the frame offset.
+        target_char = best_target;
+        target_name = best_target->name;
+    } else if( target_name.empty() && best_target != nullptr ) {
+        target_name = best_target->name;
     }
     if( mp_aim_w > 0 && mp_aim_h > 0 ) {
         const int tx = mp_aim_w / 2 + mp_throw_dx;
@@ -1858,7 +1873,7 @@ static void mp_draw_aim_panel()
     // Bottom border label, like draw_help_notice.
     const std::string help = string_format( _( "[%s] show all controls" ), "?" );
     const float hw = ImGui::CalcTextSize( help.c_str() ).x;
-    const float ly = py + ph - ch * 0.8f;
+    const float ly = py + ph - ch * 0.5f;
     dl->AddRectFilled( ImVec2( px + pw - hw - cw - 2, ly - 1 ),
                        ImVec2( px + pw - cw + 2, ly + ch ), IM_COL32( 0, 0, 0, 255 ) );
     dl->AddText( ImVec2( px + pw - hw - cw, ly ),

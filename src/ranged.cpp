@@ -2527,7 +2527,7 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
                                           static_cast<int>( range ),
                                           max_range ) ) );
     if( !chances.empty() ) {
-        const std::string bar = get_labeled_bar( chances.front().steadiness, 50,
+        const std::string bar = get_labeled_bar( chances.front().steadiness, 53,
                                 _( "Steadiness" ), '*' );
         out.push_back( string_format( "<color_light_gray>%s</color>", bar ) );
     }
