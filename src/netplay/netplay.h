@@ -103,6 +103,14 @@ struct minimap_frame {
         uint32_t color = 0;
         std::string name;
         std::string sym; // display symbol ("@" for characters, monster glyph)
+        /// DDA MP: raw creature facts for the client's aiming panel.
+        uint8_t is_character = 0;
+        int32_t attitude = 0;      // Creature::Attitude
+        int32_t npc_attitude = 0;  // npc_attitude
+        uint8_t sees_you = 0;
+        int32_t hp_pct = 0;
+        uint8_t name_color = 8;    // base-16 palette index
+        std::string wielded;       // tname with colour tags
     };
     std::vector<beacon> beacons;
 };

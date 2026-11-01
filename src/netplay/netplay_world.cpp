@@ -1672,9 +1672,19 @@ static void av_send_status( int sid )
             if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
                 const monster_attitude matt = mon.attitude( av );
                 const bool hostile = matt == MATT_ATTACK || matt == MATT_FOLLOW;
-                mm.beacons.push_back( { bx, by, static_cast<uint32_t>(
-                                           hostile ? 1 : mp_base_color_index( mon.symbol_color() ) ),
-                                        mon.get_name(), mon.symbol() } );
+                minimap_frame::beacon be;
+                be.dx = bx;
+                be.dy = by;
+                be.color = static_cast<uint32_t>( hostile ? 1 :
+                                                mp_base_color_index( mon.symbol_color() ) );
+                be.name = mon.get_name();
+                be.sym = mon.symbol();
+                be.is_character = 0;
+                be.attitude = static_cast<int32_t>( mon.attitude_to( *av ) );
+                be.sees_you = mon.sees( here, *av ) ? 1 : 0;
+                be.hp_pct = mon.get_hp_max() > 0 ? 100 * mon.get_hp() / mon.get_hp_max() : 0;
+                be.name_color = static_cast<uint8_t>( mp_base_color_index( mon.symbol_color() ) );
+                mm.beacons.push_back( std::move( be ) );
             }
         }
         for( npc &guy : g->all_npcs() ) {
@@ -1685,9 +1695,22 @@ static void av_send_status( int sid )
             const int bx = mp.x() - center.x();
             const int by = mp.y() - center.y();
             if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
-                mm.beacons.push_back( { bx, by,
-                                        static_cast<uint32_t>( mp_base_color_index( guy.symbol_color() ) ),
-                                        guy.get_name(), "@" } );
+                minimap_frame::beacon be;
+                be.dx = bx;
+                be.dy = by;
+                be.color = static_cast<uint32_t>( mp_base_color_index( guy.symbol_color() ) );
+                be.name = guy.get_name();
+                be.sym = "@";
+                be.is_character = 1;
+                be.attitude = static_cast<int32_t>( guy.attitude_to( *av ) );
+                be.npc_attitude = static_cast<int32_t>( guy.get_attitude() );
+                be.sees_you = guy.sees( here, *av ) ? 1 : 0;
+                be.hp_pct = guy.get_hp_max() > 0 ? 100 * guy.get_hp() / guy.get_hp_max() : 0;
+                be.name_color = static_cast<uint8_t>( mp_base_color_index( guy.symbol_color() ) );
+                if( guy.is_armed() ) {
+                    be.wielded = guy.get_wielded_item()->tname();
+                }
+                mm.beacons.push_back( std::move( be ) );
             }
         }
         // The host player is an avatar, not an NPC — add it explicitly.
@@ -1698,9 +1721,25 @@ static void av_send_status( int sid )
                 const int bx = mp.x() - center.x();
                 const int by = mp.y() - center.y();
                 if( std::abs( bx ) <= MP_R && std::abs( by ) <= MP_R ) {
-                    mm.beacons.push_back( { bx, by, static_cast<uint32_t>(
-                                               mp_base_color_index( host_u.symbol_color() ) ),
-                                            host_u.get_name(), "@" } );
+                    minimap_frame::beacon be;
+                    be.dx = bx;
+                    be.dy = by;
+                    be.color = static_cast<uint32_t>(
+                                   mp_base_color_index( host_u.symbol_color() ) );
+                    be.name = host_u.get_name();
+                    be.sym = "@";
+                    be.is_character = 1;
+                    be.attitude = static_cast<int32_t>( host_u.attitude_to( *av ) );
+                    be.npc_attitude = 0;
+                    be.sees_you = 1;
+                    be.hp_pct = host_u.get_hp_max() > 0 ?
+                                100 * host_u.get_hp() / host_u.get_hp_max() : 0;
+                    be.name_color = static_cast<uint8_t>(
+                                        mp_base_color_index( host_u.symbol_color() ) );
+                    if( host_u.is_armed() ) {
+                        be.wielded = host_u.get_wielded_item()->tname();
+                    }
+                    mm.beacons.push_back( std::move( be ) );
                 }
             }
         }

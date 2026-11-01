@@ -1623,6 +1623,7 @@ static void mp_run_host_inventory( const std::string &text )
  * target info, steadiness bar and chances match cell for cell. */
 static netplay::sidebar_frame mp_aim_panel;
 static bool mp_have_aim_panel = false;
+static std::vector<netplay::sidebar_cell> mp_aim_title_cells;
 
 static void mp_build_client_aim_panel();
 static void mp_client_aim_recalc()
@@ -1664,8 +1665,7 @@ static void mp_build_client_aim_panel()
     draw_border( w );
     mvwprintz( w, point( 2, 0 ), c_white, "< " );
     trim_and_print( w, point( 4, 0 ), wwid - 7, c_red,
-                    string_format( _( "Throwing %s" ),
-                                   remove_color_tags( mp_throw_name ) ) );
+                    string_format( _( "Throwing %s" ), mp_throw_name ) );
     wprintz( w, c_white, " >" );
 
     // Target name: minimap beacons cover the host and creatures whose cell id
@@ -1710,11 +1710,36 @@ static void mp_build_client_aim_panel()
                                                static_cast<int>( dist ), mp_throw_range ),
                                        string_format( _( "Elevation: %d" ), 0 ),
                                        string_format( _( "Targets: %d" ), targets_in_range ) ) );
+    ++ty; // blank line after the cursor stats, as in target_ui
     if( target_beacon != nullptr ) {
-        // Player/NPC target: use the game's own character info block.
-        npc tmp;
-        tmp.name = target_name;
-        ty = tmp.print_info( w, ty, 6, 1 );
+        // Raw NPC facts from the minimap beacon, laid out like npc::print_info.
+        mvwprintz( w, point( 1, ty++ ), c_light_blue, _( "-----CHARACTER-----" ) );
+        const std::pair<std::string, nc_color> bar = get_hp_bar( target_beacon->hp_pct, 100 );
+        mvwprintz( w, point( 1, ty ), bar.second, bar.first );
+        mvwhline( w, point( 4, ty ), c_white, '.',
+                  std::max( 0, 5 - utf8_width( bar.first ) ) );
+        trim_and_print( w, point( 6, ty ), wwid - 8,
+                        decode_cell_color( target_beacon->name_color ),
+                        target_beacon->name );
+        ++ty;
+        const auto att = Creature::get_attitude_ui_data(
+                             static_cast<Creature::Attitude>( target_beacon->attitude ) );
+        mvwprintz( w, point( 1, ty ), att.second, "%s", att.first.translated() );
+        wprintz( w, c_light_gray, ";" );
+        wprintz( w, c_white, " %s",
+                 npc_attitude_name( static_cast<npc_attitude>( target_beacon->npc_attitude ) ) );
+        ++ty;
+        const bool sees_you = target_beacon->sees_you != 0;
+        print_colored_text( w, point( 1, ty++ ), col, col,
+                            string_format( "<color_%s>%s</color>",
+                                           sees_you ? "yellow" : "green",
+                                           sees_you ? _( "Aware of your presence" ) :
+                                           _( "Unaware of you" ) ) );
+        if( !target_beacon->wielded.empty() ) {
+            print_colored_text( w, point( 1, ty++ ), col, col,
+                                std::string( "<color_light_gray>" ) + _( "Wielding: " ) +
+                                std::string( "</color>" ) + target_beacon->wielded );
+        }
     } else if( !target_id.empty() && mp_aim_char ) {
         monster tmp( mtype_id( target_id ), mp_aim_char->pos_bub() );
         ty = tmp.print_info( w, ty, 6, 1 );
@@ -1739,26 +1764,31 @@ static void mp_build_client_aim_panel()
     mvwprintz( w, point( 1, whei - 5 ), c_white,
                _( "Move cursor with directional keys" ) );
     mvwprintz( w, point( 1, whei - 4 ), c_white,
-               _( "Mouse: LMB: Target, Wheel: Cycle, RMB: Throw" ) );
+               "%s %s", _( "Mouse: LMB: Target, Wheel: Cycle," ), _( "RMB: Fire" ) );
     mvwprintz( w, point( 1, whei - 3 ), c_white,
-               _( "[TAB] Cycle targets; [f] throw." ) );
+               "%s %s", string_format( _( "[%s] Cycle targets;" ), "TAB" ),
+               string_format( _( "[%s] %s." ), "f", _( "to throw" ) ) );
     mvwprintz( w, point( 1, whei - 2 ), c_white,
                _( "[0] target self; [*] toggle snap-to-target" ) );
 
     // Send only the interior; the client paints its own border (ACS glyphs
     // are not in the client font).
     mp_aim_panel.width = wwid - 2;
-    mp_aim_panel.height = whei - 1; // interior + title row
+    mp_aim_panel.height = whei - 2; // interior only; title goes on the border
     mp_aim_panel.cells.assign(
         static_cast<size_t>( mp_aim_panel.width ) * mp_aim_panel.height, {} );
     cata_cursesport::WINDOW *wraw = w.get<cata_cursesport::WINDOW>();
-    mp_aim_panel.cells[0].text = "< " + remove_color_tags( mp_throw_name ) + " >";
-    mp_aim_panel.cells[0].color = 1;
+    mp_aim_title_cells.assign( static_cast<size_t>( mp_aim_panel.width ), {} );
+    for( int x = 0; x < wwid - 2; x++ ) {
+        const cata_cursesport::cursecell &raw = wraw->line[0].chars[x + 1];
+        mp_aim_title_cells[static_cast<size_t>( x )].text = raw.ch;
+        mp_aim_title_cells[static_cast<size_t>( x )].color = static_cast<int>( raw.FG );
+    }
     for( int y = 0; y < whei - 2; y++ ) {
         for( int x = 0; x < wwid - 2; x++ ) {
             const cata_cursesport::cursecell &raw = wraw->line[y + 1].chars[x + 1];
             netplay::sidebar_cell &c = mp_aim_panel.cells[
-                                           static_cast<size_t>( y + 1 ) * mp_aim_panel.width + x];
+                                           static_cast<size_t>( y ) * mp_aim_panel.width + x];
             c.text = raw.ch;
             c.color = static_cast<int>( raw.FG );
         }
@@ -1782,6 +1812,21 @@ static void mp_draw_aim_panel()
     const float py = 0.0f;
     dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                        IM_COL32( 0, 0, 0, 255 ) );
+    auto is_box_glyph = []( const std::string & s ) {
+        return s.size() >= 3 && static_cast<unsigned char>( s[0] ) == 0xE2 &&
+               ( static_cast<unsigned char>( s[1] ) == 0x94 ||
+                 static_cast<unsigned char>( s[1] ) == 0x95 );
+    };
+    // Title sits on the top border, like draw_window_title.
+    for( size_t x = 0; x < mp_aim_title_cells.size(); x++ ) {
+        const netplay::sidebar_cell &c = mp_aim_title_cells[x];
+        if( c.text.empty() || c.text == " " || is_box_glyph( c.text ) ) {
+            continue;
+        }
+        dl->AddText( ImVec2( px + ( static_cast<float>( x ) + 1 ) * cw, py ),
+                     cataimgui::ImU32_from_color( decode_cell_color( c.color ) ),
+                     c.text.c_str() );
+    }
     for( int row = 0; row < mp_aim_panel.height; row++ ) {
         for( int col = 0; col < mp_aim_panel.width; col++ ) {
             const netplay::sidebar_cell &c = mp_aim_panel.cells[
@@ -1794,6 +1839,11 @@ static void mp_draw_aim_panel()
                          c.text.c_str() );
         }
     }
+    // Bottom border label, like draw_help_notice.
+    const std::string help = string_format( _( "[%s] show all controls" ), "?" );
+    const float hw = ImGui::CalcTextSize( help.c_str() ).x;
+    dl->AddText( ImVec2( px + pw - hw - cw, py + ph - ch ),
+                 IM_COL32( 230, 230, 230, 255 ), help.c_str() );
     dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                  IM_COL32( 190, 190, 190, 255 ) );
 }

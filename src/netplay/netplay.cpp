@@ -1323,6 +1323,13 @@ bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
         put_u32( p, b.color );
         put_str8( p, b.name );
         put_str8( p, b.sym );
+        p.push_back( static_cast<char>( b.is_character ) );
+        p.push_back( static_cast<char>( b.sees_you ) );
+        p.push_back( static_cast<char>( b.name_color ) );
+        put_i32( p, b.attitude );
+        put_i32( p, b.npc_attitude );
+        put_i32( p, b.hp_pct );
+        put_str8( p, b.wielded );
     }
     if( !send_all( it->second, encode_frame( frame::MINIMAP, p ) ) ) {
         close_socket( it->second );
@@ -1956,6 +1963,13 @@ static void client_run( socket_t sock )
                     b.color = r.get_u32();
                     b.name = r.get_str8();
                     b.sym = r.get_str8();
+                    b.is_character = static_cast<uint8_t>( r.get_u8() );
+                    b.sees_you = static_cast<uint8_t>( r.get_u8() );
+                    b.name_color = static_cast<uint8_t>( r.get_u8() );
+                    b.attitude = r.get_i32();
+                    b.npc_attitude = r.get_i32();
+                    b.hp_pct = r.get_i32();
+                    b.wielded = r.get_str8();
                     mm.beacons.push_back( b );
                 }
                 if( r.ok ) {
