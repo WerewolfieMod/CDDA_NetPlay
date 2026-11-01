@@ -846,6 +846,7 @@ static float mp_canvas_th = 0.0f;
 static std::vector<uint8_t> mp_aim_flags;
 static std::vector<std::string> mp_aim_critters;
 static std::vector<int> mp_aim_light;
+static std::vector<uint8_t> mp_aim_badges;
 static int mp_aim_w = 0;
 static int mp_aim_h = 0;
 static std::unique_ptr<npc> mp_aim_char;
@@ -1376,6 +1377,9 @@ static void mp_run_host_inventory( const std::string &text )
             it.set_flag( flag_FILTHY );
         }
         it.active = e.active;
+        if( e.throw_range > 0 ) {
+            it.set_var( "mp_throw_range", e.throw_range );
+        }
         while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
             item child = build();
             pocket_type pk = pocket_type::CONTAINER;
@@ -1569,8 +1573,11 @@ static void mp_run_host_inventory( const std::string &text )
                 mp_throw_gen = pkt.header.generation;
                 mp_throw_dx = 1;
                 mp_throw_dy = 0;
-                mp_throw_name = it.display_name();
+                mp_throw_name = it.tname();
                 mp_throw_range = std::max( 1, viewer.throw_range( it ) );
+                if( it.get_var( "mp_throw_range", 0.0 ) > 0.0 ) {
+                    mp_throw_range = static_cast<int>( it.get_var( "mp_throw_range", 0.0 ) );
+                }
                 mp_throw_active = true;
                 mp_aim_text.clear();
                 mp_client_aim_lines.clear();
@@ -1638,7 +1645,7 @@ static void mp_client_aim_recalc()
                                    mp_throw_dy * mp_throw_dy ) );
     mp_client_aim_lines = target_handler::netplay_throw_aim_client(
                               *mp_aim_char, mp_aim_item, critter, range,
-                              light * 50.0f, sees );
+                              mp_throw_range, light * 50.0f, sees );
     mp_build_client_aim_panel();
 }
 
@@ -1665,9 +1672,11 @@ static void mp_build_client_aim_panel()
     // is not in the snapshot; otherwise fall back to the critter type.
     std::string target_name;
     std::string target_id;
+    const netplay::minimap_frame::beacon *target_beacon = nullptr;
     for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
         if( b.dx == mp_throw_dx && b.dy == mp_throw_dy && !b.name.empty() ) {
             target_name = b.name;
+            target_beacon = &b;
             break;
         }
     }
@@ -1687,33 +1696,54 @@ static void mp_build_client_aim_panel()
 
     nc_color col = c_light_gray;
     int ty = 1;
-    if( !target_id.empty() && mp_aim_char ) {
-        // Use the game's own creature info block (name, attitude, sees you,
-        // wielded item) exactly like target_ui's panel_target_info.
+    const double dist = std::sqrt( static_cast<double>( mp_throw_dx * mp_throw_dx +
+                                   mp_throw_dy * mp_throw_dy ) );
+    int targets_in_range = 0;
+    for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
+        if( b.dx * b.dx + b.dy * b.dy <= mp_throw_range * mp_throw_range ) {
+            ++targets_in_range;
+        }
+    }
+    print_colored_text( w, point( 1, ty++ ), col, col,
+                        string_format( "<color_light_gray>%s  %s  %s</color>",
+                                       string_format( _( "Range: %d/%d" ),
+                                               static_cast<int>( dist ), mp_throw_range ),
+                                       string_format( _( "Elevation: %d" ), 0 ),
+                                       string_format( _( "Targets: %d" ), targets_in_range ) ) );
+    if( target_beacon != nullptr ) {
+        // Player/NPC target: use the game's own character info block.
+        npc tmp;
+        tmp.name = target_name;
+        ty = tmp.print_info( w, ty, 6, 1 );
+    } else if( !target_id.empty() && mp_aim_char ) {
         monster tmp( mtype_id( target_id ), mp_aim_char->pos_bub() );
         ty = tmp.print_info( w, ty, 6, 1 );
-    } else if( !target_name.empty() && ty < whei - 3 ) {
+    } else if( !target_name.empty() && ty < whei - 4 ) {
         print_colored_text( w, point( 1, ty++ ), col, col,
                             string_format( "<color_white>%s %s</color>",
                                            _( "Target:" ), target_name ) );
     }
-    for( const std::string &line : mp_client_aim_lines ) {
-        if( ty >= whei - 4 ) {
+    for( size_t li = 1; li < mp_client_aim_lines.size(); li++ ) {
+        if( ty >= whei - 6 ) {
             break;
         }
-        print_colored_text( w, point( 1, ty++ ), col, col, line );
+        print_colored_text( w, point( 1, ty++ ), col, col, mp_client_aim_lines[li] );
     }
-    if( ty < whei - 3 ) {
+    if( ty < whei - 5 ) {
         print_colored_text( w, point( 1, ty++ ), col, col,
                             string_format( "%s * = %s + = %s | = %s", _( "Symbols:" ),
                                            pgettext( "aim_confidence", "Great" ),
                                            pgettext( "aim_confidence", "Normal" ),
                                            pgettext( "aim_confidence", "Graze" ) ) );
     }
-    mvwprintz( w, point( 1, whei - 3 ), c_white,
+    mvwprintz( w, point( 1, whei - 5 ), c_white,
                _( "Move cursor with directional keys" ) );
+    mvwprintz( w, point( 1, whei - 4 ), c_white,
+               _( "Mouse: LMB: Target, Wheel: Cycle, RMB: Throw" ) );
+    mvwprintz( w, point( 1, whei - 3 ), c_white,
+               _( "[TAB] Cycle targets; [f] throw." ) );
     mvwprintz( w, point( 1, whei - 2 ), c_white,
-               _( "[f] throw   [0] target self   [Esc] cancel" ) );
+               _( "[0] target self; [*] toggle snap-to-target" ) );
 
     // Send only the interior; the client paints its own border (ACS glyphs
     // are not in the client font).
@@ -2260,10 +2290,12 @@ void run_view_loop()
                     mp_aim_critters.assign( static_cast<size_t>( snap.width ) * snap.height,
                                             std::string() );
                     mp_aim_light.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
+                    mp_aim_badges.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
                     for( size_t ci = 0; ci < snap.tiles.size() &&
                          ci < mp_aim_critters.size(); ci++ ) {
                         mp_aim_critters[ci] = snap.tiles[ci].critter;
                         mp_aim_light[ci] = static_cast<int>( snap.tiles[ci].light );
+                        mp_aim_badges[ci] = snap.tiles[ci].critter_badge;
                     }
                     if( snap.tiles.size() == snap.cells.size() ) {
                         for( size_t ti = 0; ti < snap.tiles.size(); ti++ ) {

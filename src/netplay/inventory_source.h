@@ -48,6 +48,7 @@ struct inv_entry_view {
     int damage = 0;             // raw item damage, keeps display_name identical
     bool filthy = false;
     bool active = false;
+    int throw_range = 0;        // host Character::throw_range(item)
 };
 
 /// Header numbers shown above the host inventory (volume/weight/space).
@@ -163,6 +164,7 @@ class character_inventory_source : public inventory_source
                 e.damage = it.damage();
                 e.filthy = it.is_filthy();
                 e.active = it.active;
+                e.throw_range = u.throw_range( it );
                 const item_category &cat = it.get_category_shallow();
                 e.category = cat.name_header();
                 e.category_id = cat.get_id().str();
@@ -281,6 +283,8 @@ inline std::string serialize_inv_entries( const std::vector<inv_entry_view> &ent
         out += inv_wire::field( e.filthy ? 1 : 0 );
         out += inv_wire::sep;
         out += inv_wire::field( e.active ? 1 : 0 );
+        out += inv_wire::sep;
+        out += inv_wire::field( e.throw_range );
         out += '\n';
     }
     return out;
@@ -346,6 +350,9 @@ inline std::vector<inv_entry_view> parse_inv_entries( const std::string &text )
         }
         if( f.size() > 19 ) {
             e.active = std::atoi( f[19].c_str() ) != 0;
+        }
+        if( f.size() > 20 ) {
+            e.throw_range = std::atoi( f[20].c_str() );
         }
         out.push_back( std::move( e ) );
     }

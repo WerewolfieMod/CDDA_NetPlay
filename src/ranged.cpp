@@ -2488,7 +2488,7 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
 }
 
 std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
-        const std::string &mtype, double range, float ambient_light, bool sees )
+        const std::string &mtype, double range, int max_range, float ambient_light, bool sees )
 {
     std::vector<std::string> out;
     std::unique_ptr<monster> critter;
@@ -2525,29 +2525,41 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
     out.push_back( string_format( "<color_light_gray>%s</color>",
                                   string_format( _( "Range: %d/%d" ),
                                           static_cast<int>( range ),
-                                          static_cast<int>( you.throw_range( weapon ) ) ) ) );
+                                          max_range ) ) );
     if( !chances.empty() ) {
-        const std::string bar = get_labeled_bar( chances.front().steadiness, 53,
+        const std::string bar = get_labeled_bar( chances.front().steadiness, 50,
                                 _( "Steadiness" ), '*' );
         out.push_back( string_format( "<color_light_gray>%s</color>", bar ) );
     }
     for( const aim_type_prediction &p : chances ) {
-        std::string line = string_format( "<color_light_gray>%s:</color>", p.name );
+        std::string line = string_format( "<color_white>[%s]</color> <color_light_gray>%s</color>"
+                                          " <color_light_gray>|</color> <color_light_blue>%s %d</color>",
+                                          p.hotkey, p.name, _( "Moves" ), p.moves );
+        out.push_back( line );
+        std::string bar = "<color_light_gray>[</color>";
         for( const aim_type_prediction::aim_confidence &c : p.chances ) {
             const char *col = "light_gray";
+            char sym = '+';
             if( c.label == "Great" ) {
                 col = "green";
+                sym = '*';
             } else if( c.label == "Graze" ) {
                 col = "magenta";
+                sym = '|';
             } else if( c.label == "Miss" ) {
                 col = "dark_gray";
+                sym = '.';
             } else if( c.label == "Hit" ) {
                 col = "white";
+                sym = '*';
             }
-            line += string_format( " <color_%s>%s %d%%</color>", col, c.label, c.chance );
+            const int n = std::min( 50, c.chance / 4 );
+            bar += string_format( "<color_%s>", col );
+            bar.append( static_cast<size_t>( n ), sym );
+            bar += "</color>";
         }
-        line += string_format( " <color_light_blue>(%d)</color>", p.moves );
-        out.push_back( line );
+        bar += "<color_light_gray>]</color>";
+        out.push_back( bar );
     }
     return out;
 }
