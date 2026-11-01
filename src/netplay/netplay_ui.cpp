@@ -2210,17 +2210,26 @@ void run_view_loop()
             // DDA MP v4.0a-11: the client's own message log, under the panels.
             float ly = draw_y * ch;
             // DDA MP v4.0a-13: creatures this character can see (own list).
+            // The host prints two entries per row; do the same.
             int mp_shown = 0;
-            for( const minimap_frame::beacon &bb : mp_mini_map.beacons ) {
-                if( bb.name.empty() || mp_shown >= 12 || ly + ch > io.DisplaySize.y ) {
-                    continue;
+            const float mp_list_w = std::max( 1.0f, io.DisplaySize.x - x0 );
+            for( size_t bi = 0; bi < mp_mini_map.beacons.size() &&
+                 mp_shown < 12; bi += 2 ) {
+                if( ly + ch > io.DisplaySize.y ) {
+                    break;
                 }
-                dl->AddText( ImVec2( x0, ly ),
-                             cataimgui::ImU32_from_color(
-                                 decode_cell_color( static_cast<int>( bb.color ) ) ),
-                             ( bb.sym + " " + bb.name ).c_str() );
+                for( int slot = 0; slot < 2 && bi + slot < mp_mini_map.beacons.size(); slot++ ) {
+                    const minimap_frame::beacon &bb = mp_mini_map.beacons[bi + slot];
+                    if( bb.name.empty() ) {
+                        continue;
+                    }
+                    dl->AddText( ImVec2( x0 + slot * ( mp_list_w * 0.5f ), ly ),
+                                 cataimgui::ImU32_from_color(
+                                     decode_cell_color( static_cast<int>( bb.color ) ) ),
+                                 ( bb.sym + " " + bb.name ).c_str() );
+                    ++mp_shown;
+                }
                 ly += ch;
-                ++mp_shown;
             }
             // Minimap is anchored at the bottom; the log fills the space above.
             const float mp_mini_top = mp_mini_map.width > 0 ?
@@ -2350,10 +2359,13 @@ void run_view_loop()
             {
                 static int mp_last_cols = -1;
                 static int mp_last_rows = -1;
-                if( TERMX != mp_last_cols || TERMY != mp_last_rows ) {
-                    mp_last_cols = TERMX;
-                    mp_last_rows = TERMY;
-                    netplay::client_send_view( TERMX, TERMY );
+                int mp_cols = TERMX;
+                int mp_rows = TERMY;
+                netplay::drawable_cells( mp_cols, mp_rows );
+                if( mp_cols != mp_last_cols || mp_rows != mp_last_rows ) {
+                    mp_last_cols = mp_cols;
+                    mp_last_rows = mp_rows;
+                    netplay::client_send_view( mp_cols, mp_rows );
                 }
             }
             // DDA MP v4.0a-7: turn-pacing hint from the host ("waiting for
