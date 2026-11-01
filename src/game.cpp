@@ -2473,6 +2473,7 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
             // DDA MP v4.0a-2: bound client sessions steer their avatar NPCs.
             netplay::host_pump_avatar_keys();
             netplay::host_pump_inventory_actions();
+            netplay::host_pump_client_actions();
         }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,

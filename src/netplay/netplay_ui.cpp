@@ -42,6 +42,14 @@
 #include "output.h"
 #include "uilist.h"
 #include "ui_manager.h"
+#include "action.h"
+#include "auto_note.h"
+#include "auto_pickup.h"
+#include "distraction_manager.h"
+#include "help.h"
+#include "options.h"
+#include "panels.h"
+#include "safemode_ui.h"
 #include "cata_imgui.h"
 #include "imgui/imgui.h"
 #include "worldfactory.h" // world_generator / WORLD (fat client)
@@ -2018,6 +2026,302 @@ static void mp_run_client_throw( const item &thrown, int node, int generation,
     g->mp_anchor_map_on( cli, true );
 }
 
+/* DDA MP v4.0a-72: the client's own action menu. Same categories and entries
+ * as the host's handle_action_menu, minus the save/load/debug entries that
+ * cannot apply to a remote session. The host owns the contextual weighting
+ * (nearby doors, wielded gun, ...), so the client lists the vanilla order.
+ * The chosen action id travels to the host, which applies it to the session
+ * avatar exactly like a host keypress would apply it to the host player. */
+static int mp_client_action_menu()
+{
+    const input_context ctxt = get_default_mode_input_context();
+    std::string category = "back";
+
+#define MP_REGISTER_ACTION( name ) entries.emplace_back( name, true, \
+        hotkey_for_action( name, /*maximum_modifier_count=*/1 ), \
+        ctxt.get_action_name( action_ident( name ) ) );
+#define MP_REGISTER_CATEGORY( text ) categories_by_int[last_category] = text; \
+    catgname = text; \
+    catgname += "�?�"; \
+    entries.emplace_back( last_category, true, -1, catgname ); \
+    last_category++;
+
+    while( true ) {
+        std::vector<uilist_entry> entries;
+        std::map<int, std::string> categories_by_int;
+        int last_category = NUM_ACTIONS + 1;
+        std::string catgname;
+
+        if( category == "back" ) {
+            MP_REGISTER_CATEGORY( _( "Look" ) );
+            MP_REGISTER_CATEGORY( _( "Interact" ) );
+            MP_REGISTER_CATEGORY( _( "Inventory" ) );
+            MP_REGISTER_CATEGORY( _( "Combat" ) );
+            MP_REGISTER_CATEGORY( _( "Craft" ) );
+            MP_REGISTER_CATEGORY( _( "Info" ) );
+            MP_REGISTER_CATEGORY( _( "Misc" ) );
+            MP_REGISTER_ACTION( ACTION_HELP );
+            if( !entries.empty() ) {
+                entries.back().txt += "�?�"; // help _is_a menu
+            }
+        } else if( category == _( "Look" ) ) {
+            MP_REGISTER_ACTION( ACTION_LOOK );
+            MP_REGISTER_ACTION( ACTION_PEEK );
+            MP_REGISTER_ACTION( ACTION_LIST_ITEMS );
+            MP_REGISTER_ACTION( ACTION_ZONES );
+            MP_REGISTER_ACTION( ACTION_MAP );
+            MP_REGISTER_ACTION( ACTION_SKY );
+        } else if( category == _( "Interact" ) ) {
+            MP_REGISTER_ACTION( ACTION_EXAMINE );
+            MP_REGISTER_ACTION( ACTION_EXAMINE_AND_PICKUP );
+            MP_REGISTER_ACTION( ACTION_SMASH );
+            MP_REGISTER_ACTION( ACTION_MOVE_DOWN );
+            MP_REGISTER_ACTION( ACTION_MOVE_UP );
+            MP_REGISTER_ACTION( ACTION_OPEN );
+            MP_REGISTER_ACTION( ACTION_CLOSE );
+            MP_REGISTER_ACTION( ACTION_CHAT );
+            MP_REGISTER_ACTION( ACTION_PICKUP );
+            MP_REGISTER_ACTION( ACTION_PICKUP_ALL );
+            MP_REGISTER_ACTION( ACTION_GRAB );
+            MP_REGISTER_ACTION( ACTION_HAUL );
+            MP_REGISTER_ACTION( ACTION_HAUL_TOGGLE );
+            MP_REGISTER_ACTION( ACTION_BUTCHER );
+            MP_REGISTER_ACTION( ACTION_LOOT );
+        } else if( category == _( "Inventory" ) ) {
+            MP_REGISTER_ACTION( ACTION_INVENTORY );
+            MP_REGISTER_ACTION( ACTION_ADVANCEDINV );
+            MP_REGISTER_ACTION( ACTION_SORT_ARMOR );
+            MP_REGISTER_ACTION( ACTION_DIR_DROP );
+            MP_REGISTER_ACTION( ACTION_INSERT_ITEM );
+            MP_REGISTER_ACTION( ACTION_UNLOAD_CONTAINER );
+            MP_REGISTER_ACTION( ACTION_DROP );
+            MP_REGISTER_ACTION( ACTION_COMPARE );
+            MP_REGISTER_ACTION( ACTION_ORGANIZE );
+            MP_REGISTER_ACTION( ACTION_USE );
+            MP_REGISTER_ACTION( ACTION_WEAR );
+            MP_REGISTER_ACTION( ACTION_TAKE_OFF );
+            MP_REGISTER_ACTION( ACTION_EAT );
+            MP_REGISTER_ACTION( ACTION_OPEN_CONSUME );
+            MP_REGISTER_ACTION( ACTION_READ );
+            MP_REGISTER_ACTION( ACTION_WIELD );
+            MP_REGISTER_ACTION( ACTION_UNLOAD );
+        } else if( category == _( "Combat" ) ) {
+            MP_REGISTER_ACTION( ACTION_CYCLE_MOVE );
+            MP_REGISTER_ACTION( ACTION_RESET_MOVE );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_RUN );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_CROUCH );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_PRONE );
+            MP_REGISTER_ACTION( ACTION_OPEN_MOVEMENT );
+            MP_REGISTER_ACTION( ACTION_FIRE );
+            MP_REGISTER_ACTION( ACTION_RELOAD_ITEM );
+            MP_REGISTER_ACTION( ACTION_RELOAD_WEAPON );
+            MP_REGISTER_ACTION( ACTION_RELOAD_WIELDED );
+            MP_REGISTER_ACTION( ACTION_CAST_SPELL );
+            MP_REGISTER_ACTION( ACTION_RECAST_SPELL );
+            MP_REGISTER_ACTION( ACTION_SELECT_FIRE_MODE );
+            MP_REGISTER_ACTION( ACTION_SELECT_DEFAULT_AMMO );
+            MP_REGISTER_ACTION( ACTION_THROW );
+            MP_REGISTER_ACTION( ACTION_THROW_WIELDED );
+            MP_REGISTER_ACTION( ACTION_FIRE_BURST );
+            MP_REGISTER_ACTION( ACTION_PICK_STYLE );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_TRAVEL_MODE );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_SAFEMODE );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_AUTOSAFE );
+            MP_REGISTER_ACTION( ACTION_IGNORE_ENEMY );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_FEATURES );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_PULP_BUTCHER );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_MINING );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_FORAGING );
+        } else if( category == _( "Craft" ) ) {
+            MP_REGISTER_ACTION( ACTION_CRAFT );
+            MP_REGISTER_ACTION( ACTION_RECRAFT );
+            MP_REGISTER_ACTION( ACTION_LONGCRAFT );
+            MP_REGISTER_ACTION( ACTION_CONSTRUCT );
+            MP_REGISTER_ACTION( ACTION_DISASSEMBLE );
+        } else if( category == _( "Info" ) ) {
+            MP_REGISTER_ACTION( ACTION_PL_INFO );
+            MP_REGISTER_ACTION( ACTION_MISSIONS );
+            MP_REGISTER_ACTION( ACTION_FACTIONS );
+            MP_REGISTER_ACTION( ACTION_MORALE );
+            MP_REGISTER_ACTION( ACTION_MEDICAL );
+            MP_REGISTER_ACTION( ACTION_BODYSTATUS );
+            MP_REGISTER_ACTION( ACTION_MESSAGES );
+            MP_REGISTER_ACTION( ACTION_DIARY );
+        } else if( category == _( "Misc" ) ) {
+            MP_REGISTER_ACTION( ACTION_WAIT );
+            MP_REGISTER_ACTION( ACTION_SLEEP );
+            MP_REGISTER_ACTION( ACTION_WORKOUT );
+            MP_REGISTER_ACTION( ACTION_BIONICS );
+            MP_REGISTER_ACTION( ACTION_MUTATIONS );
+            MP_REGISTER_ACTION( ACTION_CONTROL_VEHICLE );
+            MP_REGISTER_ACTION( ACTION_ITEMACTION );
+            MP_REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
+#if defined(TILES)
+            MP_REGISTER_ACTION( ACTION_ZOOM_OUT );
+            MP_REGISTER_ACTION( ACTION_ZOOM_IN );
+#endif
+        }
+
+        if( category != "back" ) {
+            std::string msg = _( "Back" );
+            msg += "�?�";
+            entries.emplace_back( 2 * NUM_ACTIONS, true,
+                                  hotkey_for_action( ACTION_ACTIONMENU, 1 ), msg );
+        }
+
+        std::string title = _( "Actions" );
+        if( category != "back" ) {
+            title += ": " + uppercase_first_letter( category );
+        }
+
+        uilist smenu;
+        smenu.settext( title );
+        smenu.entries = entries;
+        smenu.query();
+        const int selection = smenu.ret;
+
+        if( selection < 0 || selection == NUM_ACTIONS ) {
+            return ACTION_NULL;
+        } else if( selection == 2 * NUM_ACTIONS ) {
+            if( category != "back" ) {
+                category = "back";
+            } else {
+                return ACTION_NULL;
+            }
+        } else if( selection > NUM_ACTIONS ) {
+            category = categories_by_int[selection];
+        } else {
+            return static_cast<action_id>( selection );
+        }
+    }
+#undef MP_REGISTER_ACTION
+#undef MP_REGISTER_CATEGORY
+}
+
+/* DDA MP v4.0a-72: the client's in-game main menu. Mirrors the host's
+ * handle_main_menu for everything a remote player can do locally; saving,
+ * debugging, bug-report export and the host entry are omitted, and
+ * "Disconnect" replaces quit. Returns a uilist result: an action_id for the
+ * action entries, MP_ENTRY_KEYBINDINGS or MP_ENTRY_DISCONNECT otherwise. */
+static constexpr int MP_ENTRY_KEYBINDINGS = 90001;
+static constexpr int MP_ENTRY_DISCONNECT = 90002;
+
+static int mp_client_main_menu()
+{
+    const input_context ctxt = get_default_mode_input_context();
+    std::vector<uilist_entry> entries;
+
+    const auto REGISTER_ACTION = [&]( action_id name ) {
+        entries.emplace_back( name, true,
+                              hotkey_for_action( name, /*maximum_modifier_count=*/1 ),
+                              ctxt.get_action_name( action_ident( name ) ) );
+    };
+
+    REGISTER_ACTION( ACTION_HELP );
+    // The hotkey is reserved for the uilist keybindings menu.
+    entries.emplace_back( MP_ENTRY_KEYBINDINGS, true, std::nullopt,
+                          ctxt.get_action_name( action_ident( ACTION_KEYBINDINGS ) ) );
+    REGISTER_ACTION( ACTION_OPTIONS );
+    REGISTER_ACTION( ACTION_TOGGLE_PANEL_ADM );
+    REGISTER_ACTION( ACTION_AUTOPICKUP );
+    REGISTER_ACTION( ACTION_AUTONOTES );
+    REGISTER_ACTION( ACTION_SAFEMODE );
+    REGISTER_ACTION( ACTION_DISTRACTION_MANAGER );
+    REGISTER_ACTION( ACTION_COLOR );
+    REGISTER_ACTION( ACTION_WORLD_MODS );
+    REGISTER_ACTION( ACTION_ACTIONMENU );
+
+    entries.emplace_back( MP_ENTRY_DISCONNECT, true, 'Q',
+                          _( "Disconnect from server" ) );
+
+    uilist smenu;
+    smenu.settext( _( "MAIN MENU" ) );
+    smenu.entries = entries;
+    smenu.query();
+    return smenu.ret;
+}
+
+/* Runs one local entry of the client main menu. Returns true when the session
+ * must disconnect. `inv_text`/`char_json` are the latest host payloads, used by
+ * the inventory / @ entries. */
+static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
+                                      const std::string &char_json )
+{
+    if( sel == MP_ENTRY_DISCONNECT ) {
+        return true;
+    }
+    if( sel == MP_ENTRY_KEYBINDINGS ) {
+        input_context kb = get_default_mode_input_context();
+        kb.display_menu( false );
+        return false;
+    }
+    if( sel < 0 || sel >= NUM_ACTIONS ) {
+        return false;
+    }
+    switch( static_cast<action_id>( sel ) ) {
+        case ACTION_HELP: {
+            help_window hw;
+            hw.show();
+            break;
+        }
+        case ACTION_OPTIONS:
+            get_options().show( true );
+            break;
+        case ACTION_TOGGLE_PANEL_ADM:
+            panel_manager::get_manager().show_adm();
+            break;
+        case ACTION_AUTOPICKUP:
+            get_auto_pickup().show();
+            break;
+        case ACTION_AUTONOTES:
+            get_auto_notes_settings().show_gui();
+            break;
+        case ACTION_SAFEMODE:
+            get_safemode().show();
+            break;
+        case ACTION_DISTRACTION_MANAGER:
+            get_distraction_manager().show();
+            break;
+        case ACTION_COLOR:
+            all_colors.show_gui();
+            break;
+        case ACTION_WORLD_MODS:
+            if( world_generator && world_generator->active_world ) {
+                world_generator->show_active_world_mods(
+                    world_generator->active_world->active_mod_order );
+            }
+            break;
+        case ACTION_ACTIONMENU: {
+            const int act = mp_client_action_menu();
+            if( act > 0 ) {
+                switch( static_cast<action_id>( act ) ) {
+                    // Client-local UIs reached through the action list.
+                    case ACTION_INVENTORY:
+                    case ACTION_ADVANCEDINV:
+                        mp_run_host_inventory( inv_text );
+                        break;
+                    case ACTION_PL_INFO:
+                        mp_run_character_info( char_json );
+                        break;
+                    case ACTION_HELP: {
+                        help_window hw;
+                        hw.show();
+                        break;
+                    }
+                    default:
+                        netplay::client_send_client_action( act );
+                        break;
+                }
+            }
+            break;
+        }
+        default:
+            // Anything else is not a local menu item.
+            break;
+    }
+    return false;
+}
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -3129,18 +3433,16 @@ void run_view_loop()
                 }
             }
             if( action == "QUIT" ) {
-                // DDA MP: ESC opens an in-game-style menu instead of instantly
-                // disconnecting the session.
-                uilist mp_menu;
-                mp_menu.text = _( "Netplay session" );
-                mp_menu.addentry( 0, true, 'c', _( "Continue watching" ) );
-                mp_menu.addentry( 1, true, 'd', _( "Disconnect from server" ) );
-                mp_menu.query();
-                if( mp_menu.ret == 1 ) {
+                // DDA MP v4.0a-72: the client's own in-game main menu. Every
+                // entry the host has and a remote player can use is here;
+                // local settings UIs run on the client, action orders travel to
+                // the host, and Disconnect replaces quit.
+                const int mp_sel = mp_client_main_menu();
+                if( mp_client_run_menu_entry( mp_sel, mp_inv_text, mp_char_json ) ) {
                     voluntary_quit = true;
                     break;
                 }
-                // Continue: fall through to the next input cycle.
+                continue;
             }
             const long code = key_to_remote( action );
             if( code != 0 ) {

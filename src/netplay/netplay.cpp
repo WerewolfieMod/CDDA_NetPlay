@@ -394,6 +394,14 @@ struct netplay_state {
     std::mutex inv_act_mutex;
     std::deque<inv_action> inv_actions;
 
+    /* DDA MP v4.0a-72: action-menu choices queued by reader threads. */
+    struct client_action {
+        int sid = 0;
+        int action = 0;
+    };
+    std::mutex client_action_mutex;
+    std::deque<client_action> client_actions;
+
     /* DDA MP v4.0a-31: pocket-settings payloads (JSON) queued likewise. */
     struct inv_settings {
         int sid = 0;
@@ -825,6 +833,17 @@ static void host_session_reader( int sid, socket_t sock )
                 std::lock_guard<std::mutex> lk( state.aim_req_mutex );
                 if( state.aim_requests.size() < 8 ) {
                     state.aim_requests.push_back( { sid, node, generation, dx, dy } );
+                }
+            }
+        } else if( op == frame::CLIENT_ACTION ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int action = r.get_i32();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.client_action_mutex );
+                if( state.client_actions.size() < 8 ) {
+                    state.client_actions.push_back( { sid, action } );
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1392,6 +1411,29 @@ bool host_pop_inventory_action( int &sid, int &node, int &action, int &generatio
     action = a.action;
     generation = a.generation;
     targets = std::move( a.targets );
+    return true;
+}
+
+bool client_send_client_action( int action )
+{
+    if( !state.connected ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_i32( p, action );
+    return send_all( state.client_sock, encode_frame( frame::CLIENT_ACTION, p ) );
+}
+
+bool host_pop_client_action( int &sid, int &action )
+{
+    std::lock_guard<std::mutex> lk( state.client_action_mutex );
+    if( state.client_actions.empty() ) {
+        return false;
+    }
+    const auto a = state.client_actions.front();
+    state.client_actions.pop_front();
+    sid = a.sid;
+    action = a.action;
     return true;
 }
 

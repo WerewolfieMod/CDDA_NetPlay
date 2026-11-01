@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "avatar.h"
+#include "action.h"
 #include "activity_actor_definitions.h"
 #include "calendar.h"
 #include "catacharset.h"
@@ -2219,6 +2220,100 @@ void host_pump_inventory_actions()
                 sb.cells[ci].color = panel.cells[ci].color;
             }
             netplay::host_send_aim_panel_to_sid( sid, sb );
+        }
+    }
+}
+
+/* DDA MP v4.0a-72: choices made in the client's own action menu. Each order
+ * is applied to the session's avatar NPC on the main thread, so the client can
+ * do what the host can. Actions that need map-bound or avatar-only UIs are
+ * answered with a message until their own bridge lands. */
+void host_pump_client_actions()
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    for( int budget = 0; budget < 8; budget++ ) {
+        int sid = 0;
+        int action = 0;
+        if( !netplay::host_pop_client_action( sid, action ) ) {
+            break;
+        }
+        const auto sid_it = av_sid_to_npc.find( sid );
+        if( sid_it == av_sid_to_npc.end() ) {
+            continue;
+        }
+        shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
+        if( !npc_ptr || !av_npc_alive( npc_ptr ) ) {
+            continue;
+        }
+        npc *av = npc_ptr.get();
+        g->mp_anchor_map_on( *av, true );
+        bool changed = false;
+        switch( static_cast<action_id>( action ) ) {
+            case ACTION_WAIT:
+                // Same contract as the WAIT key: spend the pool, redraw.
+                av_acted_since_tick[sid] = true;
+                av_move_pool[sid] = 0;
+                netplay::host_send_hover_to_sid( sid, "" );
+                av_send_session_picture( sid, av_session_center( sid ), npc_ptr.get() );
+                continue;
+            case ACTION_TOGGLE_RUN: {
+                const move_mode_id walk( "walk" );
+                const move_mode_id run( "run" );
+                const move_mode_id next = av->is_running() ? walk : run;
+                const int cost = av->move_mode_switch_cost( av->current_movement_mode(), next );
+                av->set_movement_mode( next );
+                auto pool_it = av_move_pool.find( sid );
+                if( pool_it != av_move_pool.end() ) {
+                    pool_it->second = std::max( 0, pool_it->second - cost );
+                    av->set_moves( pool_it->second );
+                }
+                changed = true;
+                break;
+            }
+            case ACTION_TOGGLE_CROUCH: {
+                const move_mode_id walk( "walk" );
+                const move_mode_id crouch( "crouch" );
+                const move_mode_id next = av->is_crouching() ? walk : crouch;
+                const int cost = av->move_mode_switch_cost( av->current_movement_mode(), next );
+                av->set_movement_mode( next );
+                auto pool_it = av_move_pool.find( sid );
+                if( pool_it != av_move_pool.end() ) {
+                    pool_it->second = std::max( 0, pool_it->second - cost );
+                    av->set_moves( pool_it->second );
+                }
+                changed = true;
+                break;
+            }
+            case ACTION_TOGGLE_PRONE: {
+                const move_mode_id walk( "walk" );
+                const move_mode_id prone( "prone" );
+                const move_mode_id next = av->is_prone() ? walk : prone;
+                const int cost = av->move_mode_switch_cost( av->current_movement_mode(), next );
+                av->set_movement_mode( next );
+                auto pool_it = av_move_pool.find( sid );
+                if( pool_it != av_move_pool.end() ) {
+                    pool_it->second = std::max( 0, pool_it->second - cost );
+                    av->set_moves( pool_it->second );
+                }
+                changed = true;
+                break;
+            }
+            case ACTION_RESET_MOVE: {
+                const move_mode_id walk( "walk" );
+                av->set_movement_mode( walk );
+                changed = true;
+                break;
+            }
+            default:
+                netplay::host_send_event_to_sid(
+                    sid, _( "That action is not available to netplay clients yet." ),
+                    static_cast<int>( m_info ) );
+                break;
+        }
+        if( changed ) {
+            av_send_status( sid );
         }
     }
 }

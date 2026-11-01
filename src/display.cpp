@@ -24,6 +24,7 @@
 #include "map.h"
 #include "mood_face.h"
 #include "move_mode.h"
+#include "monster.h"
 #include "mtype.h"
 #include "npc.h"
 #include "omdata.h"
@@ -1416,10 +1417,10 @@ point display::mission_arrow_offset( const Character &you, int width, int height
     }
 }
 
-static std::string get_compass_for_direction( const cardinal_direction dir, int max_width )
+static std::string get_compass_for_direction( const monster_visible_info &mon_visible,
+        cardinal_direction dir, int max_width )
 {
     const int d = static_cast<int>( dir );
-    const monster_visible_info &mon_visible = get_avatar().get_mon_visible();
     std::vector<std::pair<std::string, nc_color>> syms;
     for( npc *n : mon_visible.unique_types[d] ) {
         switch( n->get_attitude() ) {
@@ -1449,17 +1450,114 @@ static std::string get_compass_for_direction( const cardinal_direction dir, int 
     return ret;
 }
 
-std::string display::colorized_compass_text( const cardinal_direction dir, int width )
+/* DDA MP v4.0a-73: the compass panels used to read the host player's cached
+ * monster_visible_info. A netplay session's avatar is a plain npc, which never
+ * gets that avatar-only cache, so its compass showed the host's neighbourhood
+ * (usually nothing, the avatar being far away). Build the same direction
+ * buckets from the character's own view instead. */
+static monster_visible_info &mp_compass_info( const Character &u )
+{
+    if( const avatar *av = dynamic_cast<const avatar *>( &u ) ) {
+        return const_cast<avatar *>( av )->get_mon_visible();
+    }
+    static thread_local monster_visible_info info;
+    for( auto &t : info.unique_types ) {
+        t.clear();
+    }
+    for( auto &m : info.unique_mons ) {
+        m.clear();
+    }
+    std::fill( info.dangerous.begin(), info.dangerous.end(), false );
+    info.new_seen_mon.clear();
+    info.has_dangerous_creature_in_proximity = false;
+    const map &here = get_map();
+    const tripoint_bub_ms pos = u.pos_bub( here );
+    for( Creature *c : u.get_visible_creatures( MAPSIZE_X ) ) {
+        if( c == nullptr || c == &u ) {
+            continue;
+        }
+        const tripoint_bub_ms c_pos = c->pos_bub( here );
+        const direction dir_to_mon = direction_from( pos.raw().xy(), c_pos.raw().xy() );
+        int index = 8;
+        switch( dir_to_mon ) {
+            case direction::ABOVENORTHWEST:
+            case direction::NORTHWEST:
+            case direction::BELOWNORTHWEST:
+                index = 7;
+                break;
+            case direction::ABOVENORTH:
+            case direction::NORTH:
+            case direction::BELOWNORTH:
+                index = 0;
+                break;
+            case direction::ABOVENORTHEAST:
+            case direction::NORTHEAST:
+            case direction::BELOWNORTHEAST:
+                index = 1;
+                break;
+            case direction::ABOVEWEST:
+            case direction::WEST:
+            case direction::BELOWWEST:
+                index = 6;
+                break;
+            case direction::ABOVECENTER:
+            case direction::CENTER:
+            case direction::BELOWCENTER:
+                index = 8;
+                break;
+            case direction::ABOVEEAST:
+            case direction::EAST:
+            case direction::BELOWEAST:
+                index = 2;
+                break;
+            case direction::ABOVESOUTHWEST:
+            case direction::SOUTHWEST:
+            case direction::BELOWSOUTHWEST:
+                index = 5;
+                break;
+            case direction::ABOVESOUTH:
+            case direction::SOUTH:
+            case direction::BELOWSOUTH:
+                index = 4;
+                break;
+            case direction::ABOVESOUTHEAST:
+            case direction::SOUTHEAST:
+            case direction::BELOWSOUTHEAST:
+                index = 3;
+                break;
+            case direction::last:
+                continue;
+        }
+        if( monster *m = dynamic_cast<monster *>( c ) ) {
+            std::vector<std::pair<const mtype *, int>> &vec = info.unique_mons[index];
+            const auto it = std::find_if( vec.begin(), vec.end(),
+            [&]( const std::pair<const mtype *, int> &elem ) {
+                return elem.first == m->type;
+            } );
+            if( it == vec.end() ) {
+                vec.emplace_back( m->type, 1 );
+            } else {
+                it->second++;
+            }
+        } else if( npc *p = dynamic_cast<npc *>( c ) ) {
+            info.unique_types[index].push_back( p );
+        }
+    }
+    return info;
+}
+
+std::string display::colorized_compass_text( const Character &u, cardinal_direction dir, int width )
 {
     if( dir == cardinal_direction::num_cardinal_directions ) {
         return "";
     }
-    return get_compass_for_direction( dir, width );
+    return get_compass_for_direction( mp_compass_info( u ), dir, width );
 }
 
-std::string display::colorized_compass_legend_text( int width, int max_height, int &height )
+std::string display::colorized_compass_legend_text( const Character &u, int width,
+        int max_height, int &height )
 {
-    const monster_visible_info &mon_visible = get_avatar().get_mon_visible();
+    const monster_visible_info &mon_visible = mp_compass_info( u );
     std::vector<std::string> names;
     for( const std::vector<npc *> &nv : mon_visible.unique_types ) {
         for( const npc *n : nv ) {

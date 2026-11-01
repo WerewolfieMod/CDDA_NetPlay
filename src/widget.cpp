@@ -1362,11 +1362,12 @@ std::string widget::color_text_function_string( const Character &ava, unsigned i
             desc = display::wind_text_color( ava );
             break;
         case widget_var::compass_text:
-            desc.first = display::colorized_compass_text( _direction, _width );
+            desc.first = display::colorized_compass_text( ava, _direction, _width );
             apply_color = false; // Already colorized
             break;
         case widget_var::compass_legend_text:
-            desc.first = display::colorized_compass_legend_text( _width == 0 ? max_width : _width, _height_max,
+            desc.first = display::colorized_compass_legend_text( ava,
+                         _width == 0 ? max_width : _width, _height_max,
                          _height );
             update_height = true; // Dynamically adjusted height
             apply_color = false; // Already colorized

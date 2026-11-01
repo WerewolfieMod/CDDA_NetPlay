@@ -87,6 +87,8 @@ enum class frame : int {
     AIM_PANEL = 37,         ///< host -> client: rendered w_target cells
     /// DDA MP: local-space creature facts for the client aim panel.
     AIM_TARGETS = 38,       ///< host -> client: [n]{i32 dx,dy,...}
+    /// DDA MP v4.0a-72: one action id picked in the client's own action menu.
+    CLIENT_ACTION = 39,     ///< client -> host: i32 action id
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -342,6 +344,10 @@ bool client_send_inventory_action( int node, int action, int generation,
 /// Host main thread: pop one queued inventory action.
 bool host_pop_inventory_action( int &sid, int &node, int &action, int &generation,
                                 std::vector<int> &targets );
+/// DDA MP v4.0a-72: client sends one action id chosen in its own action menu.
+bool client_send_client_action( int action );
+/// Host main thread: pop one queued client action id.
+bool host_pop_client_action( int &sid, int &action );
 /// DDA MP v4.0a-31: client sends edited pocket settings (JSON array, per pocket).
 bool client_send_inventory_settings( int node, int generation, const std::string &json );
 /// Host main thread: pop one queued pocket-settings update.
@@ -397,6 +403,9 @@ void host_pump_avatar_keys();
 
 /// Pump queued inventory actions for session avatars (main thread).
 void host_pump_inventory_actions();
+
+/// DDA MP v4.0a-72: pump queued client action-menu choices (main thread).
+void host_pump_client_actions();
 
 /* ---- DDA MP v4.0a-2: per-session input routing ---- */
 
