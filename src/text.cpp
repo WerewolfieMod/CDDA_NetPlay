@@ -11,6 +11,7 @@
 #include "catacharset.h"
 #include "cata_imgui.h"
 #include "color.h"
+#include "debug.h"
 #include "output.h"
 #include "text.h"
 
@@ -217,6 +218,12 @@ static void TextEx( std::string_view str, float wrap_width, uint32_t color )
         return;
     }
     ImFont *Font = ImGui::GetFont();
+    if( Font == nullptr ) {
+        // No current font: every text metric would dereference NULL. This
+        // happens when the atlas is empty (see cataimgui::add_cata_fonts).
+        DebugLog( D_ERROR, DC_ALL ) << "imgui: draw text without a current font";
+        return;
+    }
     ImGuiWindow *window = ImGui::GetCurrentWindow();
     const char *textStart = str.data();
     const char *textEnd = textStart + str.length();

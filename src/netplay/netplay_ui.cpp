@@ -54,6 +54,7 @@
 #include "cata_imgui.h"
 #include "imgui/imgui.h"
 #include "worldfactory.h" // world_generator / WORLD (fat client)
+#include "mod_manager.h"  // check_mods_list (fat client world load)
 
 #include "string_input_popup.h"
 #include "catacharset.h"
@@ -117,7 +118,20 @@ void show_host_dialog()
     ctxt.register_action( "QUIT" );
     ctxt.register_action( "HELP_KEYBINDINGS" );
 
+    // DDA MP v4.0a-99: keep serving connected clients while this dialog stays
+    // open. It used to block on input, so a host that left the dialog up never
+    // answered a join (avatar ops/snapshots queued until ESC). 100 ms keeps the
+    // join latency low without repainting this menu 30 times a second.
+    ctxt.set_timeout( 100 );
+
     while( true ) {
+        if( host_is_running() ) {
+            host_pump_snapshot_requests();
+            host_pump_avatar_ops();
+            host_pump_avatar_keys();
+            host_pump_inventory_actions();
+            host_pump_client_actions();
+        }
         ui_manager::redraw();
 
         const int height = 12;
@@ -200,6 +214,20 @@ static void mp_fat_log( const std::string &msg )
     } catch( ... ) { }
 }
 
+/// Look the host world up without worldfactory::get_world()'s
+/// "Requested non-existing world, prepare for crash" debug message. A client
+/// that never opened the world menu has an empty world list, and that modal
+/// used to block the whole join flow (it waits for SPACE).
+static WORLD *mp_find_local_world( const std::string &name )
+{
+    if( world_generator == nullptr || name.empty() ) {
+        return nullptr;
+    }
+    const auto &all = world_generator->get_all_worlds();
+    const auto it = all.find( name );
+    return it == all.end() ? nullptr : it->second.get();
+}
+
 /// Load the host-announced world's mod data on the client (idempotent).
 /// Call right after the connection is accepted, so world/mod loading starts
 /// immediately instead of waiting for the first frame / user input.
@@ -225,11 +253,20 @@ static void fat_client_load_data()
             // ascii + snapshot drawing path.
             mp_fat_log( "tiles: fat client skipped, static data already finalized" );
         } else {
-            WORLD *w = world_generator ? world_generator->get_world( wname ) : nullptr;
+            WORLD *w = mp_find_local_world( wname );
             if( w != nullptr && g != nullptr ) {
                 world_generator->set_active_world( w );
                 debug_suppress_prompts( true );
+                // Mirror game::setup(): core JSON first, then the world's mod
+                // packs (loading only the packs leaves the core definitions -
+                // traps, terrain, items - undefined and the first mapgen with
+                // an unknown id aborts the whole load).
+                if( !g->is_core_data_loaded() ) {
+                    g->load_core_data();
+                }
+                world_generator->get_mod_manager().check_mods_list( w );
                 g->load_world_modfiles();
+                panel_manager::get_manager().init();
                 debug_suppress_prompts( false );
                 // Same as game_io's own world load flow: release the
                 // loading screen afterwards, otherwise its splash/adaptors
@@ -281,7 +318,7 @@ static bool avatar_create_flow( const std::string &nick )
     // loaded it exactly when DynamicDataLoader finalized and the host's
     // world is the active one.
     const std::string wname = netplay::client_host_world_name();
-    WORLD *w = world_generator ? world_generator->get_world( wname ) : nullptr;
+    WORLD *w = mp_find_local_world( wname );
     if( w == nullptr || world_generator->active_world != w ) {
         popup( _( "The host world '%s' is not available on this machine, "
                   "so a new avatar cannot be created here (watch mode only)." ), wname );
@@ -587,6 +624,39 @@ void show_join_dialog()
 
     run_view_loop();
     netplay::client_disconnect();
+}
+
+/* DDA MP v4.0a-94 test hook: the same post-connect steps the join dialog runs,
+ * without any GUI. Enabled by DDA_MP_TEST_AVATAR=<nick> together with
+ * --mpclient, so automated runs can bind an avatar and exercise the client UI. */
+void client_bootstrap_session( const std::string &nick )
+{
+    mp_fat_log( "join: bootstrap enter" );
+    // The world list is normally populated by the main menu; the CLI shortcut
+    // runs before it, so scan the save dirs here or the host's world cannot be
+    // found. Prompts stay suppressed: a broken local world must never put a
+    // modal over the join flow (the client falls back to snapshot drawing).
+    if( world_generator && world_generator->get_all_worlds().empty() ) {
+        mp_fat_log( "join: scanning local worlds" );
+        debug_suppress_prompts( true );
+        world_generator->init();
+        debug_suppress_prompts( false );
+    }
+    mp_fat_log( "join: local world scan done" );
+    client_request_snapshot();
+    fat_client_load_data();
+    mp_fat_log( "join: fat client data done" );
+    run_avatar_join_flow( nick );
+    mp_fat_log( "join: avatar flow done" );
+#if defined(TILES)
+    // Same as the join dialog: create the replay tileset while the loading
+    // screen still owns the window, otherwise the map area stays black until
+    // (and unless) the view loop gets the tileset in place.
+    if( netplay::client_is_connected() ) {
+        netplay::tiles_backend_create();
+        mp_fat_log( "join: replay tileset requested" );
+    }
+#endif
 }
 
 /* ------------------------------------------------------------------ */

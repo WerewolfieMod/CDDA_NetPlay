@@ -1230,6 +1230,10 @@ void host_pump_avatar_ops()
     avatar_op op;
     int budget = 16;
     while( budget-- > 0 && host_pop_avatar_op( op ) ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "avatar op sid=%d kind=%d nick=%s\n", op.sid, op.kind, op.nick.c_str() );
+            std::fclose( f );
+        }
         host_handle_one_avatar_op( op );
     }
 }

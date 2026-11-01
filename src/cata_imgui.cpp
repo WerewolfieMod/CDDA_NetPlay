@@ -12,6 +12,7 @@
 #include "catacharset.h"
 #include "cached_options.h"
 #include "color.h"
+#include "debug.h"
 #include "input.h"
 #include "output.h"
 #include "path_info.h"
@@ -437,6 +438,17 @@ void cataimgui::add_cata_fonts( ImGuiIO &io, const std::vector<font_config> &gui
         load_font( io, gui_typefaces,
                    static_cast<float>( lroundf( fontheight * 1.5f ) ) );
     }
+    // An empty atlas is fatal: ImGui::NewFrame() then points g.Font at
+    // Fonts[0] of an empty vector, and the first text draw (the loading
+    // screen is enough) dereferences that garbage. Keep a built-in fallback
+    // so a missing/unreadable font file only degrades the look.
+    if( io.Fonts->Fonts.Size == 0 ) {
+        DebugLog( D_WARNING, DC_ALL ) << "imgui: no usable font files, using the built-in font";
+        io.Fonts->AddFontDefault();
+    }
+    DebugLog( D_INFO, DC_ALL ) << "imgui fonts: n=" << io.Fonts->Fonts.Size
+                              << " gui=" << gui_typefaces.size()
+                              << " mono=" << mono_typefaces.size();
     for( int i = 0; i < io.Fonts->Fonts.Size; i++ ) {
         check_font( io.Fonts->Fonts[i] );
     }
@@ -1211,29 +1223,51 @@ bool cataimgui::InputFloat( const char *label, float *v, float step, float step_
                                static_cast<void *>( step_fast > 0.0f ? &step_fast : nullptr ), format, flags );
 }
 
+/* Safe access to the ImGui font atlas: a cleared/empty atlas used to hand
+ * out an out-of-range (garbage) ImFont*, which crashed on the next text draw. */
+static ImFont *imgui_font_at( int idx )
+{
+    ImFontAtlas *atlas = ImGui::GetIO().Fonts;
+    if( atlas == nullptr || atlas->Fonts.Size == 0 ) {
+        return nullptr;
+    }
+    if( idx >= atlas->Fonts.Size ) {
+        idx = 0;
+    }
+    return atlas->Fonts[idx];
+}
+
 void cataimgui::PushGuiFont()
 {
-    ImFont *font = ImGui::GetIO().Fonts->Fonts[0];
+    ImFont *font = imgui_font_at( 0 );
+    if( font == nullptr ) {
+        return;
+    }
     ImGui::PushFont( font, font->LegacySize );
 }
 
 void cataimgui::PushMonoFont()
 {
 #ifdef TILES
-    ImFont *font = ImGui::GetIO().Fonts->Fonts[1];
+    ImFont *font = imgui_font_at( 1 );
 #else
-    ImFont *font = ImGui::GetIO().Fonts->Fonts[0];
+    ImFont *font = imgui_font_at( 0 );
 #endif
+    if( font == nullptr ) {
+        return;
+    }
     ImGui::PushFont( font, font->LegacySize );
 }
 
 void cataimgui::PushGuiFont1_5x()
 {
+    ImFont *font = imgui_font_at( 2 );
+    if( font == nullptr ) {
+        return;
+    }
     if( ImGui::GetIO().Fonts->Fonts.Size > 2 ) {
-        ImFont *font = ImGui::GetIO().Fonts->Fonts[2];
         ImGui::PushFont( font, font->LegacySize );
     } else {
-        ImFont *font = ImGui::GetIO().Fonts->Fonts[0];
         ImGui::PushFont( font, font->LegacySize * 1.5f );
     }
 }

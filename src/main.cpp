@@ -819,6 +819,20 @@ void initialize_imgui()
     // Load the colors of ImGui to match the colors set by the user.
     cataimgui::init_colors();
 
+#if defined(TILES)
+    // Prime one ImGui frame so the context has a current font. Code that
+    // measures/draws ImGui text before the first ui_manager redraw (the
+    // network client's join and loading screens) used to run with a NULL
+    // current font and crash in ImFont::GetFontBaked.
+    if( imclient ) {
+        display_buffer_draw_scope draw_scope;
+        if( !display_buffer_scope_is_invalid() ) {
+            imclient->new_frame();
+            imclient->end_frame();
+        }
+    }
+#endif
+
     // set decimal point for float input widgets
     // uses system locale, because that's what imgui uses to parse and display floats
     ImGui::GetPlatformIO().Platform_LocaleDecimalPoint =
@@ -967,6 +981,11 @@ int main( int argc, const char *argv[] )
         // normal main menu instead of leaving the program.
         netplay::client_connect( cli.mp_client, netplay::DEFAULT_PORT );
         if( netplay::client_is_connected() ) {
+            // DDA MP test hook: bind an avatar without the join dialog.
+            const char *mp_nick = std::getenv( "DDA_MP_TEST_AVATAR" );
+            if( mp_nick != nullptr && mp_nick[0] != '\0' ) {
+                netplay::client_bootstrap_session( mp_nick );
+            }
             netplay::run_view_loop();
         }
         netplay::client_disconnect();

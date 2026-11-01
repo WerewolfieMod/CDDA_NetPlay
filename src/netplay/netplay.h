@@ -533,6 +533,8 @@ void overlay_end();
 /// snapshots only on its own turn, so a freshly-loaded client needs this to
 /// see anything before somebody presses a key. Safe to call often.
 void client_request_snapshot();
+/// DDA MP v4.0a-94 test hook: post-connect join flow without the dialog.
+void client_bootstrap_session( const std::string &nick );
 /// Send an input batch upstream.
 void client_send_keys( const std::vector<key_event> &keys );
 /// DDA MP v4.0a-9: tell the host this client's terminal size (cols x rows) so

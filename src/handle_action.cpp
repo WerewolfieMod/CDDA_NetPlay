@@ -275,8 +275,11 @@ input_context game::get_player_input( std::string &action )
         // the host poll loop is what feeds remote avatar keystrokes. Without a
         // timeout the client's step sat in the queue until the host pressed
         // something of its own (its picture only updated on the next host turn).
-        if( netplay::host_is_running() && netplay::host_session_count() > 0 ) {
-            ctxt.set_timeout( netplay::long_wait_active() ? 10 : 30 );
+        // v4.0a-99: the timeout must be armed even when nobody is connected yet,
+        // otherwise a client that joins later is never noticed while the host
+        // idles at the prompt (its avatar ops and snapshots stay queued).
+        if( netplay::host_is_running() ) {
+            ctxt.set_timeout( netplay::long_wait_active() && netplay::host_session_count() > 0 ? 10 : 30 );
         }
     }
 
@@ -338,8 +341,10 @@ input_context game::get_player_input( std::string &action )
 
         // DDA MP v4.0a-86: while long wait is on, turns are driven by client
         // actions, so poll often enough to keep up with fast movement.
+        // v4.0a-99: keep polling while hosting even without sessions so a
+        // joining client is answered instead of waiting for host input.
         ctxt.set_timeout( netplay::long_wait_active() && netplay::host_session_count() > 0 ? 10 :
-                          125 );
+                          ( netplay::host_is_running() ? 30 : 125 ) );
 
         shared_ptr_fast<game::draw_callback_t> animation_cb =
         make_shared_fast<game::draw_callback_t>( [&]() {
