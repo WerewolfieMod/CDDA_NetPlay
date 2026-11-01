@@ -1766,18 +1766,12 @@ static void mp_build_client_aim_panel()
                             string_format( "<color_white>%s %s</color>",
                                            _( "Target:" ), target_name ) );
     }
+    ty += 2; // two blank lines between the character block and steadiness
     for( size_t li = 1; li < mp_client_aim_lines.size(); li++ ) {
         if( ty >= whei - 6 ) {
             break;
         }
         print_colored_text( w, point( 1, ty++ ), col, col, mp_client_aim_lines[li] );
-    }
-    if( ty < whei - 5 ) {
-        print_colored_text( w, point( 1, ty++ ), col, col,
-                            string_format( "%s * = %s + = %s | = %s", _( "Symbols:" ),
-                                           pgettext( "aim_confidence", "Great" ),
-                                           pgettext( "aim_confidence", "Normal" ),
-                                           pgettext( "aim_confidence", "Graze" ) ) );
     }
     mvwprintz( w, point( 1, whei - 5 ), c_white,
                _( "Move cursor with directional keys" ) );
@@ -1788,7 +1782,8 @@ static void mp_build_client_aim_panel()
                string_format( _( "[%s] %s." ), "f",
                               to_translation( "[Hotkey] to throw", "to throw" ).translated() ) );
     mvwprintz( w, point( 1, whei - 2 ), c_white,
-               _( "[0] target self; [*] toggle snap-to-target" ) );
+               string_format( _( "[%s] target self; [%s] toggle snap-to-target" ),
+                              "0", "*" ) );
 
     // Send only the interior; the client paints its own border (ACS glyphs
     // are not in the client font).
@@ -1827,7 +1822,7 @@ static void mp_draw_aim_panel()
     const float ch = ImGui::GetTextLineHeight();
     const float pw = ( mp_aim_panel.width + 2 ) * cw;
     const float ph = ( mp_aim_panel.height + 2 ) * ch;
-    const float px = std::max( 0.0f, io.DisplaySize.x - pw );
+    const float px = std::max( 4.0f, io.DisplaySize.x - pw - 4.0f );
     const float py = 0.0f;
     dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                        IM_COL32( 0, 0, 0, 255 ) );
@@ -1898,8 +1893,11 @@ static void mp_draw_aim_panel()
     // Bottom border label, like draw_help_notice.
     const std::string help = string_format( _( "[%s] show all controls" ), "?" );
     const float hw = ImGui::CalcTextSize( help.c_str() ).x;
-    dl->AddText( ImVec2( px + pw - hw - cw, py + ph - ch * 0.5f ),
-                 IM_COL32( 230, 230, 230, 255 ), help.c_str() );
+    const float hx = px + pw - hw - cw;
+    const float hy = py + ph - ch * 0.5f;
+    dl->AddRectFilled( ImVec2( hx - 2, hy - 1 ), ImVec2( hx + hw + 2, hy + ch ),
+                       IM_COL32( 0, 0, 0, 255 ) );
+    dl->AddText( ImVec2( hx, hy ), IM_COL32( 230, 230, 230, 255 ), help.c_str() );
 }
 static void mp_run_client_throw( const item &thrown, int node, int generation,
                                  const tripoint_abs_ms &origin )

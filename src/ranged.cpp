@@ -2527,39 +2527,43 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
                                           static_cast<int>( range ),
                                           max_range ) ) );
     if( !chances.empty() ) {
-        const std::string bar = get_labeled_bar( chances.front().steadiness, 53,
+        const auto def = std::find_if( chances.begin(), chances.end(),
+        []( const aim_type_prediction &p ) {
+            return p.is_default;
+        } );
+        const double steadiness = def != chances.end() ? def->steadiness :
+                                  chances.front().steadiness;
+        const std::string bar = get_labeled_bar( steadiness, 53,
                                 _( "Steadiness" ), '*' );
         out.push_back( string_format( "<color_light_gray>%s</color>", bar ) );
     }
-    for( const aim_type_prediction &p : chances ) {
-        std::string line = string_format( "<color_white>[%s]</color> <color_light_gray>%s</color>"
-                                          " <color_light_gray>|</color> <color_light_blue>%s %d</color>",
-                                          p.hotkey, p.name, _( "Moves" ), p.moves );
-        out.push_back( line );
-        std::string bar = "<color_light_gray>[</color>";
-        for( const aim_type_prediction::aim_confidence &c : p.chances ) {
-            const char *col = "light_gray";
-            char sym = '+';
-            if( c.label == "Great" ) {
-                col = "green";
-                sym = '*';
-            } else if( c.label == "Graze" ) {
-                col = "magenta";
-                sym = '|';
-            } else if( c.label == "Miss" ) {
-                col = "dark_gray";
-                sym = '.';
-            } else if( c.label == "Hit" ) {
-                col = "white";
-                sym = '*';
-            }
-            const int n = std::min( 50, c.chance / 4 );
-            bar += string_format( "<color_%s>", col );
-            bar.append( static_cast<size_t>( n ), sym );
-            bar += "</color>";
+    std::vector<aim_type_prediction> sorted = chances;
+    std::sort( sorted.begin(), sorted.end(),
+    []( const aim_type_prediction &a, const aim_type_prediction &b ) {
+        return a.confidence < b.confidence;
+    } );
+    // Legend first, exactly like print_ranged_chance's non-narrow layout.
+    if( !sorted.empty() ) {
+        std::string legend = string_format( "<color_light_gray>%s</color>", _( "Symbols:" ) );
+        for( const confidence_rating &cr : sorted.front().ratings ) {
+            legend += string_format( " <color_%s>%c</color> = %s", cr.color, cr.symbol,
+                                     pgettext( "aim_confidence", cr.label.c_str() ) );
         }
-        bar += "<color_light_gray>]</color>";
-        out.push_back( bar );
+        out.push_back( legend );
+    }
+    for( const aim_type_prediction &p : sorted ) {
+        const std::string name_col = p.is_default ? "light_green" : "light_gray";
+        out.push_back( string_format(
+                           "<color_white>[%s]</color> <color_%s>%s %s</color> | %s: <color_light_blue>%3d</color>",
+                           p.hotkey, name_col, p.name, _( "Aim" ), _( "Moves to fire" ),
+                           p.moves ) );
+        RatingVector ratings;
+        std::transform( p.ratings.begin(), p.ratings.end(), std::back_inserter( ratings ),
+        []( const confidence_rating & cr ) {
+            return std::make_tuple( cr.aim_level, cr.symbol, cr.color );
+        } );
+        out.push_back( get_colored_bar( p.confidence, 53, "", ratings.begin(),
+                                        ratings.end() ) );
     }
     return out;
 }
