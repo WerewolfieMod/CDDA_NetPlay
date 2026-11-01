@@ -1735,9 +1735,12 @@ static void mp_client_aim_recalc()
 
 static void mp_build_client_aim_panel()
 {
-    const int wwid = 55;
+    // DDA MP v4.0a-80: clamp to the real terminal; a window narrower than the
+    // host's 55 columns used to place the offscreen window at a negative x,
+    // and a short terminal printed the hotkey hints above row 0.
+    const int wwid = std::min( 55, TERMX );
     const int whei = std::min( 33, TERMY );
-    if( wwid <= 2 || whei <= 2 ) {
+    if( wwid < 20 || whei < 10 ) {
         return;
     }
     catacurses::window w = catacurses::newwin( whei, wwid, point( TERMX - wwid, 0 ) );
@@ -1786,7 +1789,8 @@ static void mp_build_client_aim_panel()
             const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
             if( idx < mp_aim_critters.size() && !mp_aim_critters[idx].empty() ) {
                 target_id = mp_aim_critters[idx];
-                if( target_name.empty() ) {
+                if( target_name.empty() &&
+                    mtype_id( target_id ).is_valid() ) {
                     target_name = mtype_id( target_id ).obj().nname();
                 }
             }
@@ -1864,7 +1868,7 @@ static void mp_build_client_aim_panel()
                                 std::string( "</color><color_red>" ) + target_char->wielded +
                                 std::string( "</color>" ) );
         }
-    } else if( !target_id.empty() && mp_aim_char ) {
+    } else if( !target_id.empty() && mp_aim_char && mtype_id( target_id ).is_valid() ) {
         monster tmp( mtype_id( target_id ), mp_aim_char->pos_bub() );
         ty = tmp.print_info( w, ty, 6, 1 );
     } else if( !target_name.empty() && ty < whei - 4 ) {
