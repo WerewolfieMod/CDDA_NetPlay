@@ -2208,6 +2208,7 @@ void run_view_loop()
                             mp_aim_flags[ti] = snap.tiles[ti].flags;
                         }
                     }
+                    mp_client_aim_recalc();
                 }
                 ensure_window( snap.width, snap.height );
                 // DDA MP diag: when did the client actually adopt a picture
