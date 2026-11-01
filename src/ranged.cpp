@@ -2487,6 +2487,65 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
     return out;
 }
 
+std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
+        const std::string &mtype, double range, float ambient_light, bool sees )
+{
+    std::vector<std::string> out;
+    std::unique_ptr<monster> critter;
+    if( !mtype.empty() && mtype_id( mtype ).is_valid() ) {
+        critter = std::make_unique<monster>( mtype_id( mtype ), you.pos_bub() );
+    }
+    Creature *target = critter.get();
+    const double target_size = target != nullptr ? target->ranged_target_size() : 1.0f;
+    static const std::vector<confidence_rating> conf_critter = {{
+            { accuracy_critical, '*', "green", translate_marker_context( "aim_confidence", "Great" ) },
+            { accuracy_standard, '+', "light_gray", translate_marker_context( "aim_confidence", "Normal" ) },
+            { accuracy_grazing, '|', "magenta", translate_marker_context( "aim_confidence", "Graze" ) }
+        }
+    };
+    static const std::vector<confidence_rating> conf_object = {{
+            { accuracy_grazing, '*', "white", translate_marker_context( "aim_confidence", "Hit" ) }
+        }
+    };
+    const auto &conf = target != nullptr ? conf_critter : conf_object;
+    Target_attributes attributes( range, target_size, ambient_light, sees );
+    target_ui ui;
+    ui.you = &you;
+    ui.mode = target_ui::TargetMode::Throw;
+    ui.relevant = &weapon;
+    ui.range = you.throw_range( weapon );
+    input_context ctxt( "TARGET" );
+    ctxt.set_iso( true );
+    ctxt.register_action( "FIRE" );
+    const dispersion_sources dispersion( you.throwing_dispersion( weapon, target, false ) );
+    const std::vector<aim_type_prediction> chances = calculate_ranged_chances(
+                ui, you, target_ui::TargetMode::Throw, ctxt, weapon, dispersion, conf,
+                attributes, you.pos_bub() + tripoint_rel_ms( static_cast<int>( range ), 0, 0 ),
+                item_location() );
+    out.push_back( string_format( "<color_light_gray>%s</color>",
+                                  string_format( _( "Range: %d" ),
+                                          static_cast<int>( range ) ) ) );
+    for( const aim_type_prediction &p : chances ) {
+        std::string line = string_format( "<color_light_gray>%s:</color>", p.name );
+        for( const aim_type_prediction::aim_confidence &c : p.chances ) {
+            const char *col = "light_gray";
+            if( c.label == "Great" ) {
+                col = "green";
+            } else if( c.label == "Graze" ) {
+                col = "magenta";
+            } else if( c.label == "Miss" ) {
+                col = "dark_gray";
+            } else if( c.label == "Hit" ) {
+                col = "white";
+            }
+            line += string_format( " <color_%s>%s %d%%</color>", col, c.label, c.chance );
+        }
+        line += string_format( " <color_light_blue>(%d)</color>", p.moves );
+        out.push_back( line );
+    }
+    return out;
+}
+
 } // namespace target_handler
 
 std::vector<aim_type> Character::get_aim_types( const item &gun ) const

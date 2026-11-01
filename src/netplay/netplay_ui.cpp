@@ -844,8 +844,13 @@ static float mp_canvas_th = 0.0f;
  * terrain blocking (smooth-light barrier bit) and creature ids. */
 static std::vector<uint8_t> mp_aim_flags;
 static std::vector<std::string> mp_aim_critters;
+static std::vector<int> mp_aim_light;
 static int mp_aim_w = 0;
 static int mp_aim_h = 0;
+static std::unique_ptr<npc> mp_aim_char;
+static item mp_aim_item;
+static std::vector<std::string> mp_client_aim_lines;
+static std::string mp_char_json_cache;
 static std::string mp_throw_name;
 static int mp_throw_range = 1;
 static std::string mp_aim_text;
@@ -1566,6 +1571,19 @@ static void mp_run_host_inventory( const std::string &text )
                 mp_throw_range = std::max( 1, viewer.throw_range( it ) );
                 mp_throw_active = true;
                 mp_aim_text.clear();
+                mp_client_aim_lines.clear();
+                mp_aim_char.reset();
+                if( !mp_char_json_cache.empty() ) {
+                    try {
+                        JsonValue jv = json_loader::from_string( mp_char_json_cache );
+                        std::unique_ptr<npc> tmp = std::make_unique<npc>();
+                        tmp->deserialize( jv.get_object() );
+                        mp_aim_char = std::move( tmp );
+                        mp_aim_item = it;
+                    } catch( ... ) {
+                        mp_aim_char.reset();
+                    }
+                }
                 netplay::client_send_aim_info( node, pkt.header.generation,
                                                mp_throw_dx, mp_throw_dy );
             }
@@ -1600,6 +1618,29 @@ static void mp_run_host_inventory( const std::string &text )
 static netplay::sidebar_frame mp_aim_panel;
 static bool mp_have_aim_panel = false;
 
+static void mp_client_aim_recalc()
+{
+    mp_client_aim_lines.clear();
+    if( !mp_aim_char || mp_aim_w <= 0 || mp_aim_h <= 0 ) {
+        return;
+    }
+    const int tx = mp_aim_w / 2 + mp_throw_dx;
+    const int ty = mp_aim_h / 2 + mp_throw_dy;
+    if( tx < 0 || ty < 0 || tx >= mp_aim_w || ty >= mp_aim_h ) {
+        return;
+    }
+    const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
+    const std::string critter = idx < mp_aim_critters.size() ? mp_aim_critters[idx] : "";
+    const int light = idx < mp_aim_light.size() ? mp_aim_light[idx] : 0;
+    const bool sees = ( idx < mp_aim_flags.size() && ( mp_aim_flags[idx] & 32 ) != 0 ) ||
+                      light > 0;
+    const double range = std::sqrt( static_cast<double>( mp_throw_dx * mp_throw_dx +
+                                   mp_throw_dy * mp_throw_dy ) );
+    mp_client_aim_lines = target_handler::netplay_throw_aim_client(
+                              *mp_aim_char, mp_aim_item, critter, range,
+                              light * 50.0f, sees );
+}
+
 static void mp_draw_aim_panel()
 {
     if( !mp_have_aim_panel || mp_aim_panel.width <= 0 || mp_aim_panel.height <= 0 ) {
@@ -1610,7 +1651,8 @@ static void mp_draw_aim_panel()
     const float cw = ImGui::CalcTextSize( "M" ).x;
     const float ch = ImGui::GetTextLineHeight();
     const float pw = ( mp_aim_panel.width + 2 ) * cw;
-    const float ph = ( mp_aim_panel.height + 2 ) * ch;
+    const int extra_lines = std::min( static_cast<int>( mp_client_aim_lines.size() ), 6 );
+    const float ph = ( mp_aim_panel.height + 2 + extra_lines ) * ch;
     const float px = std::max( 0.0f, io.DisplaySize.x - pw );
     const float py = 0.0f;
     // Client-side target focus: the snapshot carries the creature id per cell,
@@ -1645,6 +1687,13 @@ static void mp_draw_aim_panel()
         dl->AddText( ImVec2( px + cw, py + ( mp_aim_panel.height + 0.5f ) * ch ),
                      IM_COL32( 120, 220, 255, 255 ),
                      string_format( "%s %s", _( "Target:" ), target_name ).c_str() );
+    }
+    // Client-side chances (computed from the temp Character + snapshot).
+    float ly = py + ( mp_aim_panel.height + 1.0f ) * ch;
+    for( int i = 0; i < extra_lines; i++ ) {
+        dl->AddText( ImVec2( px + cw, ly ), IM_COL32( 210, 210, 210, 255 ),
+                     remove_color_tags( mp_client_aim_lines[i] ).c_str() );
+        ly += ch;
     }
     dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                  IM_COL32( 190, 190, 190, 255 ) );
@@ -2078,6 +2127,7 @@ void run_view_loop()
                     std::string mp_cj;
                     if( netplay::client_character_json( mp_cj ) ) {
                         mp_char_json = std::move( mp_cj );
+                        mp_char_json_cache = mp_char_json;
                     }
                 }
                 {
@@ -2147,9 +2197,11 @@ void run_view_loop()
                     mp_aim_flags.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
                     mp_aim_critters.assign( static_cast<size_t>( snap.width ) * snap.height,
                                             std::string() );
+                    mp_aim_light.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
                     for( size_t ci = 0; ci < snap.tiles.size() &&
                          ci < mp_aim_critters.size(); ci++ ) {
                         mp_aim_critters[ci] = snap.tiles[ci].critter;
+                        mp_aim_light[ci] = static_cast<int>( snap.tiles[ci].light );
                     }
                     if( snap.tiles.size() == snap.cells.size() ) {
                         for( size_t ti = 0; ti < snap.tiles.size(); ti++ ) {
@@ -2670,24 +2722,28 @@ void run_view_loop()
                     --mp_throw_dy;
                     netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
                                                    mp_throw_dx, mp_throw_dy );
+                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "DOWN" ) {
                     ++mp_throw_dy;
                     netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
                                                    mp_throw_dx, mp_throw_dy );
+                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "LEFT" ) {
                     --mp_throw_dx;
                     netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
                                                    mp_throw_dx, mp_throw_dy );
+                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "RIGHT" ) {
                     ++mp_throw_dx;
                     netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
                                                    mp_throw_dx, mp_throw_dy );
+                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
