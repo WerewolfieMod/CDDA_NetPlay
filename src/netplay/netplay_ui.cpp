@@ -1674,11 +1674,20 @@ static void mp_build_client_aim_panel()
     // is not in the snapshot; otherwise fall back to the critter type.
     std::string target_name;
     std::string target_id;
+    bool on_character_glyph = false;
+    if( mp_aim_w > 0 && mp_aim_h > 0 ) {
+        const int gx = mp_aim_w / 2 + mp_throw_dx;
+        const int gy = mp_aim_h / 2 + mp_throw_dy;
+        if( gx >= 0 && gy >= 0 && gx < mp_aim_w && gy < mp_aim_h ) {
+            const size_t gidx = static_cast<size_t>( gy ) * mp_aim_w + gx;
+            on_character_glyph = gidx < mp_aim_glyphs.size() && mp_aim_glyphs[gidx] == '@';
+        }
+    }
     const netplay::aim_target *target_char = nullptr;
     for( const netplay::aim_target &t : mp_aim_targets ) {
         if( t.dx == mp_throw_dx && t.dy == mp_throw_dy ) {
             target_name = t.name;
-            if( t.is_character ) {
+            if( t.is_character && on_character_glyph ) {
                 target_char = &t;
             }
             break;
@@ -1782,7 +1791,7 @@ static void mp_build_client_aim_panel()
         if( ty >= whei - 6 ) {
             break;
         }
-        print_colored_text( w, point( 1, ty++ ), col, col, mp_client_aim_lines[li] );
+        ty += fold_and_print( w, point( 1, ty ), wwid - 2, col, mp_client_aim_lines[li] );
     }
     mvwprintz( w, point( 1, whei - 5 ), c_white,
                _( "Move cursor with directional keys" ) );
