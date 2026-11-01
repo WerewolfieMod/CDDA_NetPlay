@@ -2218,12 +2218,12 @@ void run_view_loop()
                 if( ly + ch > io.DisplaySize.y ) {
                     break;
                 }
+                float slot_x = x0;
                 for( int slot = 0; slot < 2 && bi + slot < mp_mini_map.beacons.size(); slot++ ) {
                     const minimap_frame::beacon &bb = mp_mini_map.beacons[bi + slot];
                     if( bb.name.empty() ) {
                         continue;
                     }
-                    const float slot_x = x0 + slot * ( mp_list_w * 0.5f );
                     dl->AddText( ImVec2( slot_x, ly ),
                                  cataimgui::ImU32_from_color(
                                      decode_cell_color( static_cast<int>( bb.color ) ) ),
@@ -2232,6 +2232,8 @@ void run_view_loop()
                     dl->AddText( ImVec2( slot_x + sym_w + cw * 0.5f, ly ),
                                  IM_COL32( 180, 180, 180, 255 ),
                                  bb.name.c_str() );
+                    slot_x += sym_w + cw * 0.5f +
+                              ImGui::CalcTextSize( bb.name.c_str() ).x + cw * 1.5f;
                     ++mp_shown;
                 }
                 ly += ch;
@@ -2940,6 +2942,12 @@ void run_view_loop()
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
+                                // The session adaptors are drawn before the
+                                // canvas upstream; redraw them once more so the
+                                // sidebar/message log sit above the map.
+                                if( !mp_side.cells.empty() ) {
+                                    ui_manager::redraw();
+                                }
                                 if( mp_throw_active ) {
                                     netplay::overlay_begin();
                                     mp_draw_aim_panel();
