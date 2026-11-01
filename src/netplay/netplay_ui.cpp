@@ -324,14 +324,17 @@ static void run_avatar_join_flow( const std::string &use_nick )
                netplay::client_avatar_error() );
     }
 
-    std::vector<const netplay::avatar_entry *> alive;
+    // DDA MP v4.0a-85: client_avatar_list() returns a copy, so keep values, not
+    // pointers into the temporary (they used to dangle right after the loop).
+    bool has_alive = false;
     for( const netplay::avatar_entry &e : netplay::client_avatar_list() ) {
         if( e.alive ) {
-            alive.push_back( &e );
+            has_alive = true;
+            break;
         }
     }
 
-    if( alive.empty() ) {
+    if( !has_alive ) {
         // v4.0a-1: no live avatar for this nick goes straight to creation
         avatar_create_flow( use_nick );
         return;
