@@ -26,6 +26,7 @@
 #include "color.h"
 #include "creature.h"
 #include "creature_tracker.h"
+#include "craft_reservation.h"
 #include "effect.h"
 #include "game.h"
 #include "item.h"
@@ -35,7 +36,6 @@
 #include "lightmap.h"
 #include "map.h"
 #include "map_memory.h"
-#include "map_selector.h"
 #include "memory_fast.h"
 #include "monster.h"
 #include "mtype.h"
@@ -1245,12 +1245,28 @@ static std::map<int, bool> av_waiting_for_turn;
 static bool av_all_acted()
 {
     for( const auto &entry : av_sid_to_npc ) {
+        // DDA MP v4.0a-88: an AFK (long wait) session must not block the
+        // others; it does not take part in the turn round at all.
+        if( netplay::host_session_afk( entry.first ) ) {
+            continue;
+        }
         const auto it = av_acted_since_tick.find( entry.first );
         if( it == av_acted_since_tick.end() || !it->second ) {
             return false;
         }
     }
     return true;
+}
+
+/* DDA MP v4.0a-88: a session avatar did something (step or wait) since the
+ * last world turn. While the host is in long wait, each such action drives
+ * exactly one world turn, so the active player can move as fast as their
+ * input allows instead of being paced by a fixed timer. */
+static bool av_client_acted = false;
+
+bool host_client_acted_since_turn()
+{
+    return av_client_acted;
 }
 
 void host_pump_avatar_keys()
@@ -1277,6 +1293,7 @@ void host_pump_avatar_keys()
             // Pass the turn: spend the pool, mark the order, refresh the picture.
             av_acted_since_tick[sk.sid] = true;
             av_move_pool[sk.sid] = 0;
+            av_client_acted = true;
             netplay::host_send_hover_to_sid( sk.sid, "" );
             av_send_session_picture( sk.sid, av_session_center( sk.sid ), npc_ptr.get() );
             continue;
@@ -1384,6 +1401,7 @@ void host_pump_avatar_keys()
             }
             // parity: this bind acted since the last world turn
             av_acted_since_tick[sk.sid] = true;
+            av_client_acted = true;
             // The step went through: the client is not waiting any more.
             netplay::host_send_hover_to_sid( sk.sid, "" );
             // DDA MP v4.0a-7: the shared world turn is NOT synthesized here
@@ -2251,6 +2269,7 @@ void host_pump_client_actions()
                 // Same contract as the WAIT key: spend the pool, redraw.
                 av_acted_since_tick[sid] = true;
                 av_move_pool[sid] = 0;
+                av_client_acted = true;
                 netplay::host_send_hover_to_sid( sid, "" );
                 av_send_session_picture( sid, av_session_center( sid ), npc_ptr.get() );
                 continue;
@@ -2306,7 +2325,6 @@ void host_pump_client_actions()
             case ACTION_PICKUP_ALL: {
                 map &here = get_map();
                 const tripoint_bub_ms pos = av->pos_bub();
-                static const activity_id mp_act_pickup( "ACT_PICKUP" );
                 const bool nearby = static_cast<action_id>( action ) == ACTION_PICKUP_ALL;
                 // Vanilla pickup asks which adjacent tile to use. A client
                 // order has no tile cursor, so use the avatar's own tile and,
@@ -2344,34 +2362,35 @@ void host_pump_client_actions()
                 const int before = total_amount();
                 int after = before;
                 if( before > 0 ) {
-                    drop_locations what;
-                    for( const tripoint_bub_ms &p : tiles ) {
-                        for( item &it : here.i_at( p ) ) {
-                            what.emplace_back( item_location( map_cursor( p ), &it ),
-                                               it.count() );
+                    // DDA MP v4.0a-89: the vanilla pickup activity asserts that
+                    // it runs on the player character (activity_actor.cpp), so it
+                    // cannot be used for a session NPC. Move the items with the
+                    // same primitives NPC pickup uses: craft reservations are
+                    // skipped, can_stash() decides whether they fit, i_add()
+                    // stores them. No item_location outlives this call.
+                    const auto take_tile = [&]( const tripoint_bub_ms &p ) {
+                        if( !here.inbounds( p ) ) {
+                            return;
                         }
+                        map_stack items = here.i_at( p );
+                        for( auto it = items.begin(); it != items.end(); ) {
+                            const item &itm = *it;
+                            if( craft_reservation::contains_reserved_or_live_craft( itm ) ||
+                                !av->can_stash( itm ) ) {
+                                ++it;
+                                continue;
+                            }
+                            item copy = itm;
+                            if( av->i_add( copy ) ) {
+                                it = items.erase( it );
+                            } else {
+                                ++it;
+                            }
+                        }
+                    };
+                    for( const tripoint_bub_ms &p : tiles ) {
+                        take_tile( p );
                     }
-                    // DDA MP v4.0a-86: hand the list to the vanilla pickup
-                    // activity but finish it right here. The bubble is handed
-                    // back to the host after this pump, which unloads the
-                    // avatar's submaps and would invalidate the stored item
-                    // locations before the next turn could process them.
-                    av->pick_up( what );
-                    const int pool = [&]() {
-                        const auto it = av_move_pool.find( sid );
-                        return it != av_move_pool.end() ? it->second : av->get_moves();
-                    }();
-                    av->set_moves( std::max( pool, 1000 ) );
-                    for( int guard = 0;
-                         guard < 100 && av->activity && av->activity.id() == mp_act_pickup;
-                         guard++ ) {
-                        av->process_activity();
-                    }
-                    if( av->activity && av->activity.id() == mp_act_pickup ) {
-                        // Never leave a half-done pickup holding dead locations.
-                        av->cancel_activity();
-                    }
-                    av->set_moves( pool );
                     after = total_amount();
                 }
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
@@ -2429,6 +2448,7 @@ void host_note_world_turn()
         return;
     }
     av_acted_since_tick.clear();
+    av_client_acted = false;
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
     // so pay its one turn of speed here — exactly like Character::process_turn

@@ -276,7 +276,7 @@ input_context game::get_player_input( std::string &action )
         // timeout the client's step sat in the queue until the host pressed
         // something of its own (its picture only updated on the next host turn).
         if( netplay::host_is_running() && netplay::host_session_count() > 0 ) {
-            ctxt.set_timeout( 30 );
+            ctxt.set_timeout( netplay::long_wait_active() ? 10 : 30 );
         }
     }
 
@@ -336,7 +336,10 @@ input_context game::get_player_input( std::string &action )
         wPrint.wtype = weather.weather_id;
         wPrint.vdrops.clear();
 
-        ctxt.set_timeout( 125 );
+        // DDA MP v4.0a-86: while long wait is on, turns are driven by client
+        // actions, so poll often enough to keep up with fast movement.
+        ctxt.set_timeout( netplay::long_wait_active() && netplay::host_session_count() > 0 ? 10 :
+                          125 );
 
         shared_ptr_fast<game::draw_callback_t> animation_cb =
         make_shared_fast<game::draw_callback_t>( [&]() {
@@ -474,11 +477,13 @@ input_context game::get_player_input( std::string &action )
             }
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
                  && !( action == "TIMEOUT" && netplay::long_wait_active() &&
-                       netplay::host_session_count() > 0 && netplay::long_wait_turn_ready() )
+                       netplay::host_session_count() > 0 &&
+                       netplay::host_client_acted_since_turn() )
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
     } else {
-        ctxt.set_timeout( 125 );
+        ctxt.set_timeout( netplay::long_wait_active() && netplay::host_session_count() > 0 ? 10 :
+                          125 );
         while( handle_mouseview( ctxt, action ) ) {
             if( netplay::long_wait_active() && netplay::host_session_count() > 0 ) {
                 netplay::host_draw_long_wait_hint( 0 );
@@ -487,7 +492,7 @@ input_context game::get_player_input( std::string &action )
             if( action == "TIMEOUT" &&
                 ( current_turn.has_timeout_elapsed() ||
                   ( netplay::long_wait_active() && netplay::host_session_count() > 0 &&
-                    netplay::long_wait_turn_ready() ) ) ) {
+                    netplay::host_client_acted_since_turn() ) ) ) {
                 break;
             }
         }

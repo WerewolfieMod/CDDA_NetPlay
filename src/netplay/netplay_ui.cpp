@@ -2351,7 +2351,10 @@ static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
         return true;
     }
     if( sel == MP_ENTRY_LONG_WAIT ) {
-        netplay::set_long_wait( !netplay::long_wait_active() );
+        const bool mp_lw = !netplay::long_wait_active();
+        netplay::set_long_wait( mp_lw );
+        // DDA MP v4.0a-88: the host skips AFK sessions in its turn parity.
+        netplay::client_send_afk( mp_lw );
         return false;
     }
     if( sel == MP_ENTRY_KEYBINDINGS ) {
@@ -2784,16 +2787,9 @@ void run_view_loop()
                     netplay::client_send_view( mp_cols, mp_rows );
                 }
             }
-            // DDA MP v4.0a-86: long wait — pass a turn at the pacing interval.
-            // Only a bound avatar may do this; a watcher's WAIT would reach the
-            // host player's own input.
-            if( netplay::long_wait_active() &&
-                netplay::client_avatar_bind_state() == 2 &&
-                netplay::long_wait_turn_ready() ) {
-                key_event ke;
-                ke.code = 20;
-                client_send_keys( { ke } );
-            }
+            // DDA MP v4.0a-88: long wait no longer sends WAIT orders; the client
+            // only tells the host it is AFK (see the menu toggle), so the active
+            // player's actions drive the world turns one by one.
             // DDA MP v4.0a-7: turn-pacing hint from the host ("waiting for
             // other players..."), shown above the picture and in the title.
             {

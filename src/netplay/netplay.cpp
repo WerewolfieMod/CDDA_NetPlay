@@ -402,6 +402,10 @@ struct netplay_state {
     std::mutex client_action_mutex;
     std::deque<client_action> client_actions;
 
+    /* DDA MP v4.0a-88: per-session AFK flag (long wait on the client). */
+    std::mutex afk_mutex;
+    std::map<int, bool> session_afk;
+
     /* DDA MP v4.0a-31: pocket-settings payloads (JSON) queued likewise. */
     struct inv_settings {
         int sid = 0;
@@ -846,6 +850,15 @@ static void host_session_reader( int sid, socket_t sock )
                     state.client_actions.push_back( { sid, action } );
                 }
             }
+        } else if( op == frame::CLIENT_AFK ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const uint8_t on = r.get_u8();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.afk_mutex );
+                state.session_afk[sid] = on != 0;
+            }
         } else if( op == frame::BYE ) {
             break;
         }
@@ -855,6 +868,10 @@ static void host_session_reader( int sid, socket_t sock )
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
     state.id2sock.erase( sid );
     state.id2name.erase( sid );
+    {
+        std::lock_guard<std::mutex> afk_lk( state.afk_mutex );
+        state.session_afk.erase( sid );
+    }
 }
 
 static void host_accept_loop()
@@ -2359,16 +2376,9 @@ bool host_client_view( int sid, int &cols, int &rows )
  * each keeps its own flag; the host uses it to pass its own turns, the client
  * to auto-send WAIT orders. */
 static std::atomic<bool> long_wait_on( false );
-static std::mutex long_wait_mutex;
-static std::chrono::steady_clock::time_point long_wait_last =
-    std::chrono::steady_clock::time_point::min();
 
 void set_long_wait( bool on )
 {
-    {
-        std::lock_guard<std::mutex> lk( long_wait_mutex );
-        long_wait_last = std::chrono::steady_clock::time_point::min();
-    }
     long_wait_on = on;
 }
 
@@ -2377,19 +2387,21 @@ bool long_wait_active()
     return long_wait_on.load();
 }
 
-bool long_wait_turn_ready()
+bool client_send_afk( bool on )
 {
-    if( !long_wait_on.load() ) {
+    if( !state.connected ) {
         return false;
     }
-    std::lock_guard<std::mutex> lk( long_wait_mutex );
-    const auto now = std::chrono::steady_clock::now();
-    if( long_wait_last != std::chrono::steady_clock::time_point::min() &&
-        now - long_wait_last < std::chrono::milliseconds( 250 ) ) {
-        return false;
-    }
-    long_wait_last = now;
-    return true;
+    std::vector<char> p;
+    p.push_back( on ? 1 : 0 );
+    return send_all( state.client_sock, encode_frame( frame::CLIENT_AFK, p ) );
+}
+
+bool host_session_afk( int sid )
+{
+    std::lock_guard<std::mutex> lk( state.afk_mutex );
+    const auto it = state.session_afk.find( sid );
+    return it != state.session_afk.end() && it->second;
 }
 
 void client_send_keys( const std::vector<key_event> &keys )

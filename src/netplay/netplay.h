@@ -89,6 +89,8 @@ enum class frame : int {
     AIM_TARGETS = 38,       ///< host -> client: [n]{i32 dx,dy,...}
     /// DDA MP v4.0a-72: one action id picked in the client's own action menu.
     CLIENT_ACTION = 39,     ///< client -> host: i32 action id
+    /// DDA MP v4.0a-88: the client is away; exclude it from turn parity.
+    CLIENT_AFK = 40,        ///< client -> host: u8 on/off
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -532,13 +534,16 @@ void client_pump();
 
 /// While long wait is on, the local player passes turns automatically so the
 /// other players can move freely. Host and client keep their own flag; the
-/// host toggles it from the main menu, the client from its session menu and
-/// auto-sends WAIT orders.
+/// host toggles it from the main menu, the client from its session menu.
 void set_long_wait( bool on );
 bool long_wait_active();
-/// Rate-limited "a turn may be passed now" check (~4 per second). Consumes the
-/// slot when it returns true; false while the mode is off.
-bool long_wait_turn_ready();
+/// Host: true when a session avatar acted (step/wait) since the last world
+/// turn. Drives the host's auto-turn while long wait is on.
+bool host_client_acted_since_turn();
+/// Client: tell the host this player is away (excluded from turn parity).
+bool client_send_afk( bool on );
+/// Host: whether a session is in AFK mode.
+bool host_session_afk( int sid );
 /// Host: draw the long-wait line in the top-of-screen waiting hint block.
 void host_draw_long_wait_hint( int row );
 
