@@ -1848,7 +1848,32 @@ static void mp_draw_aim_panel()
         }
         return true; // box drawing / unknown glyph -> skip (tofu)
     };
-    // Title sits on the top border, like draw_window_title.
+    // Title sits on the top border; the border line is interrupted under it
+    // (like draw_window_title overwriting the border cell).
+    int title_first = -1;
+    int title_last = -1;
+    for( size_t x = 0; x < mp_aim_title_cells.size(); x++ ) {
+        const netplay::sidebar_cell &c = mp_aim_title_cells[x];
+        if( !c.text.empty() && c.text != " " && !is_box_glyph( c.text ) ) {
+            if( title_first < 0 ) {
+                title_first = static_cast<int>( x );
+            }
+            title_last = static_cast<int>( x );
+        }
+    }
+    const float gap_start = title_first < 0 ? px : px + ( title_first + 0.5f ) * cw;
+    const float gap_end = title_last < 0 ? px : px + ( title_last + 1.5f ) * cw;
+    const float help_w = ImGui::CalcTextSize(
+                             string_format( _( "[%s] show all controls" ), "?" ).c_str() ).x;
+    const float help_x = px + pw - help_w - cw;
+    const ImU32 border = IM_COL32( 190, 190, 190, 255 );
+    dl->AddLine( ImVec2( px, py ), ImVec2( gap_start, py ), border );
+    dl->AddLine( ImVec2( gap_end, py ), ImVec2( px + pw, py ), border );
+    dl->AddLine( ImVec2( px, py + ph ), ImVec2( help_x - cw * 0.5f, py + ph ), border );
+    dl->AddLine( ImVec2( help_x + help_w + cw * 0.5f, py + ph ),
+                 ImVec2( px + pw, py + ph ), border );
+    dl->AddLine( ImVec2( px, py ), ImVec2( px, py + ph ), border );
+    dl->AddLine( ImVec2( px + pw, py ), ImVec2( px + pw, py + ph ), border );
     for( size_t x = 0; x < mp_aim_title_cells.size(); x++ ) {
         const netplay::sidebar_cell &c = mp_aim_title_cells[x];
         if( c.text.empty() || c.text == " " || is_box_glyph( c.text ) ) {
@@ -1873,13 +1898,8 @@ static void mp_draw_aim_panel()
     // Bottom border label, like draw_help_notice.
     const std::string help = string_format( _( "[%s] show all controls" ), "?" );
     const float hw = ImGui::CalcTextSize( help.c_str() ).x;
-    const float ly = py + ph - ch * 0.5f;
-    dl->AddRectFilled( ImVec2( px + pw - hw - cw - 2, ly - 1 ),
-                       ImVec2( px + pw - cw + 2, ly + ch ), IM_COL32( 0, 0, 0, 255 ) );
-    dl->AddText( ImVec2( px + pw - hw - cw, ly ),
+    dl->AddText( ImVec2( px + pw - hw - cw, py + ph - ch * 0.5f ),
                  IM_COL32( 230, 230, 230, 255 ), help.c_str() );
-    dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
-                 IM_COL32( 190, 190, 190, 255 ) );
 }
 static void mp_run_client_throw( const item &thrown, int node, int generation,
                                  const tripoint_abs_ms &origin )
