@@ -1674,14 +1674,7 @@ static void mp_build_client_aim_panel()
     std::string target_name;
     std::string target_id;
     const netplay::aim_target *target_char = nullptr;
-    const netplay::aim_target *best_target = nullptr;
-    int best_dist = 3;
     for( const netplay::aim_target &t : mp_aim_targets ) {
-        const int d = std::abs( t.dx - mp_throw_dx ) + std::abs( t.dy - mp_throw_dy );
-        if( d < best_dist ) {
-            best_dist = d;
-            best_target = &t;
-        }
         if( t.dx == mp_throw_dx && t.dy == mp_throw_dy ) {
             target_name = t.name;
             if( t.is_character ) {
@@ -1689,14 +1682,6 @@ static void mp_build_client_aim_panel()
             }
             break;
         }
-    }
-    if( target_char == nullptr && best_target != nullptr && best_target->is_character ) {
-        // One-tile tolerance: snapshot centre and avatar cell can differ by a
-        // tile depending on the frame offset.
-        target_char = best_target;
-        target_name = best_target->name;
-    } else if( target_name.empty() && best_target != nullptr ) {
-        target_name = best_target->name;
     }
     if( mp_aim_w > 0 && mp_aim_h > 0 ) {
         const int tx = mp_aim_w / 2 + mp_throw_dx;
@@ -1744,7 +1729,7 @@ static void mp_build_client_aim_panel()
                              static_cast<Creature::Attitude>( target_char->attitude ) );
         mvwprintz( w, point( 1, ty ), att.second, "%s", att.first.translated() );
         wprintz( w, c_light_gray, ";" );
-        wprintz( w, c_white, " %s",
+        wprintz( w, decode_cell_color( target_char->name_color ), " %s",
                  npc_attitude_name( static_cast<npc_attitude>( target_char->npc_attitude ) ) );
         ++ty;
         const bool sees_you = target_char->sees_you != 0;
@@ -1756,7 +1741,8 @@ static void mp_build_client_aim_panel()
         if( !target_char->wielded.empty() ) {
             print_colored_text( w, point( 1, ty++ ), col, col,
                                 std::string( "<color_light_gray>" ) + _( "Wielding: " ) +
-                                std::string( "</color>" ) + target_char->wielded );
+                                std::string( "</color><color_red>" ) + target_char->wielded +
+                                std::string( "</color>" ) );
         }
     } else if( !target_id.empty() && mp_aim_char ) {
         monster tmp( mtype_id( target_id ), mp_aim_char->pos_bub() );
@@ -1797,6 +1783,7 @@ static void mp_build_client_aim_panel()
         const cata_cursesport::cursecell &raw = wraw->line[0].chars[x + 1];
         mp_aim_title_cells[static_cast<size_t>( x )].text = raw.ch;
         mp_aim_title_cells[static_cast<size_t>( x )].color = static_cast<int>( raw.FG );
+        mp_aim_title_cells[static_cast<size_t>( x )].bg = static_cast<int>( raw.BG );
     }
     for( int y = 0; y < whei - 2; y++ ) {
         for( int x = 0; x < wwid - 2; x++ ) {
@@ -1805,6 +1792,7 @@ static void mp_build_client_aim_panel()
                                            static_cast<size_t>( y ) * mp_aim_panel.width + x];
             c.text = raw.ch;
             c.color = static_cast<int>( raw.FG );
+            c.bg = static_cast<int>( raw.BG );
         }
     }
     mp_have_aim_panel = true;
@@ -1824,7 +1812,8 @@ static void mp_draw_aim_panel()
     const float ph = ( mp_aim_panel.height + 2 ) * ch;
     const float px = std::max( 4.0f, io.DisplaySize.x - pw - 4.0f );
     const float py = 0.0f;
-    dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
+    dl->AddRectFilled( ImVec2( px - cw * 0.5f, py - ch * 0.5f ),
+                       ImVec2( px + pw + cw * 0.5f, py + ph + ch * 0.5f ),
                        IM_COL32( 0, 0, 0, 255 ) );
     auto is_box_glyph = []( const std::string & s ) {
         if( s.empty() ) {
@@ -1856,21 +1845,26 @@ static void mp_draw_aim_panel()
             title_last = static_cast<int>( x );
         }
     }
-    const float gap_start = title_first < 0 ? px : px + ( title_first + 0.5f ) * cw;
+    const float gap_start = title_first < 0 ? px : px + ( title_first + 1.5f ) * cw;
     const float gap_end = title_last < 0 ? px : px + ( title_last + 1.5f ) * cw;
-    const float help_w = ImGui::CalcTextSize(
-                             string_format( _( "[%s] show all controls" ), "?" ).c_str() ).x;
+    const std::string help = "< " + string_format( _( "[%s] show all controls" ), "?" ) + " >";
+    const float help_w = ImGui::CalcTextSize( help.c_str() ).x;
     const float help_x = px + pw - help_w - cw;
     const ImU32 border = IM_COL32( 190, 190, 190, 255 );
     dl->AddLine( ImVec2( px, py ), ImVec2( gap_start, py ), border );
     dl->AddLine( ImVec2( gap_end, py ), ImVec2( px + pw, py ), border );
-    dl->AddLine( ImVec2( px, py + ph ), ImVec2( help_x - cw * 0.5f, py + ph ), border );
-    dl->AddLine( ImVec2( help_x + help_w + cw * 0.5f, py + ph ),
+    dl->AddLine( ImVec2( px, py + ph ), ImVec2( help_x + cw * 0.5f, py + ph ), border );
+    dl->AddLine( ImVec2( help_x + help_w - cw * 0.5f, py + ph ),
                  ImVec2( px + pw, py + ph ), border );
     dl->AddLine( ImVec2( px, py ), ImVec2( px, py + ph ), border );
     dl->AddLine( ImVec2( px + pw, py ), ImVec2( px + pw, py + ph ), border );
     for( size_t x = 0; x < mp_aim_title_cells.size(); x++ ) {
         const netplay::sidebar_cell &c = mp_aim_title_cells[x];
+        if( c.bg != 0 ) {
+            dl->AddRectFilled( ImVec2( px + ( static_cast<float>( x ) + 1 ) * cw, py ),
+                               ImVec2( px + ( static_cast<float>( x ) + 2 ) * cw, py + ch ),
+                               cataimgui::ImU32_from_color( decode_cell_color( c.bg ) ) );
+        }
         if( c.text.empty() || c.text == " " || is_box_glyph( c.text ) ) {
             continue;
         }
@@ -1882,6 +1876,11 @@ static void mp_draw_aim_panel()
         for( int col = 0; col < mp_aim_panel.width; col++ ) {
             const netplay::sidebar_cell &c = mp_aim_panel.cells[
                                                  static_cast<size_t>( row ) * mp_aim_panel.width + col];
+            if( c.bg != 0 ) {
+                dl->AddRectFilled( ImVec2( px + ( col + 1 ) * cw, py + ( row + 1 ) * ch ),
+                                   ImVec2( px + ( col + 2 ) * cw, py + ( row + 2 ) * ch ),
+                                   cataimgui::ImU32_from_color( decode_cell_color( c.bg ) ) );
+            }
             if( c.text.empty() || c.text == " " ) {
                 continue;
             }
@@ -1890,14 +1889,12 @@ static void mp_draw_aim_panel()
                          c.text.c_str() );
         }
     }
-    // Bottom border label, like draw_help_notice.
-    const std::string help = string_format( _( "[%s] show all controls" ), "?" );
-    const float hw = ImGui::CalcTextSize( help.c_str() ).x;
-    const float hx = px + pw - hw - cw;
+    // Bottom border label, like draw_help_notice (brackets included).
     const float hy = py + ph - ch * 0.5f;
-    dl->AddRectFilled( ImVec2( hx - 2, hy - 1 ), ImVec2( hx + hw + 2, hy + ch ),
+    dl->AddRectFilled( ImVec2( help_x - 2, hy - 1 ),
+                       ImVec2( help_x + help_w + 2, hy + ch ),
                        IM_COL32( 0, 0, 0, 255 ) );
-    dl->AddText( ImVec2( hx, hy ), IM_COL32( 230, 230, 230, 255 ), help.c_str() );
+    dl->AddText( ImVec2( help_x, hy ), IM_COL32( 230, 230, 230, 255 ), help.c_str() );
 }
 static void mp_run_client_throw( const item &thrown, int node, int generation,
                                  const tripoint_abs_ms &origin )

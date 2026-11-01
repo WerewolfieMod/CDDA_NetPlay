@@ -231,6 +231,7 @@ struct tile_cell {
 struct sidebar_cell {
     std::string text;
     int color = 0;
+    int bg = 0;
 };
 
 /// A rendered sidebar block (the host's panel layout, drawn for one avatar).
