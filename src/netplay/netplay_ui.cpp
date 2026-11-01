@@ -1113,6 +1113,17 @@ static bool mp_legacy_inventory_enabled()
     return enabled;
 }
 
+/* DDA MP v4.0a-78: debug switch for default-mode key parity on the client.
+ * DDA_MP_KEY_ACTIONS=0 disables it, leaving only the built-in keys. */
+static bool mp_key_action_parity()
+{
+    static const bool enabled = []() {
+        const char *env = std::getenv( "DDA_MP_KEY_ACTIONS" );
+        return env == nullptr || env[0] == '\0' || std::string( env ) != "0";
+    }();
+    return enabled;
+}
+
 /* DDA MP v4.0a-17: diagnostics for the client inventory bridge. Always
  * compiled, gated by DDA_MP_DIAG at runtime. */
 static void mp_inv_log( const std::string &msg )
@@ -3468,6 +3479,59 @@ void run_view_loop()
                 key_event ke;
                 ke.code = static_cast<uint32_t>( code );
                 client_send_keys( { ke } );
+                continue;
+            }
+            // DDA MP v4.0a-78: keys the view context does not consume are looked
+            // up in the default game context, so the client reacts to the same
+            // keys as the host. Client-local UIs run here; every other action
+            // travels to the host as an action order (the host answers with a
+            // message when its own bridge for it is not there yet).
+            if( mp_key_action_parity() ) {
+                const input_event mp_ev = ctxt.get_raw_input();
+                input_context dctxt = get_default_mode_input_context();
+                const std::string act_name = dctxt.input_to_action( mp_ev );
+                if( !act_name.empty() ) {
+                    const action_id mp_act = look_up_action( act_name );
+                    switch( mp_act ) {
+                        case ACTION_INVENTORY:
+                        case ACTION_ADVANCEDINV:
+                            mp_run_host_inventory( mp_inv_text );
+                            continue;
+                        case ACTION_PL_INFO:
+                            mp_run_character_info( mp_char_json );
+                            continue;
+                        case ACTION_HELP: {
+                            help_window hw;
+                            hw.show();
+                            continue;
+                        }
+                        case ACTION_OPTIONS:
+                            get_options().show( true );
+                            continue;
+                        case ACTION_ACTIONMENU: {
+                            const int act = mp_client_action_menu();
+                            if( act > 0 ) {
+                                netplay::client_send_client_action( act );
+                            }
+                            continue;
+                        }
+                        case ACTION_MAIN_MENU: {
+                            const int mp_sel = mp_client_main_menu();
+                            if( mp_client_run_menu_entry( mp_sel, mp_inv_text,
+                                                          mp_char_json ) ) {
+                                voluntary_quit = true;
+                                break;
+                            }
+                            continue;
+                        }
+                        case ACTION_NULL:
+                            continue;
+                        default:
+                            netplay::client_send_client_action(
+                                static_cast<int>( mp_act ) );
+                            continue;
+                    }
+                }
             }
         }
 
