@@ -1562,6 +1562,7 @@ bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list 
         put_i32( p, t.attitude );
         put_i32( p, t.npc_attitude );
         put_i32( p, t.hp_pct );
+        put_i32( p, t.dodge );
         put_str8( p, t.name );
         put_str8( p, t.wielded );
     }
@@ -1994,6 +1995,7 @@ static void client_run( socket_t sock )
                 t.attitude = r.get_i32();
                 t.npc_attitude = r.get_i32();
                 t.hp_pct = r.get_i32();
+                t.dodge = r.get_i32();
                 t.name = r.get_str8();
                 t.wielded = r.get_str8();
                 list.push_back( std::move( t ) );

@@ -1702,9 +1702,20 @@ static void mp_client_aim_recalc()
                       light > 0;
     const double range = std::sqrt( static_cast<double>( mp_throw_dx * mp_throw_dx +
                                    mp_throw_dy * mp_throw_dy ) );
+    // DDA MP v4.0a-75: the exact dodge of a character target, so the client's
+    // dispersion matches the host's own aiming panel.
+    double target_dodge = 0.0;
+    if( is_character ) {
+        for( const netplay::aim_target &t : mp_aim_targets ) {
+            if( t.dx == mp_throw_dx && t.dy == mp_throw_dy && t.is_character ) {
+                target_dodge = t.dodge;
+                break;
+            }
+        }
+    }
     mp_client_aim_lines = target_handler::netplay_throw_aim_client(
                               *mp_aim_char, mp_aim_item, critter, is_character, range,
-                              mp_throw_range, light * 50.0f, sees );
+                              mp_throw_range, light * 50.0f, sees, target_dodge );
     mp_build_client_aim_panel();
 }
 

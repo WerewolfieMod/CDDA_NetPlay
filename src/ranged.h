@@ -63,7 +63,7 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
 /// snapshot facts (no host round-trip). Returns plain lines with <color_x>.
 std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
         const std::string &mtype, bool is_character, double range, int max_range,
-        float ambient_light, bool sees );
+        float ambient_light, bool sees, double target_dodge = 0.0 );
 
 /** Reach attacking */
 trajectory mode_reach( avatar &you, item_location weapon );

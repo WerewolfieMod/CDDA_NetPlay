@@ -1767,6 +1767,7 @@ static void av_send_status( int sid )
                 t.npc_attitude = 0;
                 t.sees_you = cr.sees( here, *av ) ? 1 : 0;
                 t.hp_pct = cr.get_hp_max() > 0 ? 100 * cr.get_hp() / cr.get_hp_max() : 0;
+                t.dodge = static_cast<int32_t>( cr.get_dodge() );
                 t.name_color = static_cast<uint8_t>(
                                    mp_base_color_index( cr.symbol_color() ) );
                 t.name = cr.get_name();

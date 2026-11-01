@@ -2493,7 +2493,7 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
 
 std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
         const std::string &mtype, bool is_character, double range, int max_range,
-        float ambient_light, bool sees )
+        float ambient_light, bool sees, double target_dodge )
 {
     std::vector<std::string> out;
     std::unique_ptr<monster> critter;
@@ -2524,7 +2524,18 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
     input_context ctxt( "TARGET" );
     ctxt.set_iso( true );
     ctxt.register_action( "FIRE" );
-    const dispersion_sources dispersion( you.throwing_dispersion( weapon, target, false ) );
+    const dispersion_sources dispersion( [&]() {
+        double base = you.throwing_dispersion( weapon, target, false );
+        // DDA MP v4.0a-75: a streamed character target is not instantiated as
+        // a Creature here, so add the dodge dispersion the host's own panel
+        // gets from throwing_dispersion( ..., critter, ... ).
+        if( target == nullptr && target_dodge > 0.0 ) {
+            const float effective_dodge = static_cast<float>( target_dodge ) *
+                                          std::max( 1, 10 - 5 * static_cast<int>( range ) );
+            base += you.throw_dispersion_per_dodge( true ) * effective_dodge;
+        }
+        return base;
+    }() );
     const tripoint_bub_ms aim_pos = you.pos_bub() +
                                     tripoint_rel_ms( static_cast<int>( range ), 0, 0 );
     const double aim_cap = ( ( target != nullptr || is_character ) && sees ) ? 0.0 :

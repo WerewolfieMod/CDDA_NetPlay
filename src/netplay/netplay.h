@@ -129,6 +129,9 @@ struct aim_target {
     int32_t npc_attitude = 0;
     uint8_t sees_you = 0;
     int32_t hp_pct = 0;
+    /// DDA MP v4.0a-75: target's dodge, so the client's throw dispersion
+    /// includes it exactly like the host's own aiming panel does.
+    int32_t dodge = 0;
     uint8_t name_color = 8;
     std::string name;
     std::string wielded;
