@@ -1586,13 +1586,42 @@ static void mp_run_host_inventory( const std::string &text )
                 // Same idea as target_ui::choose_initial_target: start on the
                 // nearest visible target in range instead of an arbitrary tile.
                 {
+                    auto glyph_at = []( int dx, int dy ) -> uint32_t {
+                        if( mp_aim_w <= 0 || mp_aim_h <= 0 ) {
+                            return 0;
+                        }
+                        const int x = mp_aim_w / 2 + dx;
+                        const int y = mp_aim_h / 2 + dy;
+                        if( x < 0 || y < 0 || x >= mp_aim_w || y >= mp_aim_h ) {
+                            return 0;
+                        }
+                        const size_t i = static_cast<size_t>( y ) * mp_aim_w + x;
+                        return i < mp_aim_glyphs.size() ? mp_aim_glyphs[i] : 0;
+                    };
                     int best = INT_MAX;
                     for( const netplay::aim_target &t : mp_aim_targets ) {
-                        const int d = std::abs( t.dx ) + std::abs( t.dy );
+                        // AIM_TARGETS offsets can be one tile off from the glyph
+                        // cells; snap to the character glyph when present.
+                        int tx = t.dx;
+                        int ty = t.dy;
+                        if( t.is_character && glyph_at( tx, ty ) != '@' ) {
+                            static const int offs[8][2] = {
+                                { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
+                                { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 }
+                            };
+                            for( const auto &o : offs ) {
+                                if( glyph_at( t.dx + o[0], t.dy + o[1] ) == '@' ) {
+                                    tx = t.dx + o[0];
+                                    ty = t.dy + o[1];
+                                    break;
+                                }
+                            }
+                        }
+                        const int d = std::abs( tx ) + std::abs( ty );
                         if( d > 0 && d <= mp_throw_range && d < best ) {
                             best = d;
-                            mp_throw_dx = t.dx;
-                            mp_throw_dy = t.dy;
+                            mp_throw_dx = tx;
+                            mp_throw_dy = ty;
                         }
                     }
                 }
