@@ -35,6 +35,7 @@
 #include "lightmap.h"
 #include "map.h"
 #include "map_memory.h"
+#include "map_selector.h"
 #include "memory_fast.h"
 #include "monster.h"
 #include "mtype.h"
@@ -2305,54 +2306,90 @@ void host_pump_client_actions()
             case ACTION_PICKUP_ALL: {
                 map &here = get_map();
                 const tripoint_bub_ms pos = av->pos_bub();
+                static const activity_id mp_act_pickup( "ACT_PICKUP" );
                 const bool nearby = static_cast<action_id>( action ) == ACTION_PICKUP_ALL;
-                // DDA MP v4.0a-80: pick up immediately instead of assigning a
-                // pickup activity. The bubble is handed back to the host right
-                // after this pump, which unloads the avatar's submaps and
-                // invalidates any stored item_location; doing the transfer here
-                // keeps it correct. The charge-aware i_add overload reports what
-                // did not fit, so nothing is lost or duplicated.
-                const auto take_tile = [&]( const tripoint_bub_ms &p ) {
-                    if( !here.inbounds( p ) ) {
-                        return 0;
+                // Vanilla pickup asks which adjacent tile to use. A client
+                // order has no tile cursor, so use the avatar's own tile and,
+                // when it is empty, the ring around it.
+                std::vector<tripoint_bub_ms> tiles;
+                const auto add_tile = [&]( const tripoint_bub_ms &p ) {
+                    if( here.inbounds( p ) ) {
+                        tiles.push_back( p );
                     }
-                    int taken = 0;
-                    map_stack items = here.i_at( p );
-                    for( auto it = items.begin(); it != items.end(); ) {
-                        const int original = it->count();
-                        int remaining = original;
-                        item copy = *it;
-                        av->i_add( copy, remaining, false, nullptr, nullptr, false, false );
-                        const int added = original - remaining;
-                        if( added <= 0 ) {
-                            ++it;
-                            continue;
-                        }
-                        taken += added;
-                        if( remaining <= 0 ) {
-                            it = items.erase( it );
-                        } else {
-                            it->charges -= added;
-                            ++it;
-                        }
-                    }
-                    return taken;
                 };
-                int picked = 0;
                 if( nearby ) {
                     for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
-                        picked += take_tile( p );
+                        add_tile( p );
                     }
                 } else {
-                    picked += take_tile( pos );
+                    add_tile( pos );
                 }
-                if( picked == 0 ) {
-                    netplay::host_send_event_to_sid(
-                        sid, _( "There is nothing you can pick up here." ),
-                        static_cast<int>( m_info ) );
+                const auto total_amount = [&]() {
+                    int n = 0;
+                    for( const tripoint_bub_ms &p : tiles ) {
+                        for( const item &it : here.i_at( p ) ) {
+                            n += it.count();
+                        }
+                    }
+                    return n;
+                };
+                const int seen = total_amount();
+                if( seen == 0 && !nearby ) {
+                    for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
+                        if( p != pos ) {
+                            add_tile( p );
+                        }
+                    }
+                }
+                const int before = total_amount();
+                int after = before;
+                if( before > 0 ) {
+                    drop_locations what;
+                    for( const tripoint_bub_ms &p : tiles ) {
+                        for( item &it : here.i_at( p ) ) {
+                            what.emplace_back( item_location( map_cursor( p ), &it ),
+                                               it.count() );
+                        }
+                    }
+                    // DDA MP v4.0a-86: hand the list to the vanilla pickup
+                    // activity but finish it right here. The bubble is handed
+                    // back to the host after this pump, which unloads the
+                    // avatar's submaps and would invalidate the stored item
+                    // locations before the next turn could process them.
+                    av->pick_up( what );
+                    const int pool = [&]() {
+                        const auto it = av_move_pool.find( sid );
+                        return it != av_move_pool.end() ? it->second : av->get_moves();
+                    }();
+                    av->set_moves( std::max( pool, 1000 ) );
+                    for( int guard = 0;
+                         guard < 100 && av->activity && av->activity.id() == mp_act_pickup;
+                         guard++ ) {
+                        av->process_activity();
+                    }
+                    if( av->activity && av->activity.id() == mp_act_pickup ) {
+                        // Never leave a half-done pickup holding dead locations.
+                        av->cancel_activity();
+                    }
+                    av->set_moves( pool );
+                    after = total_amount();
+                }
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f,
+                                  "pickup sid=%d pos=%d,%d,%d tiles=%d seen=%d before=%d after=%d\n",
+                                  sid, pos.x(), pos.y(), pos.z(),
+                                  static_cast<int>( tiles.size() ), seen, before, after );
+                    std::fclose( f );
+                }
+                if( after < before ) {
+                    changed = true;
                     break;
                 }
-                changed = true;
+                netplay::host_send_event_to_sid(
+                    sid,
+                    before == 0 ? _( "There is nothing to pick up here." ) :
+                    _( "You can't carry anything more." ),
+                    static_cast<int>( m_info ) );
                 break;
             }
             default:

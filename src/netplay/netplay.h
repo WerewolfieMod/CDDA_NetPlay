@@ -528,6 +528,20 @@ bool host_client_view( int sid, int &cols, int &rows );
 /// Per-turn maintenance. Safe to call often.
 void client_pump();
 
+/* ---- DDA MP v4.0a-86: long wait mode ---- */
+
+/// While long wait is on, the local player passes turns automatically so the
+/// other players can move freely. Host and client keep their own flag; the
+/// host toggles it from the main menu, the client from its session menu and
+/// auto-sends WAIT orders.
+void set_long_wait( bool on );
+bool long_wait_active();
+/// Rate-limited "a turn may be passed now" check (~4 per second). Consumes the
+/// slot when it returns true; false while the mode is off.
+bool long_wait_turn_ready();
+/// Host: draw the long-wait line in the top-of-screen waiting hint block.
+void host_draw_long_wait_hint( int row );
+
 /* ---- fat client: host world static data ----
  *
  * Host announces its active world name in WELCOME; the client then loads

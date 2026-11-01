@@ -69,6 +69,30 @@
 namespace netplay
 {
 
+/* DDA MP v4.0a-86: one-line long-wait notice, drawn by the host under the
+ * "Waiting for other players..." line. No-op while the mode is off. */
+void host_draw_long_wait_hint( int row )
+{
+    if( !long_wait_active() ) {
+        return;
+    }
+    const int w = std::min( TERMX, 48 );
+    static catacurses::window wins[2];
+    static int win_w[2] = { -1, -1 };
+    const int slot = row == 1 ? 1 : 0;
+    catacurses::window &win = wins[slot];
+    if( !win || win_w[slot] != w ) {
+        win = catacurses::newwin( 1, w, point( std::max( 0, ( TERMX - w ) / 2 ), slot ) );
+        win_w[slot] = w;
+        if( !win ) {
+            return;
+        }
+    }
+    werase( win );
+    mvwprintz( win, point( 0, 0 ), c_light_green, _( "Long wait mode is on" ) );
+    wnoutrefresh( win );
+}
+
 /* ------------------------------------------------------------------ */
 /* chunk helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -2077,6 +2101,7 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_run_character_info( char_json );
             break;
         case ACTION_HELP: {
+            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
             help_window hw;
             hw.show();
             break;
@@ -2266,6 +2291,7 @@ static int mp_client_action_menu()
  * action entries, MP_ENTRY_KEYBINDINGS or MP_ENTRY_DISCONNECT otherwise. */
 static constexpr int MP_ENTRY_KEYBINDINGS = 90001;
 static constexpr int MP_ENTRY_DISCONNECT = 90002;
+static constexpr int MP_ENTRY_LONG_WAIT = 90003;
 
 static int mp_client_main_menu()
 {
@@ -2292,13 +2318,26 @@ static int mp_client_main_menu()
     REGISTER_ACTION( ACTION_WORLD_MODS );
     REGISTER_ACTION( ACTION_ACTIONMENU );
 
+    // DDA MP v4.0a-86: long wait, only for a bound session avatar (a watcher
+    // must not make the host player pass turns).
+    if( netplay::client_avatar_bind_state() == 2 ) {
+        entries.emplace_back( MP_ENTRY_LONG_WAIT, true, 'L',
+                              netplay::long_wait_active() ?
+                              _( "Long wait mode: ON (pass turns for other players)" ) :
+                              _( "Long wait mode: OFF (pass turns for other players)" ) );
+    }
+
     entries.emplace_back( MP_ENTRY_DISCONNECT, true, 'Q',
                           _( "Disconnect from server" ) );
 
     uilist smenu;
     smenu.settext( _( "MAIN MENU" ) );
     smenu.entries = entries;
-    smenu.query();
+    // DDA MP v4.0a-86: hide the pre-session main menu behind the client menu.
+    {
+        ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
+        smenu.query();
+    }
     return smenu.ret;
 }
 
@@ -2311,7 +2350,12 @@ static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
     if( sel == MP_ENTRY_DISCONNECT ) {
         return true;
     }
+    if( sel == MP_ENTRY_LONG_WAIT ) {
+        netplay::set_long_wait( !netplay::long_wait_active() );
+        return false;
+    }
     if( sel == MP_ENTRY_KEYBINDINGS ) {
+        ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
         input_context kb = get_default_mode_input_context();
         kb.display_menu( false );
         return false;
@@ -2319,6 +2363,9 @@ static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
     if( sel < 0 || sel >= NUM_ACTIONS ) {
         return false;
     }
+    // DDA MP v4.0a-86: any submenu opened from the client menu must hide the
+    // pre-session main menu (the same rule the inventory and @ menus follow).
+    ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
     switch( static_cast<action_id>( sel ) ) {
         case ACTION_HELP: {
             help_window hw;
@@ -2736,6 +2783,16 @@ void run_view_loop()
                     mp_last_rows = mp_rows;
                     netplay::client_send_view( mp_cols, mp_rows );
                 }
+            }
+            // DDA MP v4.0a-86: long wait — pass a turn at the pacing interval.
+            // Only a bound avatar may do this; a watcher's WAIT would reach the
+            // host player's own input.
+            if( netplay::long_wait_active() &&
+                netplay::client_avatar_bind_state() == 2 &&
+                netplay::long_wait_turn_ready() ) {
+                key_event ke;
+                ke.code = 20;
+                client_send_keys( { ke } );
             }
             // DDA MP v4.0a-7: turn-pacing hint from the host ("waiting for
             // other players..."), shown above the picture and in the title.
@@ -3342,7 +3399,8 @@ void run_view_loop()
             // DDA MP v4.0a-7: overlay the turn-pacing hint on top of the
             // freshly stamped canvas (the canvas is stamped earlier in this
             // iteration, so the text survives until the present below).
-            if( !mp_hint_text.empty() ) {
+            // DDA MP v4.0a-86: show the long wait state in the same line.
+            if( !mp_hint_text.empty() || netplay::long_wait_active() ) {
                 const int mp_hint_w = std::min( TERMX, 48 );
                 if( !mp_hint_win ) {
                     mp_hint_win = catacurses::newwin( 1, mp_hint_w,
@@ -3350,10 +3408,17 @@ void run_view_loop()
                 }
                 werase( mp_hint_win );
                 std::string s = mp_hint_text;
+                if( netplay::long_wait_active() ) {
+                    s = _( "Long wait mode is on" );
+                    if( !mp_hint_text.empty() ) {
+                        s += "  " + mp_hint_text;
+                    }
+                }
                 if( static_cast<int>( s.size() ) > mp_hint_w ) {
                     s.resize( mp_hint_w );
                 }
-                mvwprintz( mp_hint_win, point( 0, 0 ), c_yellow, s );
+                mvwprintz( mp_hint_win, point( 0, 0 ),
+                           netplay::long_wait_active() ? c_light_green : c_yellow, s );
                 wnoutrefresh( mp_hint_win );
             }
 
@@ -3529,13 +3594,16 @@ void run_view_loop()
                             mp_run_character_info( mp_char_json );
                             continue;
                         case ACTION_HELP: {
+                            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
                             help_window hw;
                             hw.show();
                             continue;
                         }
-                        case ACTION_OPTIONS:
+                        case ACTION_OPTIONS: {
+                            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
                             get_options().show( true );
                             continue;
+                        }
                         case ACTION_ACTIONMENU:
                             mp_client_dispatch_action( mp_client_action_menu(),
                                                        mp_inv_text, mp_char_json );

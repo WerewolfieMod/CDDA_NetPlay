@@ -1134,8 +1134,17 @@ action_id handle_main_menu()
     // DDA MP: co-op netplay entries (v1 host action lives here).
     {
         constexpr int MP_ENTRY_HOST = 90001;
+        constexpr int MP_ENTRY_LONG_WAIT = 90002;
         entries.emplace_back( MP_ENTRY_HOST, true, std::nullopt,
                               _( "Network: open world for co-op (port 25565)" ) );
+        // DDA MP v4.0a-86: while hosting, offer the automatic turn-skipping
+        // mode so the clients can move freely.
+        if( netplay::host_is_running() ) {
+            entries.emplace_back( MP_ENTRY_LONG_WAIT, true, std::nullopt,
+                                  netplay::long_wait_active() ?
+                                  _( "Long wait mode: ON (pass turns for other players)" ) :
+                                  _( "Long wait mode: OFF (pass turns for other players)" ) );
+        }
 
         uilist smenu;
         smenu.settext( _( "MAIN MENU" ) );
@@ -1145,6 +1154,13 @@ action_id handle_main_menu()
 
         if( selection == MP_ENTRY_HOST ) {
             netplay::show_host_dialog();
+            return ACTION_NULL;
+        }
+
+        if( selection == MP_ENTRY_LONG_WAIT ) {
+            const bool mp_lw = !netplay::long_wait_active();
+            netplay::set_long_wait( mp_lw );
+            add_msg( m_info, mp_lw ? _( "Long wait mode ON" ) : _( "Long wait mode OFF" ) );
             return ACTION_NULL;
         }
 

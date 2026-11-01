@@ -466,13 +466,28 @@ input_context game::get_player_input( std::string &action )
             }
 
             ui_manager::redraw_invalidated();
+            // DDA MP v4.0a-86: keep the long-wait notice visible while the
+            // host is idle between turns (the blocked branch draws it too).
+            if( netplay::long_wait_active() && netplay::host_session_count() > 0 ) {
+                netplay::host_draw_long_wait_hint( 0 );
+                refresh_display();
+            }
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
+                 && !( action == "TIMEOUT" && netplay::long_wait_active() &&
+                       netplay::host_session_count() > 0 && netplay::long_wait_turn_ready() )
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
     } else {
         ctxt.set_timeout( 125 );
         while( handle_mouseview( ctxt, action ) ) {
-            if( action == "TIMEOUT" && current_turn.has_timeout_elapsed() ) {
+            if( netplay::long_wait_active() && netplay::host_session_count() > 0 ) {
+                netplay::host_draw_long_wait_hint( 0 );
+                refresh_display();
+            }
+            if( action == "TIMEOUT" &&
+                ( current_turn.has_timeout_elapsed() ||
+                  ( netplay::long_wait_active() && netplay::host_session_count() > 0 &&
+                    netplay::long_wait_turn_ready() ) ) ) {
                 break;
             }
         }

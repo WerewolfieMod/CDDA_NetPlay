@@ -982,6 +982,7 @@ bool host_start( int port )
 
 void host_stop()
 {
+    set_long_wait( false );
     state.stop_host();
 }
 
@@ -2211,6 +2212,7 @@ void client_disconnect()
     if( state.connected ) {
         send_all( state.client_sock, encode_frame( frame::BYE, {} ) );
     }
+    set_long_wait( false );
     state.stop_client();
 }
 
@@ -2350,6 +2352,43 @@ bool host_client_view( int sid, int &cols, int &rows )
     }
     cols = it->second.first;
     rows = it->second.second;
+    return true;
+}
+
+/* DDA MP v4.0a-86: long wait mode. Host and client are separate processes, so
+ * each keeps its own flag; the host uses it to pass its own turns, the client
+ * to auto-send WAIT orders. */
+static std::atomic<bool> long_wait_on( false );
+static std::mutex long_wait_mutex;
+static std::chrono::steady_clock::time_point long_wait_last =
+    std::chrono::steady_clock::time_point::min();
+
+void set_long_wait( bool on )
+{
+    {
+        std::lock_guard<std::mutex> lk( long_wait_mutex );
+        long_wait_last = std::chrono::steady_clock::time_point::min();
+    }
+    long_wait_on = on;
+}
+
+bool long_wait_active()
+{
+    return long_wait_on.load();
+}
+
+bool long_wait_turn_ready()
+{
+    if( !long_wait_on.load() ) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lk( long_wait_mutex );
+    const auto now = std::chrono::steady_clock::now();
+    if( long_wait_last != std::chrono::steady_clock::time_point::min() &&
+        now - long_wait_last < std::chrono::milliseconds( 250 ) ) {
+        return false;
+    }
+    long_wait_last = now;
     return true;
 }
 

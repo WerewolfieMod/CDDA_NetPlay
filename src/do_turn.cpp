@@ -592,6 +592,8 @@ bool game::do_turn()
         werase( mp_wait_win );
         mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
         wnoutrefresh( mp_wait_win );
+        // DDA MP v4.0a-86: long wait mode is announced in the same place.
+        netplay::host_draw_long_wait_hint( 1 );
 #if defined(TILES)
         // ui_manager::redraw only fills the display buffer; without an explicit
         // present the host keeps seeing the frame from before its own move
