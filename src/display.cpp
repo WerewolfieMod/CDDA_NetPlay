@@ -1466,24 +1466,46 @@ static std::string get_compass_for_direction( const monster_visible_info &mon_vi
  * buckets from the character's own view instead. */
 static monster_visible_info &mp_compass_info( const Character &u )
 {
-    for( auto &a : mp_compass_avatars ) {
-        a.clear();
-    }
     if( const avatar *av = dynamic_cast<const avatar *>( &u ) ) {
+        // The avatar keeps its own per-turn cache (mon_info_update).
+        for( auto &a : mp_compass_avatars ) {
+            a.clear();
+        }
         return const_cast<avatar *>( av )->get_mon_visible();
     }
+    // DDA MP v4.0a-80: rebuild only when the character or the world turn
+    // changed. The sidebar asks for the compass eight times and the legend
+    // once per build; without the cache every one of them walked the creature
+    // tracker and tested line of sight.
+    static thread_local const Character *mp_cached_char = nullptr;
+    static thread_local time_point mp_cached_turn = calendar::turn_zero;
     static thread_local monster_visible_info info;
+    if( mp_cached_char == &u && mp_cached_turn == calendar::turn ) {
+        return info;
+    }
     for( auto &t : info.unique_types ) {
         t.clear();
     }
     for( auto &m : info.unique_mons ) {
         m.clear();
     }
+    for( auto &a : mp_compass_avatars ) {
+        a.clear();
+    }
     std::fill( info.dangerous.begin(), info.dangerous.end(), false );
     info.new_seen_mon.clear();
     info.has_dangerous_creature_in_proximity = false;
     const map &here = get_map();
-    const tripoint_bub_ms pos = u.pos_bub( here );
+    const tripoint_bub_ms pos = here.get_bub( u.pos_abs() );
+    // DDA MP v4.0a-80: a session avatar whose bubble is parked on the host
+    // player has no valid bub position; map lookups below would run out of
+    // bounds. Show an empty compass until the bubble is anchored on it again,
+    // and do not cache this result so the next call retries.
+    if( !here.inbounds( pos ) ) {
+        return info;
+    }
+    mp_cached_char = &u;
+    mp_cached_turn = calendar::turn;
     for( Creature *c : u.get_visible_creatures( MAPSIZE_X ) ) {
         if( c == nullptr || c == &u ) {
             continue;

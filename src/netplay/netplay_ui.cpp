@@ -1361,6 +1361,9 @@ static void mp_run_character_info( const std::string &text )
  * touch the temporary copy, so the client avatar and host stay untouched. */
 static void mp_run_host_inventory( const std::string &text )
 {
+    if( text.empty() ) {
+        return;
+    }
     try {
     // Block only the UI that existed before the session (the main menu we
     // joined from). Created before the inventory windows, so every session
@@ -2048,6 +2051,35 @@ static void mp_run_client_throw( const item &thrown, int node, int generation,
     g->mp_anchor_map_on( cli, true );
 }
 
+/* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
+ * Local UIs run on the client; every other order travels to the host. */
+static void mp_client_dispatch_action( int act, const std::string &inv_text,
+                                       const std::string &char_json )
+{
+    if( act <= 0 ) {
+        return;
+    }
+    switch( static_cast<action_id>( act ) ) {
+        case ACTION_INVENTORY:
+        case ACTION_ADVANCEDINV:
+            if( !inv_text.empty() ) {
+                mp_run_host_inventory( inv_text );
+            }
+            break;
+        case ACTION_PL_INFO:
+            mp_run_character_info( char_json );
+            break;
+        case ACTION_HELP: {
+            help_window hw;
+            hw.show();
+            break;
+        }
+        default:
+            netplay::client_send_client_action( act );
+            break;
+    }
+}
+
 /* DDA MP v4.0a-72: the client's own action menu. Same categories and entries
  * as the host's handle_action_menu, minus the save/load/debug entries that
  * cannot apply to a remote session. The host owns the contextual weighting
@@ -2314,27 +2346,7 @@ static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
             }
             break;
         case ACTION_ACTIONMENU: {
-            const int act = mp_client_action_menu();
-            if( act > 0 ) {
-                switch( static_cast<action_id>( act ) ) {
-                    // Client-local UIs reached through the action list.
-                    case ACTION_INVENTORY:
-                    case ACTION_ADVANCEDINV:
-                        mp_run_host_inventory( inv_text );
-                        break;
-                    case ACTION_PL_INFO:
-                        mp_run_character_info( char_json );
-                        break;
-                    case ACTION_HELP: {
-                        help_window hw;
-                        hw.show();
-                        break;
-                    }
-                    default:
-                        netplay::client_send_client_action( act );
-                        break;
-                }
-            }
+            mp_client_dispatch_action( mp_client_action_menu(), inv_text, char_json );
             break;
         }
         default:
@@ -2694,12 +2706,14 @@ void run_view_loop()
         ctxt.register_action( "ANY_INPUT" );
         ctxt.register_directions();
 
-        while( client_is_connected() ) {
-            // DDA MP v4.0a-9: report our terminal size so the host renders the
-            // sidebar to fit instead of letting the client clip it.
+        // DDA MP v4.0a-9: report our terminal size so the host renders the
+        // sidebar to fit instead of letting the client clip it. Declared per
+        // connection so a reconnect always resends it to the new session.
+        int mp_last_cols = -1;
+        int mp_last_rows = -1;
+
+        while( client_is_connected() && !voluntary_quit ) {
             {
-                static int mp_last_cols = -1;
-                static int mp_last_rows = -1;
                 int mp_cols = TERMX;
                 int mp_rows = TERMY;
                 netplay::drawable_cells( mp_cols, mp_rows );
@@ -3486,7 +3500,7 @@ void run_view_loop()
             // keys as the host. Client-local UIs run here; every other action
             // travels to the host as an action order (the host answers with a
             // message when its own bridge for it is not there yet).
-            if( mp_key_action_parity() ) {
+            if( mp_key_action_parity() && action != "TIMEOUT" ) {
                 const input_event mp_ev = ctxt.get_raw_input();
                 input_context dctxt = get_default_mode_input_context();
                 const std::string act_name = dctxt.input_to_action( mp_ev );
@@ -3508,19 +3522,15 @@ void run_view_loop()
                         case ACTION_OPTIONS:
                             get_options().show( true );
                             continue;
-                        case ACTION_ACTIONMENU: {
-                            const int act = mp_client_action_menu();
-                            if( act > 0 ) {
-                                netplay::client_send_client_action( act );
-                            }
+                        case ACTION_ACTIONMENU:
+                            mp_client_dispatch_action( mp_client_action_menu(),
+                                                       mp_inv_text, mp_char_json );
                             continue;
-                        }
                         case ACTION_MAIN_MENU: {
                             const int mp_sel = mp_client_main_menu();
                             if( mp_client_run_menu_entry( mp_sel, mp_inv_text,
                                                           mp_char_json ) ) {
                                 voluntary_quit = true;
-                                break;
                             }
                             continue;
                         }

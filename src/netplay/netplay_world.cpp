@@ -35,7 +35,6 @@
 #include "lightmap.h"
 #include "map.h"
 #include "map_memory.h"
-#include "map_selector.h"
 #include "memory_fast.h"
 #include "monster.h"
 #include "mtype.h"
@@ -1565,9 +1564,22 @@ static int mp_base_color_index( nc_color c )
 
 static void av_send_status( int sid )
 {
-    npc *av = av_session_npc( sid );
-    if( av == nullptr || av->is_dead_state() ) {
+    const auto sid_it = av_sid_to_npc.find( sid );
+    shared_ptr_fast<npc> npc_ptr;
+    if( sid_it != av_sid_to_npc.end() ) {
+        npc_ptr = av_find_npc( sid_it->second );
+    }
+    if( !npc_ptr || !av_npc_alive( npc_ptr ) || npc_ptr->is_dead_state() ) {
         return;
+    }
+    npc *av = npc_ptr.get();
+    // DDA MP v4.0a-80: every payload below reads the map around the avatar
+    // (sidebar widgets, compass, minimap, aim targets). Between the avatar's
+    // own steps the bubble lives with the host player, so anchor it here,
+    // keeping the shared pointer alive across the anchor, and hand it back.
+    const bool mp_re_anchor = !get_map().inbounds( get_map().get_bub( av->pos_abs() ) );
+    if( mp_re_anchor ) {
+        g->mp_anchor_map_on( *av, true );
     }
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
     // DDA MP v4.0a-27: the raw NPC saves the client's own @ menu; the client
@@ -1817,6 +1829,9 @@ static void av_send_status( int sid )
         }
     }
 #endif
+    if( mp_re_anchor ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
 }
 
 void host_pump_inventory_actions()
@@ -1824,6 +1839,9 @@ void host_pump_inventory_actions()
     if( !host_is_running() ) {
         return;
     }
+    // DDA MP v4.0a-80: map-bound work below anchors the bubble on the session
+    // avatar; hand it back to the host player when the pump is done.
+    bool mp_anchored = false;
     for( int budget = 0; budget < 8; budget++ ) {
         int sid = 0;
         int node = 0;
@@ -1856,6 +1874,7 @@ void host_pump_inventory_actions()
         // reality bubble, exactly like a movement key does. Keep the shared
         // pointer alive: anchoring can unload/reload tracker entries.
         g->mp_anchor_map_on( *av, true );
+        mp_anchored = true;
         const auto it = av_inv_nodes.find( sid );
         if( it == av_inv_nodes.end() || node < 0 ||
             node >= static_cast<int>( it->second.size() ) ) {
@@ -2111,6 +2130,7 @@ void host_pump_inventory_actions()
             continue;
         }
         g->mp_anchor_map_on( *npc_ptr, true );
+        mp_anchored = true;
         const auto nodes_it = av_inv_nodes.find( sid );
         if( nodes_it == av_inv_nodes.end() || node < 0 ||
             node >= static_cast<int>( nodes_it->second.size() ) ) {
@@ -2161,6 +2181,7 @@ void host_pump_inventory_actions()
             continue;
         }
         g->mp_anchor_map_on( *npc_ptr, true );
+        mp_anchored = true;
         const auto nodes_it = av_inv_nodes.find( sid );
         if( nodes_it == av_inv_nodes.end() || node < 0 ||
             node >= static_cast<int>( nodes_it->second.size() ) ) {
@@ -2186,6 +2207,11 @@ void host_pump_inventory_actions()
             netplay::host_send_aim_panel_to_sid( sid, sb );
         }
     }
+    // DDA MP v4.0a-80: return the bubble to the host player only if this pump
+    // moved it, so a pending movement burst keeps its anchor.
+    if( mp_anchored ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
 }
 
 /* DDA MP v4.0a-72: choices made in the client's own action menu. Each order
@@ -2197,6 +2223,10 @@ void host_pump_client_actions()
     if( !host_is_running() ) {
         return;
     }
+    // DDA MP v4.0a-80: return the reality bubble to the host player after this
+    // pump moved it onto a session avatar (a pending movement burst keeps its
+    // own anchor because this flag stays clear).
+    bool mp_anchored = false;
     for( int budget = 0; budget < 8; budget++ ) {
         int sid = 0;
         int action = 0;
@@ -2213,6 +2243,7 @@ void host_pump_client_actions()
         }
         npc *av = npc_ptr.get();
         g->mp_anchor_map_on( *av, true );
+        mp_anchored = true;
         bool changed = false;
         switch( static_cast<action_id>( action ) ) {
             case ACTION_WAIT:
@@ -2275,29 +2306,52 @@ void host_pump_client_actions()
                 map &here = get_map();
                 const tripoint_bub_ms pos = av->pos_bub();
                 const bool nearby = static_cast<action_id>( action ) == ACTION_PICKUP_ALL;
-                drop_locations what;
-                const auto add_tile = [&]( const tripoint_bub_ms &p ) {
+                // DDA MP v4.0a-80: pick up immediately instead of assigning a
+                // pickup activity. The bubble is handed back to the host right
+                // after this pump, which unloads the avatar's submaps and
+                // invalidates any stored item_location; doing the transfer here
+                // keeps it correct. The charge-aware i_add overload reports what
+                // did not fit, so nothing is lost or duplicated.
+                const auto take_tile = [&]( const tripoint_bub_ms &p ) {
                     if( !here.inbounds( p ) ) {
-                        return;
+                        return 0;
                     }
-                    for( item &it : here.i_at( p ) ) {
-                        what.emplace_back( item_location( map_cursor( p ), &it ), it.count() );
+                    int taken = 0;
+                    map_stack items = here.i_at( p );
+                    for( auto it = items.begin(); it != items.end(); ) {
+                        const int original = it->count();
+                        int remaining = original;
+                        item copy = *it;
+                        av->i_add( copy, remaining, false, nullptr, nullptr, false, false );
+                        const int added = original - remaining;
+                        if( added <= 0 ) {
+                            ++it;
+                            continue;
+                        }
+                        taken += added;
+                        if( remaining <= 0 ) {
+                            it = items.erase( it );
+                        } else {
+                            it->charges -= added;
+                            ++it;
+                        }
                     }
+                    return taken;
                 };
+                int picked = 0;
                 if( nearby ) {
                     for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
-                        add_tile( p );
+                        picked += take_tile( p );
                     }
                 } else {
-                    add_tile( pos );
+                    picked += take_tile( pos );
                 }
-                if( what.empty() ) {
+                if( picked == 0 ) {
                     netplay::host_send_event_to_sid(
-                        sid, _( "There is nothing to pick up here." ),
+                        sid, _( "There is nothing you can pick up here." ),
                         static_cast<int>( m_info ) );
                     break;
                 }
-                av->pick_up( what );
                 changed = true;
                 break;
             }
@@ -2310,6 +2364,9 @@ void host_pump_client_actions()
         if( changed ) {
             av_send_status( sid );
         }
+    }
+    if( mp_anchored ) {
+        g->mp_anchor_map_on( get_avatar() );
     }
 }
 
@@ -2367,6 +2424,11 @@ void host_note_world_turn()
         av_waiting_for_turn[sid] = false;
         netplay::host_send_hover_to_sid( sid, "" );
     }
+    // DDA MP v4.0a-80: the loop above anchored the reality bubble on every
+    // session avatar in turn. Hand it back to the host player before the host
+    // draws its own screen, or the host view would stay centred on the last
+    // client.
+    g->mp_anchor_map_on( get_avatar() );
 }
 
 /* DDA MP v4.0a-7: strict turn parity — the host may spend its turn only after

@@ -1415,7 +1415,7 @@ std::string widget::value_string( const Character &u, int value, int width_max )
     } else if( _style == "text" ) {
         ret += text( u, !_clauses.empty(), w );
     } else if( _style == "symbol" ) {
-        ret += sym( !_clauses.empty() );
+        ret += sym( u, !_clauses.empty() );
     } else if( _style == "legend" ) {
         ret += sym_text( u, !_clauses.empty(), w );
     } else if( _style == "number" ) {
@@ -1502,9 +1502,9 @@ std::string widget::text( const Character &u, bool from_condition, int width )
     return _string.translated();
 }
 
-std::string widget::sym( bool from_condition )
+std::string widget::sym( const Character &u, bool from_condition )
 {
-    return from_condition ? sym_cond() : text( get_player_character(), from_condition, 0 );
+    return from_condition ? sym_cond() : text( u, from_condition, 0 );
 }
 
 std::string widget::sym_text( const Character &u, bool from_condition, int width )
