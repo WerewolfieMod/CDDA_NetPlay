@@ -16,6 +16,7 @@
 #include <string>
 
 #include "cursesdef.h"
+#include "cursesport.h"
 #include "avatar.h"      // get_avatar (native character creation)
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
 #include "debug.h"       // debug_suppress_prompts (fat client load)
@@ -1584,10 +1585,7 @@ static void mp_run_host_inventory( const std::string &text )
                     } catch( ... ) {
                         mp_aim_char.reset();
                     }
-                }
-                netplay::client_send_aim_info( node, pkt.header.generation,
-                                               mp_throw_dx, mp_throw_dy );
-            }
+                }            }
             break;
         }
         if( act > 0 ) {
@@ -1619,6 +1617,7 @@ static void mp_run_host_inventory( const std::string &text )
 static netplay::sidebar_frame mp_aim_panel;
 static bool mp_have_aim_panel = false;
 
+static void mp_build_client_aim_panel();
 static void mp_client_aim_recalc()
 {
     mp_client_aim_lines.clear();
@@ -1640,7 +1639,87 @@ static void mp_client_aim_recalc()
     mp_client_aim_lines = target_handler::netplay_throw_aim_client(
                               *mp_aim_char, mp_aim_item, critter, range,
                               light * 50.0f, sees );
+    mp_build_client_aim_panel();
 }
+
+static void mp_build_client_aim_panel()
+{
+    const int wwid = 55;
+    const int whei = std::min( 33, TERMY );
+    if( wwid <= 2 || whei <= 2 ) {
+        return;
+    }
+    catacurses::window w = catacurses::newwin( whei, wwid, point( TERMX - wwid, 0 ) );
+    if( !w ) {
+        return;
+    }
+    werase( w );
+    draw_border( w );
+    mvwprintz( w, point( 2, 0 ), c_white, "< " );
+    trim_and_print( w, point( 4, 0 ), wwid - 7, c_red,
+                    remove_color_tags( mp_throw_name ) );
+    wprintz( w, c_white, " >" );
+
+    // Target name: minimap beacons cover the host and creatures whose cell id
+    // is not in the snapshot; otherwise fall back to the critter type.
+    std::string target_name;
+    for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
+        if( b.dx == mp_throw_dx && b.dy == mp_throw_dy && !b.name.empty() ) {
+            target_name = b.name;
+            break;
+        }
+    }
+    if( target_name.empty() && mp_aim_w > 0 && mp_aim_h > 0 ) {
+        const int tx = mp_aim_w / 2 + mp_throw_dx;
+        const int ty = mp_aim_h / 2 + mp_throw_dy;
+        if( tx >= 0 && ty >= 0 && tx < mp_aim_w && ty < mp_aim_h ) {
+            const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
+            if( idx < mp_aim_critters.size() && !mp_aim_critters[idx].empty() ) {
+                target_name = mtype_id( mp_aim_critters[idx] ).obj().nname();
+            }
+        }
+    }
+
+    nc_color col = c_light_gray;
+    int ty = 1;
+    if( !target_name.empty() && ty < whei - 3 ) {
+        print_colored_text( w, point( 1, ty++ ), col, col,
+                            string_format( "<color_white>%s %s</color>",
+                                           _( "Target:" ), target_name ) );
+    }
+    for( const std::string &line : mp_client_aim_lines ) {
+        if( ty >= whei - 3 ) {
+            break;
+        }
+        print_colored_text( w, point( 1, ty++ ), col, col, line );
+    }
+    if( ty < whei - 2 ) {
+        print_colored_text( w, point( 1, ty++ ), col, col,
+                            _( "Symbols: * = Great + = Normal | = Graze" ) );
+    }
+    mvwprintz( w, point( 1, whei - 2 ), c_white, _( "[Enter] throw   [Esc] cancel" ) );
+
+    // Send only the interior; the client paints its own border (ACS glyphs
+    // are not in the client font).
+    mp_aim_panel.width = wwid - 2;
+    mp_aim_panel.height = whei - 1; // interior + title row
+    mp_aim_panel.cells.assign(
+        static_cast<size_t>( mp_aim_panel.width ) * mp_aim_panel.height, {} );
+    cata_cursesport::WINDOW *wraw = w.get<cata_cursesport::WINDOW>();
+    mp_aim_panel.cells[0].text = "< " + remove_color_tags( mp_throw_name ) + " >";
+    mp_aim_panel.cells[0].color = 1;
+    for( int y = 0; y < whei - 2; y++ ) {
+        for( int x = 0; x < wwid - 2; x++ ) {
+            const cata_cursesport::cursecell &raw = wraw->line[y + 1].chars[x + 1];
+            netplay::sidebar_cell &c = mp_aim_panel.cells[
+                                           static_cast<size_t>( y + 1 ) * mp_aim_panel.width + x];
+            c.text = raw.ch;
+            c.color = static_cast<int>( raw.FG );
+        }
+    }
+    mp_have_aim_panel = true;
+}
+
 
 static void mp_draw_aim_panel()
 {
@@ -1652,61 +1731,26 @@ static void mp_draw_aim_panel()
     const float cw = ImGui::CalcTextSize( "M" ).x;
     const float ch = ImGui::GetTextLineHeight();
     const float pw = ( mp_aim_panel.width + 2 ) * cw;
-    const int extra_lines = std::min( static_cast<int>( mp_client_aim_lines.size() ), 6 );
-    const float ph = ( mp_aim_panel.height + 2 + extra_lines ) * ch;
+    const float ph = ( mp_aim_panel.height + 2 ) * ch;
     const float px = std::max( 0.0f, io.DisplaySize.x - pw );
     const float py = 0.0f;
-    // Client-side target focus: the snapshot carries the creature id per cell,
-    // so this line updates even while the host is busy in its own UI.
-    std::string target_name;
-    for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
-        if( b.dx == mp_throw_dx && b.dy == mp_throw_dy && !b.name.empty() ) {
-            target_name = b.name;
-            break;
-        }
-    }
-    if( mp_aim_w > 0 && mp_aim_h > 0 ) {
-        const int tx = mp_aim_w / 2 + mp_throw_dx;
-        const int ty = mp_aim_h / 2 + mp_throw_dy;
-        if( tx >= 0 && ty >= 0 && tx < mp_aim_w && ty < mp_aim_h ) {
-            const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
-            if( target_name.empty() && idx < mp_aim_critters.size() &&
-                !mp_aim_critters[idx].empty() ) {
-                target_name = mtype_id( mp_aim_critters[idx] ).obj().nname();
-            }
-        }
-    }
     dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                        IM_COL32( 0, 0, 0, 245 ) );
     for( int row = 0; row < mp_aim_panel.height; row++ ) {
-        const float row_y = py + ( row == 0 ? 1.0f : static_cast<float>( row + 1 ) ) * ch;
         for( int col = 0; col < mp_aim_panel.width; col++ ) {
             const netplay::sidebar_cell &c = mp_aim_panel.cells[
                                                  static_cast<size_t>( row ) * mp_aim_panel.width + col];
             if( c.text.empty() || c.text == " " ) {
                 continue;
             }
-            dl->AddText( ImVec2( px + ( col + 1 ) * cw, row_y ),
+            dl->AddText( ImVec2( px + ( col + 1 ) * cw, py + ( row + 1 ) * ch ),
                          cataimgui::ImU32_from_color( decode_cell_color( c.color ) ),
                          c.text.c_str() );
         }
     }
-    if( !target_name.empty() ) {
-        dl->AddText( ImVec2( px + cw, py + ( mp_aim_panel.height + 0.5f ) * ch ),
-                     IM_COL32( 120, 220, 255, 255 ),
-                     string_format( "%s %s", _( "Target:" ), target_name ).c_str() );
-    }
-    // Client-side chances (computed from the temp Character + snapshot).
-    float ly = py + ( mp_aim_panel.height + 1.0f ) * ch;
-    for( int i = 0; i < extra_lines; i++ ) {
-        dl->AddText( ImVec2( px + cw, ly ), IM_COL32( 210, 210, 210, 255 ),
-                     remove_color_tags( mp_client_aim_lines[i] ).c_str() );
-        ly += ch;
-    }
     dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                  IM_COL32( 190, 190, 190, 255 ) );
 }
-
 static void mp_run_client_throw( const item &thrown, int node, int generation,
                                  const tripoint_abs_ms &origin )
 {
@@ -2143,13 +2187,6 @@ void run_view_loop()
                     std::string mp_ai;
                     if( netplay::client_aim_info( mp_ai ) ) {
                         mp_aim_text = std::move( mp_ai );
-                    }
-                }
-                {
-                    netplay::sidebar_frame ap;
-                    if( netplay::client_aim_panel( ap ) ) {
-                        mp_aim_panel = std::move( ap );
-                        mp_have_aim_panel = true;
                     }
                 }
                 // Events for the client's own log.
@@ -2731,37 +2768,22 @@ void run_view_loop()
                 if( mp_key == '0' ) { // host TARGET: CENTER -> target self
                     mp_throw_dx = 0;
                     mp_throw_dy = 0;
-                    mp_client_aim_recalc();
-                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
-                                                   mp_throw_dx, mp_throw_dy );
-                    continue;
+                    mp_client_aim_recalc();                    continue;
                 }
                 if( action == "UP" ) {
-                    --mp_throw_dy;
-                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
-                                                   mp_throw_dx, mp_throw_dy );
-                    mp_client_aim_recalc();
+                    --mp_throw_dy;                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "DOWN" ) {
-                    ++mp_throw_dy;
-                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
-                                                   mp_throw_dx, mp_throw_dy );
-                    mp_client_aim_recalc();
+                    ++mp_throw_dy;                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "LEFT" ) {
-                    --mp_throw_dx;
-                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
-                                                   mp_throw_dx, mp_throw_dy );
-                    mp_client_aim_recalc();
+                    --mp_throw_dx;                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "RIGHT" ) {
-                    ++mp_throw_dx;
-                    netplay::client_send_aim_info( mp_throw_node, mp_throw_gen,
-                                                   mp_throw_dx, mp_throw_dy );
-                    mp_client_aim_recalc();
+                    ++mp_throw_dx;                    mp_client_aim_recalc();
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
