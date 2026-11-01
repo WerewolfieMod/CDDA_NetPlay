@@ -2209,7 +2209,7 @@ void host_pump_inventory_actions()
     }
     // DDA MP v4.0a-80: return the bubble to the host player only if this pump
     // moved it, so a pending movement burst keeps its anchor.
-    if( mp_anchored ) {
+    if( mp_anchored && !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
 }
@@ -2365,7 +2365,7 @@ void host_pump_client_actions()
             av_send_status( sid );
         }
     }
-    if( mp_anchored ) {
+    if( mp_anchored && !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
 }
