@@ -1657,47 +1657,63 @@ static void mp_build_client_aim_panel()
     draw_border( w );
     mvwprintz( w, point( 2, 0 ), c_white, "< " );
     trim_and_print( w, point( 4, 0 ), wwid - 7, c_red,
-                    remove_color_tags( mp_throw_name ) );
+                    string_format( _( "Throwing %s" ),
+                                   remove_color_tags( mp_throw_name ) ) );
     wprintz( w, c_white, " >" );
 
     // Target name: minimap beacons cover the host and creatures whose cell id
     // is not in the snapshot; otherwise fall back to the critter type.
     std::string target_name;
+    std::string target_id;
     for( const netplay::minimap_frame::beacon &b : mp_aim_minimap.beacons ) {
         if( b.dx == mp_throw_dx && b.dy == mp_throw_dy && !b.name.empty() ) {
             target_name = b.name;
             break;
         }
     }
-    if( target_name.empty() && mp_aim_w > 0 && mp_aim_h > 0 ) {
+    if( mp_aim_w > 0 && mp_aim_h > 0 ) {
         const int tx = mp_aim_w / 2 + mp_throw_dx;
         const int ty = mp_aim_h / 2 + mp_throw_dy;
         if( tx >= 0 && ty >= 0 && tx < mp_aim_w && ty < mp_aim_h ) {
             const size_t idx = static_cast<size_t>( ty ) * mp_aim_w + tx;
             if( idx < mp_aim_critters.size() && !mp_aim_critters[idx].empty() ) {
-                target_name = mtype_id( mp_aim_critters[idx] ).obj().nname();
+                target_id = mp_aim_critters[idx];
+                if( target_name.empty() ) {
+                    target_name = mtype_id( target_id ).obj().nname();
+                }
             }
         }
     }
 
     nc_color col = c_light_gray;
     int ty = 1;
-    if( !target_name.empty() && ty < whei - 3 ) {
+    if( !target_id.empty() && mp_aim_char ) {
+        // Use the game's own creature info block (name, attitude, sees you,
+        // wielded item) exactly like target_ui's panel_target_info.
+        monster tmp( mtype_id( target_id ), mp_aim_char->pos_bub() );
+        ty = tmp.print_info( w, ty, 6, 1 );
+    } else if( !target_name.empty() && ty < whei - 3 ) {
         print_colored_text( w, point( 1, ty++ ), col, col,
                             string_format( "<color_white>%s %s</color>",
                                            _( "Target:" ), target_name ) );
     }
     for( const std::string &line : mp_client_aim_lines ) {
-        if( ty >= whei - 3 ) {
+        if( ty >= whei - 4 ) {
             break;
         }
         print_colored_text( w, point( 1, ty++ ), col, col, line );
     }
-    if( ty < whei - 2 ) {
+    if( ty < whei - 3 ) {
         print_colored_text( w, point( 1, ty++ ), col, col,
-                            _( "Symbols: * = Great + = Normal | = Graze" ) );
+                            string_format( "%s * = %s + = %s | = %s", _( "Symbols:" ),
+                                           pgettext( "aim_confidence", "Great" ),
+                                           pgettext( "aim_confidence", "Normal" ),
+                                           pgettext( "aim_confidence", "Graze" ) ) );
     }
-    mvwprintz( w, point( 1, whei - 2 ), c_white, _( "[Enter] throw   [Esc] cancel" ) );
+    mvwprintz( w, point( 1, whei - 3 ), c_white,
+               _( "Move cursor with directional keys" ) );
+    mvwprintz( w, point( 1, whei - 2 ), c_white,
+               _( "[f] throw   [0] target self   [Esc] cancel" ) );
 
     // Send only the interior; the client paints its own border (ACS glyphs
     // are not in the client font).
@@ -1735,7 +1751,7 @@ static void mp_draw_aim_panel()
     const float px = std::max( 0.0f, io.DisplaySize.x - pw );
     const float py = 0.0f;
     dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
-                       IM_COL32( 0, 0, 0, 245 ) );
+                       IM_COL32( 0, 0, 0, 255 ) );
     for( int row = 0; row < mp_aim_panel.height; row++ ) {
         for( int col = 0; col < mp_aim_panel.width; col++ ) {
             const netplay::sidebar_cell &c = mp_aim_panel.cells[

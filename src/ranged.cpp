@@ -2523,8 +2523,14 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
                 attributes, you.pos_bub() + tripoint_rel_ms( static_cast<int>( range ), 0, 0 ),
                 item_location() );
     out.push_back( string_format( "<color_light_gray>%s</color>",
-                                  string_format( _( "Range: %d" ),
-                                          static_cast<int>( range ) ) ) );
+                                  string_format( _( "Range: %d/%d" ),
+                                          static_cast<int>( range ),
+                                          static_cast<int>( you.throw_range( weapon ) ) ) ) );
+    if( !chances.empty() ) {
+        const std::string bar = get_labeled_bar( chances.front().steadiness, 53,
+                                _( "Steadiness" ), '*' );
+        out.push_back( string_format( "<color_light_gray>%s</color>", bar ) );
+    }
     for( const aim_type_prediction &p : chances ) {
         std::string line = string_format( "<color_light_gray>%s:</color>", p.name );
         for( const aim_type_prediction::aim_confidence &c : p.chances ) {
