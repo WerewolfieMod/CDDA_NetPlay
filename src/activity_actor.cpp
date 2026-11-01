@@ -3094,10 +3094,11 @@ void pickup_activity_actor::do_turn( player_activity &, Character &who )
         return;
     }
 
-    // Pickup::do_pickup() actively assumes the player. Calling it with anyone else is a mistake.
-    cata_assert( &who == &get_player_character() );
-    // False indicates that the player canceled pickup when met with some prompt
-    const bool keep_going = Pickup::do_pickup( target_items, quantities, autopickup,
+    // DDA MP v4.0a-90: pickup no longer assumes the player character. Session
+    // avatars are npcs, so run the same code for whoever is picking up. The
+    // interactive prompts remain in the interaction layer; a client pickup is
+    // filtered before it starts.
+    const bool keep_going = Pickup::do_pickup( who, target_items, quantities, autopickup,
                             stash_successful, info );
 
     // If there are items left we ran out of moves, so continue the activity

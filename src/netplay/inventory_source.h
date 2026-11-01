@@ -49,6 +49,10 @@ struct inv_entry_view {
     bool filthy = false;
     bool active = false;
     int throw_range = 0;        // host Character::throw_range(item)
+    // DDA MP v4.0a-90: pickup listing fields (0 for the carried inventory).
+    int dx = 0;                 // tile offset from the session avatar
+    int dy = 0;
+    bool can_take = true;       // host can_stash() result for this item
 };
 
 /// Header numbers shown above the host inventory (volume/weight/space).
@@ -285,6 +289,12 @@ inline std::string serialize_inv_entries( const std::vector<inv_entry_view> &ent
         out += inv_wire::field( e.active ? 1 : 0 );
         out += inv_wire::sep;
         out += inv_wire::field( e.throw_range );
+        out += inv_wire::sep;
+        out += inv_wire::field( e.dx );
+        out += inv_wire::sep;
+        out += inv_wire::field( e.dy );
+        out += inv_wire::sep;
+        out += inv_wire::field( e.can_take ? 1 : 0 );
         out += '\n';
     }
     return out;
@@ -353,6 +363,15 @@ inline std::vector<inv_entry_view> parse_inv_entries( const std::string &text )
         }
         if( f.size() > 20 ) {
             e.throw_range = std::atoi( f[20].c_str() );
+        }
+        if( f.size() > 21 ) {
+            e.dx = std::atoi( f[21].c_str() );
+        }
+        if( f.size() > 22 ) {
+            e.dy = std::atoi( f[22].c_str() );
+        }
+        if( f.size() > 23 ) {
+            e.can_take = std::atoi( f[23].c_str() ) != 0;
         }
         out.push_back( std::move( e ) );
     }

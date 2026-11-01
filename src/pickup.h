@@ -49,7 +49,13 @@ struct pick_info {
  */
 bool do_pickup( std::vector<item_location> &targets, std::vector<int> &quantities,
                 bool autopickup, bool &stash_successful, Pickup::pick_info &info );
+/// DDA MP v4.0a-90: same pickup, performed by any character (a netplay session
+/// avatar is an npc, not the player avatar). Prompts still belong to interaction
+/// code; this path is used for headless/scripted pickups.
+bool do_pickup( Character &who, std::vector<item_location> &targets, std::vector<int> &quantities,
+                bool autopickup, bool &stash_successful, Pickup::pick_info &info );
 bool query_thief( item &it );
+bool query_thief( Character &who, item &it );
 
 enum from_where : int {
     from_cargo = 0,

@@ -476,9 +476,6 @@ input_context game::get_player_input( std::string &action )
                 refresh_display();
             }
         } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
-                 && !( action == "TIMEOUT" && netplay::long_wait_active() &&
-                       netplay::host_session_count() > 0 &&
-                       netplay::host_client_acted_since_turn() )
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
     } else {
@@ -489,10 +486,7 @@ input_context game::get_player_input( std::string &action )
                 netplay::host_draw_long_wait_hint( 0 );
                 refresh_display();
             }
-            if( action == "TIMEOUT" &&
-                ( current_turn.has_timeout_elapsed() ||
-                  ( netplay::long_wait_active() && netplay::host_session_count() > 0 &&
-                    netplay::host_client_acted_since_turn() ) ) ) {
+            if( action == "TIMEOUT" && current_turn.has_timeout_elapsed() ) {
                 break;
             }
         }

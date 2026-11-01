@@ -91,6 +91,11 @@ enum class frame : int {
     CLIENT_ACTION = 39,     ///< client -> host: i32 action id
     /// DDA MP v4.0a-88: the client is away; exclude it from turn parity.
     CLIENT_AFK = 40,        ///< client -> host: u8 on/off
+    /// DDA MP v4.0a-90: ground items around the avatar for the client's own
+    /// pickup selector (inv packet text with dx/dy/can_take fields).
+    PICKUP_DATA = 41,       ///< host -> client: str text
+    /// DDA MP v4.0a-90: rows chosen in that selector.
+    PICKUP_ACTION = 42,     ///< client -> host: i32 gen, u16 n, i32 nodes[n]
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -353,6 +358,14 @@ bool host_pop_inventory_action( int &sid, int &node, int &action, int &generatio
 bool client_send_client_action( int action );
 /// Host main thread: pop one queued client action id.
 bool host_pop_client_action( int &sid, int &action );
+/// DDA MP v4.0a-90: host sends the ground-item listing around the avatar.
+bool host_send_pickup_to_sid( int sid, const std::string &text );
+/// Client: latest pickup listing (consumed).
+bool client_pickup_packet( std::string &out );
+/// Client: chosen ground rows for the last listing.
+bool client_send_pickup_action( int generation, const std::vector<int> &nodes );
+/// Host main thread: pop one queued pickup selection.
+bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes );
 /// DDA MP v4.0a-31: client sends edited pocket settings (JSON array, per pocket).
 bool client_send_inventory_settings( int node, int generation, const std::string &json );
 /// Host main thread: pop one queued pocket-settings update.

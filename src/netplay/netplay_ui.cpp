@@ -28,6 +28,7 @@
 #include "path_info.h"   // PATH_INFO::config_dir (client prefs)
 #include "sdl_wrappers.h" // GetTicks (view probe timestamps)
 #include "game.h"        // g (fat client world data load)
+#include "map.h"         // get_map (client-side pickup selector scratch tile)
 #include "lightmap.h"    // lit_level (client light overlay)
 #include "mtype.h"
 #include "input_context.h"
@@ -1376,6 +1377,100 @@ static void mp_run_character_info( const std::string &text )
         mp_inv_log( std::string( "info error: " ) + e.what() );
     } catch( ... ) {
         mp_inv_log( "info error: unknown" );
+    }
+}
+
+/* DDA MP v4.0a-90: the client's own pickup selector. The host streams the ground
+ * items around the session avatar (with their tile offsets and whether that
+ * avatar can carry them). The client places the real items on a scratch tile of
+ * its local map and runs the game's own inventory_multiselector, so the list,
+ * categories, counts and denial reasons are the original UI. Only the chosen
+ * row indices travel back; the host applies them with the (now character-based)
+ * pickup activity. */
+namespace
+{
+class mp_pickup_preset : public inventory_selector_preset
+{
+    public:
+        std::string get_denial( const item_location &loc ) const override {
+            if( loc && loc->get_var( "mp_can_take", std::string( "1" ) ) == "0" ) {
+                return _( "You can't carry that." );
+            }
+            return std::string();
+        }
+};
+} // namespace
+
+static void mp_run_pickup( const std::string &text )
+{
+    try {
+        const netplay::inv_packet pkt = netplay::parse_inv_packet( text );
+        if( pkt.entries.empty() ) {
+            return;
+        }
+        avatar &cli = get_avatar();
+        map &here = get_map();
+        g->mp_anchor_map_on( cli, false );
+        const tripoint_bub_ms base = cli.pos_bub();
+        // The items are only a display copy: remember and restore the scratch
+        // tile so the client's own world is untouched after the menu closes.
+        std::vector<item> saved;
+        for( const item &it : here.i_at( base ) ) {
+            saved.push_back( it );
+        }
+        here.i_clear( base );
+        for( size_t i = 0; i < pkt.entries.size(); i++ ) {
+            const netplay::inv_entry_view &e = pkt.entries[i];
+            if( !item::type_is_defined( itype_id( e.id ) ) ) {
+                continue;
+            }
+            item it( itype_id( e.id ), calendar::turn );
+            it.set_var( "mp_node", std::to_string( i ) );
+            it.set_var( "mp_can_take", e.can_take ? "1" : "0" );
+            if( e.charges > 0 &&
+                ( it.count_by_charges() || it.is_magazine() || it.is_ammo() || it.is_tool() ) ) {
+                it.charges = e.charges;
+            }
+            it.is_favorite = e.favorite;
+            if( e.damage > 0 ) {
+                it.set_damage( e.damage );
+            }
+            if( e.filthy ) {
+                it.set_flag( flag_FILTHY );
+            }
+            here.add_item_or_charges( base, it );
+        }
+        std::vector<int> nodes;
+        {
+            ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+            mp_pickup_preset preset;
+            inventory_multiselector sel( cli, preset, _( "ITEMS TO PICK UP" ) );
+            sel.set_title( _( "Pickup" ) );
+            sel.set_hint( _( "Select the items to pick up" ) );
+            sel.clear_items();
+            sel.add_map_items( base );
+            const drop_locations picked = sel.execute();
+            for( const drop_location &dl : picked ) {
+                const std::string nv = dl.first->get_var( "mp_node", std::string() );
+                if( !nv.empty() ) {
+                    nodes.push_back( std::atoi( nv.c_str() ) );
+                }
+            }
+        }
+        here.i_clear( base );
+        for( item &it : saved ) {
+            here.add_item_or_charges( base, it );
+        }
+        mp_inv_log( string_format( "pickup: rows=%d chosen=%d",
+                                   static_cast<int>( pkt.entries.size() ),
+                                   static_cast<int>( nodes.size() ) ) );
+        if( !nodes.empty() ) {
+            netplay::client_send_pickup_action( pkt.header.generation, nodes );
+        }
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "pickup error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "pickup error: unknown" );
     }
 }
 
@@ -2842,6 +2937,14 @@ void run_view_loop()
                     std::string mp_inv;
                     if( netplay::client_inventory( mp_inv ) ) {
                         mp_inv_text = std::move( mp_inv );
+                    }
+                }
+                // DDA MP v4.0a-90: a pickup listing from the host opens the
+                // client's own selector right away.
+                {
+                    std::string mp_pick;
+                    if( netplay::client_pickup_packet( mp_pick ) ) {
+                        mp_run_pickup( mp_pick );
                     }
                 }
                 {
