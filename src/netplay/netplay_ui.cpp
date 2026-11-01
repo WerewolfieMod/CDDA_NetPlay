@@ -1687,9 +1687,14 @@ static void mp_build_client_aim_panel()
     const netplay::aim_target *target_char = nullptr;
     for( const netplay::aim_target &t : mp_aim_targets ) {
         if( t.dx == mp_throw_dx && t.dy == mp_throw_dy ) {
-            target_name = t.name;
-            if( t.is_character && on_character_glyph ) {
-                target_char = &t;
+            // Character rows are only valid when the cursor cell really holds
+            // the character glyph; otherwise a neighbouring tile would show
+            // the target as if it stood there.
+            if( !t.is_character || on_character_glyph ) {
+                target_name = t.name;
+                if( t.is_character ) {
+                    target_char = &t;
+                }
             }
             break;
         }
