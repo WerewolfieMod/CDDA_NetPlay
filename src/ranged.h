@@ -53,6 +53,7 @@ struct netplay_aim_cell {
 struct netplay_aim_panel {
     int width = 0;
     int height = 0;
+    std::string title;
     std::vector<netplay_aim_cell> cells;
 };
 netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,

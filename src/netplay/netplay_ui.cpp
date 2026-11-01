@@ -1277,9 +1277,11 @@ static int mp_client_item_menu( Character &you, const item &it )
     catacurses::window w_info = catacurses::newwin( TERMY, 50, point( 0, 0 ) );
     ui_adaptor info_ui;
     if( w_info ) {
+        info_ui.position_from_window( w_info );
         info_ui.on_redraw( [&]( const ui_adaptor & ) {
             draw_item_info( w_info, data );
         } );
+        info_ui.mark_resize();
     }
     const float mp_cw = ImGui::CalcTextSize( "X" ).x;
     menu.desired_bounds = { 50.0f * mp_cw, 0.0f, 30.0f * mp_cw, -1.0f };
@@ -1606,34 +1608,25 @@ static void mp_draw_aim_panel()
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     const float cw = ImGui::CalcTextSize( "M" ).x;
     const float ch = ImGui::GetTextLineHeight();
-    const float pw = mp_aim_panel.width * cw;
-    const float ph = mp_aim_panel.height * ch;
+    const float pw = ( mp_aim_panel.width + 2 ) * cw;
+    const float ph = ( mp_aim_panel.height + 2 ) * ch;
     const float px = std::max( 0.0f, io.DisplaySize.x - pw );
     const float py = 0.0f;
-    dl->AddRectFilled( ImVec2( px - 1, py - 1 ), ImVec2( px + pw + 1, py + ph + 1 ),
+    dl->AddRectFilled( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                        IM_COL32( 0, 0, 0, 245 ) );
-    auto is_box_glyph = []( const std::string & s ) {
-        // U+2500..U+257F (box drawing) -> the client font has no glyphs for
-        // them and would show tofu; the panel border is drawn as a rectangle.
-        return s.size() >= 3 && static_cast<unsigned char>( s[0] ) == 0xE2 &&
-               ( static_cast<unsigned char>( s[1] ) == 0x94 ||
-                 static_cast<unsigned char>( s[1] ) == 0x95 );
-    };
     for( int row = 0; row < mp_aim_panel.height; row++ ) {
         for( int col = 0; col < mp_aim_panel.width; col++ ) {
             const netplay::sidebar_cell &c = mp_aim_panel.cells[
                                                  static_cast<size_t>( row ) * mp_aim_panel.width + col];
-            const float x = px + col * cw;
-            const float y = py + row * ch;
-            if( c.text.empty() || c.text == " " || is_box_glyph( c.text ) ) {
+            if( c.text.empty() || c.text == " " ) {
                 continue;
             }
-            dl->AddText( ImVec2( x, y ),
+            dl->AddText( ImVec2( px + ( col + 1 ) * cw, py + ( row + 1 ) * ch ),
                          cataimgui::ImU32_from_color( decode_cell_color( c.color ) ),
                          c.text.c_str() );
         }
     }
-    dl->AddRect( ImVec2( px - 1, py - 1 ), ImVec2( px + pw + 1, py + ph + 1 ),
+    dl->AddRect( ImVec2( px, py ), ImVec2( px + pw, py + ph ),
                  IM_COL32( 190, 190, 190, 255 ) );
 }
 

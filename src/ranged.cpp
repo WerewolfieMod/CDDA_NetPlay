@@ -276,6 +276,9 @@ class target_ui
         // DDA MP: render the aiming window for a remote client at one cursor
         // position and return it (no input loop, no g->draw).
         catacurses::window netplay_panel( const tripoint_bub_ms &pos );
+        std::string netplay_title() const {
+            return uitext_title();
+        }
 
         // returns the currently selected aim type (immediate/careful/precise etc)
         aim_type get_selected_aim_type() const;
@@ -2455,14 +2458,28 @@ netplay_aim_panel netplay_throw_panel( Character &you, item &weapon,
     if( !w ) {
         return out;
     }
-    out.width = getmaxx( w );
-    out.height = getmaxy( w );
+    out.title = ui.netplay_title();
+    // Send only the interior; the client draws its own rectangle border (the
+    // curses ACS line glyphs are not in the client's font). The first row is
+    // the window title that normally sits on the border.
+    const int inner_w = getmaxx( w ) - 2;
+    const int inner_h = getmaxy( w ) - 2;
+    out.width = inner_w;
+    out.height = inner_h + 1;
     out.cells.resize( static_cast<size_t>( out.width ) * out.height );
     cata_cursesport::WINDOW *wraw = w.get<cata_cursesport::WINDOW>();
-    for( int y = 0; y < out.height; y++ ) {
-        for( int x = 0; x < out.width; x++ ) {
-            const cata_cursesport::cursecell &raw = wraw->line[y].chars[x];
-            netplay_aim_cell &c = out.cells[static_cast<size_t>( y ) * out.width + x];
+    for( int x = 0; x < out.width; x++ ) {
+        out.cells[static_cast<size_t>( x )].text.clear();
+        out.cells[static_cast<size_t>( x )].color = 8;
+    }
+    if( out.width > 0 ) {
+        out.cells[0].text = "< " + out.title + " >";
+        out.cells[0].color = 1; // c_red
+    }
+    for( int y = 0; y < inner_h; y++ ) {
+        for( int x = 0; x < inner_w; x++ ) {
+            const cata_cursesport::cursecell &raw = wraw->line[y + 1].chars[x + 1];
+            netplay_aim_cell &c = out.cells[static_cast<size_t>( y + 1 ) * out.width + x];
             c.text = raw.ch;
             c.color = static_cast<int>( raw.FG );
         }
