@@ -552,7 +552,6 @@ void set_long_wait( bool on );
 bool long_wait_active();
 /// Host: true when a session avatar acted (step/wait) since the last world
 /// turn. Drives the host's auto-turn while long wait is on.
-bool host_client_acted_since_turn();
 /// Client: tell the host this player is away (excluded from turn parity).
 bool client_send_afk( bool on );
 /// Host: whether a session is in AFK mode.

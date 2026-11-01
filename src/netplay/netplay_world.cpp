@@ -1270,15 +1270,7 @@ static bool av_all_acted()
 }
 
 /* DDA MP v4.0a-88: a session avatar did something (step or wait) since the
- * last world turn. While the host is in long wait, each such action drives
- * exactly one world turn, so the active player can move as fast as their
- * input allows instead of being paced by a fixed timer. */
-static bool av_client_acted = false;
-
-bool host_client_acted_since_turn()
-{
-    return av_client_acted;
-}
+ * last world turn. */
 
 void host_pump_avatar_keys()
 {
@@ -1312,7 +1304,6 @@ void host_pump_avatar_keys()
             // Pass the turn: spend the pool, mark the order, refresh the picture.
             av_acted_since_tick[sk.sid] = true;
             av_move_pool[sk.sid] = 0;
-            av_client_acted = true;
             netplay::host_send_hover_to_sid( sk.sid, "" );
             av_send_session_picture( sk.sid, av_session_center( sk.sid ), npc_ptr.get() );
             continue;
@@ -1426,7 +1417,6 @@ void host_pump_avatar_keys()
             }
             // parity: this bind acted since the last world turn
             av_acted_since_tick[sk.sid] = true;
-            av_client_acted = true;
             // The step went through: the client is not waiting any more.
             netplay::host_send_hover_to_sid( sk.sid, "" );
             // DDA MP v4.0a-7: the shared world turn is NOT synthesized here
@@ -2294,7 +2284,6 @@ void host_pump_client_actions()
                 // Same contract as the WAIT key: spend the pool, redraw.
                 av_acted_since_tick[sid] = true;
                 av_move_pool[sid] = 0;
-                av_client_acted = true;
                 netplay::host_send_hover_to_sid( sid, "" );
                 av_send_session_picture( sid, av_session_center( sid ), npc_ptr.get() );
                 continue;
@@ -2503,7 +2492,6 @@ void host_note_world_turn()
         return;
     }
     av_acted_since_tick.clear();
-    av_client_acted = false;
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
     // so pay its one turn of speed here — exactly like Character::process_turn
