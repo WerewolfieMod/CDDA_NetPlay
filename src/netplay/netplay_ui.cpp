@@ -2525,10 +2525,18 @@ void run_view_loop()
             // DDA MP v4.0a-11: the client's own message log, under the panels.
             float ly = draw_y * ch;
             // DDA MP v4.0a-13: creatures this character can see (own list).
-            // The host prints two entries per row; do the same.
+            // DDA MP v4.0a-77: the host's compass legend is now computed from
+            // this character, so the sidebar already carries the list. The old
+            // client-side list stays behind DDA_MP_CLIENT_CRITTER_LIST=1 so the
+            // two layouts can still be compared.
+            static const bool mp_client_critter_list = []() {
+                const char *env = std::getenv( "DDA_MP_CLIENT_CRITTER_LIST" );
+                return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+            }();
             int mp_shown = 0;
             const float mp_list_w = std::max( 1.0f, io.DisplaySize.x - x0 );
-            for( size_t bi = 0; bi < mp_mini_map.beacons.size() &&
+            for( size_t bi = 0; mp_client_critter_list &&
+                 bi < mp_mini_map.beacons.size() &&
                  mp_shown < 12; bi += 2 ) {
                 if( ly + ch > io.DisplaySize.y ) {
                     break;

@@ -1541,44 +1541,6 @@ static void build_sidebar_snapshot( sidebar_frame &out, Character &who,
         }
         y += h;
     }
-    // DDA MP v4.0a-13: drop rows that echo creature names (the host's own NPC
-    // panel). The client renders its own list from the minimap beacons.
-    {
-        std::vector<std::string> mp_names;
-        for( npc &guy : g->all_npcs() ) {
-            if( &guy != &who ) {
-                mp_names.push_back( guy.get_name() );
-            }
-        }
-        for( monster &mon : g->all_monsters() ) {
-            mp_names.push_back( mon.get_name() );
-        }
-        for( int row = 0; row < out.height; row++ ) {
-            std::string rowtext;
-            bool clear_row = false;
-            for( int col = 0; col < out.width; col++ ) {
-                rowtext += out.cells[static_cast<size_t>( row ) * out.width + col].text;
-            }
-            for( const std::string &nm : mp_names ) {
-                if( !nm.empty() && rowtext.find( nm ) != std::string::npos ) {
-                    clear_row = true;
-                    break;
-                }
-            }
-            // Also drop any creature-list style rows ("@ Name"), which the host's
-            // panel prints for creatures that are not in all_npcs() right now.
-            if( !clear_row && rowtext.find( "@ " ) != std::string::npos ) {
-                clear_row = true;
-            }
-            if( clear_row ) {
-                for( int col = 0; col < out.width; col++ ) {
-                    sidebar_cell &c = out.cells[static_cast<size_t>( row ) * out.width + col];
-                    c.text.clear();
-                    c.color = 0;
-                }
-            }
-        }
-    }
 }
 #endif
 
