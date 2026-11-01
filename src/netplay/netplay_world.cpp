@@ -2376,9 +2376,22 @@ void host_pump_client_actions()
                 }
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                     std::fprintf( f,
-                                  "pickup sid=%d pos=%d,%d,%d tiles=%d seen=%d before=%d after=%d\n",
+                                  "pickup sid=%d pos=%d,%d,%d tiles=%d seen=%d before=%d after=%d ids=",
                                   sid, pos.x(), pos.y(), pos.z(),
                                   static_cast<int>( tiles.size() ), seen, before, after );
+                    int printed = 0;
+                    for( const tripoint_bub_ms &p : tiles ) {
+                        for( const item &it : here.i_at( p ) ) {
+                            if( printed++ >= 6 ) {
+                                break;
+                            }
+                            std::fprintf( f, "%s(%d) ", it.typeId().str().c_str(), it.count() );
+                        }
+                        if( printed >= 6 ) {
+                            break;
+                        }
+                    }
+                    std::fprintf( f, "\n" );
                     std::fclose( f );
                 }
                 if( after < before ) {
