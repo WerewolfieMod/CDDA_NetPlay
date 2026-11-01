@@ -1380,7 +1380,7 @@ static void mp_run_host_inventory( const std::string &text )
         }
         it.active = e.active;
         if( e.throw_range > 0 ) {
-            it.set_var( "mp_throw_range", e.throw_range );
+            it.set_var( "mp_throw_range", std::to_string( e.throw_range ) );
         }
         while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
             item child = build();
@@ -1577,8 +1577,9 @@ static void mp_run_host_inventory( const std::string &text )
                 mp_throw_dy = 0;
                 mp_throw_name = it.tname();
                 mp_throw_range = std::max( 1, viewer.throw_range( it ) );
-                if( it.get_var( "mp_throw_range", 0.0 ) > 0.0 ) {
-                    mp_throw_range = static_cast<int>( it.get_var( "mp_throw_range", 0.0 ) );
+                const std::string tr_var = it.get_var( "mp_throw_range", std::string() );
+                if( !tr_var.empty() ) {
+                    mp_throw_range = std::max( 1, std::atoi( tr_var.c_str() ) );
                 }
                 mp_throw_active = true;
                 mp_aim_text.clear();

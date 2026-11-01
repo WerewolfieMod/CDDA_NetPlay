@@ -2493,7 +2493,9 @@ std::vector<std::string> netplay_throw_aim_client( Character &you, item &weapon,
     std::vector<std::string> out;
     std::unique_ptr<monster> critter;
     if( !mtype.empty() && mtype_id( mtype ).is_valid() ) {
-        critter = std::make_unique<monster>( mtype_id( mtype ), you.pos_bub() );
+        critter = std::make_unique<monster>( mtype_id( mtype ),
+                                             you.pos_bub() + tripoint_rel_ms(
+                                                 static_cast<int>( range ), 0, 0 ) );
     }
     Creature *target = critter.get();
     const double target_size = target != nullptr ? target->ranged_target_size() : 1.0f;
