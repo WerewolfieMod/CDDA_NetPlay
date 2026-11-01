@@ -563,6 +563,11 @@ bool game::do_turn()
         netplay::host_pump_avatar_ops();
         netplay::host_pump_avatar_keys();
         netplay::host_pump_inventory_actions();
+        // DDA MP v4.0a-91: client action-menu orders (inventory, @, pickup) must
+        // be serviced while the host waits for the turn round too; otherwise a
+        // pickup request sits in the queue until the next host input and the
+        // client sees nothing.
+        netplay::host_pump_client_actions();
         // Refresh idle clients occasionally, not 17 times a second: each frame
         // is a full 1519-tile payload, and nothing changes while we wait.
         static std::chrono::steady_clock::time_point mp_last_idle_snap;

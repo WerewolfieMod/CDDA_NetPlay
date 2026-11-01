@@ -2395,6 +2395,12 @@ void host_pump_client_actions()
                 }
                 av_pick_nodes[sid] = std::move( rows );
                 pkt.header.generation = ++av_pick_gen[sid];
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "pickup list sid=%d pos=%d,%d rows=%d gen=%d\n",
+                                  sid, pos.x(), pos.y(),
+                                  static_cast<int>( pkt.entries.size() ), pkt.header.generation );
+                    std::fclose( f );
+                }
                 netplay::host_send_pickup_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
                 break;
             }
@@ -2461,6 +2467,12 @@ void host_pump_client_actions()
             netplay::host_send_event_to_sid(
                 psid, _( "You can't carry anything more." ), static_cast<int>( m_info ) );
             continue;
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "pickup take sid=%d gen=%d rows=%d what=%d\n",
+                          psid, generation, static_cast<int>( nodes.size() ),
+                          static_cast<int>( what.size() ) );
+            std::fclose( f );
         }
         // The vanilla pickup activity runs for npcs as of v4.0a-90; finish it
         // while the bubble is anchored so no item_location outlives the call.

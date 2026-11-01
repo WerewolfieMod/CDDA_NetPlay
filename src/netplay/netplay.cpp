@@ -1466,6 +1466,10 @@ bool client_send_client_action( int action )
     if( !state.connected ) {
         return false;
     }
+    if( std::FILE *f = mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "cli action=%d\n", action );
+        std::fclose( f );
+    }
     std::vector<char> p;
     put_i32( p, action );
     return send_all( state.client_sock, encode_frame( frame::CLIENT_ACTION, p ) );
