@@ -364,6 +364,10 @@ struct netplay_state {
     std::mutex pickup_mutex;
     std::string pickup_text;
     bool have_pickup = false;
+    /* DDA MP v4.0a-97: adjacent tiles to choose from before that listing. */
+    std::mutex pickup_tiles_mutex;
+    std::string pickup_tiles_text;
+    bool have_pickup_tiles = false;
     /* DDA MP v4.0a-43: latest host aiming panel text. */
     std::mutex aim_mutex;
     std::string aim_text;
@@ -418,6 +422,15 @@ struct netplay_state {
     };
     std::mutex pickup_act_mutex;
     std::deque<pickup_action> pickup_actions;
+    /* DDA MP v4.0a-97: which adjacent tile the client chose to pick from. */
+    struct pickup_tile_req {
+        int sid = 0;
+        int generation = 0;
+        int dx = 0;
+        int dy = 0;
+    };
+    std::mutex pickup_tile_mutex;
+    std::deque<pickup_tile_req> pickup_tile_reqs;
 
     /* DDA MP v4.0a-31: pocket-settings payloads (JSON) queued likewise. */
     struct inv_settings {
@@ -886,6 +899,20 @@ static void host_session_reader( int sid, socket_t sock )
                 std::lock_guard<std::mutex> lk( state.pickup_act_mutex );
                 if( state.pickup_actions.size() < 8 ) {
                     state.pickup_actions.push_back( { sid, generation, std::move( nodes ) } );
+                }
+            }
+        } else if( op == frame::PICKUP_TILE ) {
+            // DDA MP v4.0a-97: [i32 gen][i32 dx][i32 dy]
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const int generation = r.get_i32();
+            const int dx = r.get_i32();
+            const int dy = r.get_i32();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.pickup_tile_mutex );
+                if( state.pickup_tile_reqs.size() < 8 ) {
+                    state.pickup_tile_reqs.push_back( { sid, generation, dx, dy } );
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1542,6 +1569,62 @@ bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes 
     sid = a.sid;
     generation = a.generation;
     nodes = std::move( a.nodes );
+    return true;
+}
+
+bool host_send_pickup_tiles_to_sid( int sid, const std::string &text )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_str( p, text );
+    if( !send_all( it->second, encode_frame( frame::PICKUP_TILES, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
+bool client_pickup_tiles( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.pickup_tiles_mutex );
+    if( !state.have_pickup_tiles ) {
+        return false;
+    }
+    out = state.pickup_tiles_text;
+    state.have_pickup_tiles = false;
+    return true;
+}
+
+bool client_send_pickup_tile( int generation, int dx, int dy )
+{
+    if( !state.connected ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_i32( p, generation );
+    put_i32( p, dx );
+    put_i32( p, dy );
+    return send_all( state.client_sock, encode_frame( frame::PICKUP_TILE, p ) );
+}
+
+bool host_pop_pickup_tile( int &sid, int &generation, int &dx, int &dy )
+{
+    std::lock_guard<std::mutex> lk( state.pickup_tile_mutex );
+    if( state.pickup_tile_reqs.empty() ) {
+        return false;
+    }
+    internal::netplay_state::pickup_tile_req a = std::move( state.pickup_tile_reqs.front() );
+    state.pickup_tile_reqs.pop_front();
+    sid = a.sid;
+    generation = a.generation;
+    dx = a.dx;
+    dy = a.dy;
     return true;
 }
 
@@ -2230,6 +2313,16 @@ static void client_run( socket_t sock )
                 std::lock_guard<std::mutex> lk( state.pickup_mutex );
                 state.pickup_text = text;
                 state.have_pickup = true;
+            }
+        } else if( op == frame::PICKUP_TILES ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string text = r.get_str();
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.pickup_tiles_mutex );
+                state.pickup_tiles_text = text;
+                state.have_pickup_tiles = true;
             }
         } else if( op == frame::BYE ) {
             break;

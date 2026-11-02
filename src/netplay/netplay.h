@@ -96,6 +96,10 @@ enum class frame : int {
     PICKUP_DATA = 41,       ///< host -> client: str text
     /// DDA MP v4.0a-90: rows chosen in that selector.
     PICKUP_ACTION = 42,     ///< client -> host: i32 gen, u16 n, i32 nodes[n]
+    /// DDA MP v4.0a-97: 'g' with items on several adjacent tiles asks which
+    /// tile first (the host's own choose_adjacent_highlight does the same).
+    PICKUP_TILES = 43,      ///< host -> client: str text (gen + dx/dy rows)
+    PICKUP_TILE = 44,       ///< client -> host: i32 gen, i32 dx, i32 dy
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -366,6 +370,15 @@ bool client_pickup_packet( std::string &out );
 bool client_send_pickup_action( int generation, const std::vector<int> &nodes );
 /// Host main thread: pop one queued pickup selection.
 bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes );
+/// DDA MP v4.0a-97: which adjacent tiles can be picked from ('g' asks first
+/// when there is more than one, exactly like the host's own highlight).
+bool host_send_pickup_tiles_to_sid( int sid, const std::string &text );
+/// Client: latest tile-choice request (consumed).
+bool client_pickup_tiles( std::string &out );
+/// Client: chosen adjacent tile (dx, dy) for the last request.
+bool client_send_pickup_tile( int generation, int dx, int dy );
+/// Host main thread: pop one queued tile choice.
+bool host_pop_pickup_tile( int &sid, int &generation, int &dx, int &dy );
 /// DDA MP v4.0a-31: client sends edited pocket settings (JSON array, per pocket).
 bool client_send_inventory_settings( int node, int generation, const std::string &json );
 /// Host main thread: pop one queued pocket-settings update.

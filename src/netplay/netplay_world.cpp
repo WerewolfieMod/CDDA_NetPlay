@@ -773,6 +773,8 @@ struct av_pick_row {
 };
 static std::map<int, std::vector<av_pick_row>> av_pick_nodes;
 static std::map<int, int> av_pick_gen;
+/* DDA MP v4.0a-97: generation of the pending "which tile?" question per session. */
+static std::map<int, int> av_pick_tile_gen;
 
 /* the living avatar npc a session is bound to, or nullptr */
 static npc *av_session_npc( int sid )
@@ -2286,6 +2288,64 @@ void host_pump_inventory_actions()
     }
 }
 
+/* DDA MP v4.0a-97: stream the ground items of the given tiles for the client's
+ * pickup selector. Shared by 'g' (one chosen tile) and 'G'/pickup-all. */
+static void mp_send_pickup_listing( int sid, npc &av,
+                                    const std::vector<tripoint_bub_ms> &tiles )
+{
+    map &here = get_map();
+    const tripoint_bub_ms pos = av.pos_bub();
+    netplay::inv_packet pkt;
+    std::vector<av_pick_row> rows;
+    for( const tripoint_bub_ms &p : tiles ) {
+        if( !here.inbounds( p ) ) {
+            continue;
+        }
+        for( item &it : here.i_at( p ) ) {
+            netplay::inv_entry_view e;
+            e.id = it.typeId().str();
+            e.name = netplay::inv_strip_tags( it.display_name( it.count(), false ) );
+            e.count = it.count();
+            e.charges = it.charges;
+            e.weight_g = static_cast<long>( units::to_gram( it.weight() ) );
+            e.volume_ml = static_cast<long>( units::to_milliliter( it.volume() ) );
+            e.side_mm = static_cast<int>( units::to_millimeter( it.length() ) );
+            e.container = it.is_container();
+            e.color_index = netplay::inv_color_index( it.color_in_inventory() );
+            const item_category &cat = it.get_category_shallow();
+            e.category = cat.name_header();
+            e.category_id = cat.get_id().str();
+            e.category_rank = cat.sort_rank();
+            e.dx = p.x() - pos.x();
+            e.dy = p.y() - pos.y();
+            // The apply path runs the vanilla pickup, which prompts for
+            // unusual cases; offer items that need no prompt.
+            e.can_take = av.can_stash( it ) &&
+                         !it.made_of_from_type( phase_id::LIQUID ) &&
+                         !it.made_of_from_type( phase_id::GAS ) &&
+                         !it.is_bucket_nonempty() &&
+                         !it.is_frozen_liquid() &&
+                         it.is_owned_by( av, true );
+            pkt.entries.push_back( e );
+            rows.push_back( { here.get_abs( p ), it.typeId().str() } );
+        }
+    }
+    if( pkt.entries.empty() ) {
+        netplay::host_send_event_to_sid(
+            sid, _( "There is nothing to pick up here." ), static_cast<int>( m_info ) );
+        return;
+    }
+    av_pick_nodes[sid] = std::move( rows );
+    pkt.header.generation = ++av_pick_gen[sid];
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "pickup list sid=%d pos=%d,%d rows=%d gen=%d\n",
+                      sid, pos.x(), pos.y(),
+                      static_cast<int>( pkt.entries.size() ), pkt.header.generation );
+        std::fclose( f );
+    }
+    netplay::host_send_pickup_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
+}
+
 /* DDA MP v4.0a-72: choices made in the client's own action menu. Each order
  * is applied to the session's avatar NPC on the main thread, so the client can
  * do what the host can. Actions that need map-bound or avatar-only UIs are
@@ -2375,62 +2435,38 @@ void host_pump_client_actions()
             }
             case ACTION_PICKUP:
             case ACTION_PICKUP_ALL: {
+                // The host's own 'g' asks which adjacent tile to pick from
+                // when several have items (choose_adjacent_highlight); only the
+                // pickup-all key takes everything around. Mirror that: one tile
+                // goes straight to the listing, several make the client choose.
                 map &here = get_map();
                 const tripoint_bub_ms pos = av->pos_bub();
-                // DDA MP v4.0a-90: stream the ground items around the avatar and
-                // let the client run its own pickup selector.
-                netplay::inv_packet pkt;
-                std::vector<av_pick_row> rows;
+                std::vector<tripoint_bub_ms> tiles;
                 for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
-                    if( !here.inbounds( p ) ) {
-                        continue;
-                    }
-                    for( item &it : here.i_at( p ) ) {
-                        netplay::inv_entry_view e;
-                        e.id = it.typeId().str();
-                        e.name = netplay::inv_strip_tags( it.display_name( it.count(), false ) );
-                        e.count = it.count();
-                        e.charges = it.charges;
-                        e.weight_g = static_cast<long>( units::to_gram( it.weight() ) );
-                        e.volume_ml = static_cast<long>( units::to_milliliter( it.volume() ) );
-                        e.side_mm = static_cast<int>( units::to_millimeter( it.length() ) );
-                        e.container = it.is_container();
-                        e.color_index = netplay::inv_color_index( it.color_in_inventory() );
-                        const item_category &cat = it.get_category_shallow();
-                        e.category = cat.name_header();
-                        e.category_id = cat.get_id().str();
-                        e.category_rank = cat.sort_rank();
-                        e.dx = p.x() - pos.x();
-                        e.dy = p.y() - pos.y();
-                        // The apply path runs the vanilla pickup, which prompts
-                        // for unusual cases; offer items that need no prompt.
-                        e.can_take = av->can_stash( it ) &&
-                                     !it.made_of_from_type( phase_id::LIQUID ) &&
-                                     !it.made_of_from_type( phase_id::GAS ) &&
-                                     !it.is_bucket_nonempty() &&
-                                     !it.is_frozen_liquid() &&
-                                     it.is_owned_by( *av, true );
-                        pkt.entries.push_back( e );
-                        rows.push_back( { here.get_abs( p ), it.typeId().str() } );
+                    if( here.inbounds( p ) && !here.i_at( p ).empty() ) {
+                        tiles.push_back( p );
                     }
                 }
-                if( pkt.entries.empty() ) {
+                if( tiles.empty() ) {
                     netplay::host_send_event_to_sid(
                         sid, _( "There is nothing to pick up here." ),
                         static_cast<int>( m_info ) );
                     break;
                 }
-                av_pick_nodes[sid] = std::move( rows );
-                pkt.header.generation = ++av_pick_gen[sid];
-                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-                    std::fprintf( f, "pickup list sid=%d pos=%d,%d rows=%d gen=%d\n",
-                                  sid, pos.x(), pos.y(),
-                                  static_cast<int>( pkt.entries.size() ), pkt.header.generation );
-                    std::fclose( f );
+                if( action == ACTION_PICKUP && tiles.size() > 1 ) {
+                    const int gen = ++av_pick_tile_gen[sid];
+                    std::string text = std::to_string( gen );
+                    for( const tripoint_bub_ms &p : tiles ) {
+                        text += "\n" + std::to_string( p.x() - pos.x() ) + " " +
+                                std::to_string( p.y() - pos.y() );
+                    }
+                    netplay::host_send_pickup_tiles_to_sid( sid, text );
+                    break;
                 }
-                netplay::host_send_pickup_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
+                mp_send_pickup_listing( sid, *av, tiles );
                 break;
             }
+
             case ACTION_OPEN:
             case ACTION_CLOSE: {
                 // Same engine calls the local player's ACTION_OPEN/CLOSE end
@@ -2488,6 +2524,36 @@ void host_pump_client_actions()
         if( changed ) {
             av_send_status( sid );
         }
+    }
+    // DDA MP v4.0a-97: 'g' with items on several tiles - the client picked one.
+    for( int budget = 0; budget < 4; budget++ ) {
+        int psid = 0;
+        int generation = 0;
+        int dx = 0;
+        int dy = 0;
+        if( !netplay::host_pop_pickup_tile( psid, generation, dx, dy ) ) {
+            break;
+        }
+        const auto gen_it = av_pick_tile_gen.find( psid );
+        if( gen_it == av_pick_tile_gen.end() || generation != gen_it->second ) {
+            netplay::host_send_event_to_sid(
+                psid, _( "The tiles changed. Press pickup again." ),
+                static_cast<int>( m_info ) );
+            continue;
+        }
+        const auto tsid_it = av_sid_to_npc.find( psid );
+        if( tsid_it == av_sid_to_npc.end() ) {
+            continue;
+        }
+        shared_ptr_fast<npc> tnpc = av_find_npc( tsid_it->second );
+        if( !tnpc || !av_npc_alive( tnpc ) ) {
+            continue;
+        }
+        g->mp_anchor_map_on( *tnpc, true );
+        mp_anchored = true;
+        const tripoint_bub_ms tp = tnpc->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+        std::vector<tripoint_bub_ms> one{ tp };
+        mp_send_pickup_listing( psid, *tnpc, one );
     }
     // DDA MP v4.0a-90: pickup rows chosen in the client's own selector.
     for( int budget = 0; budget < 4; budget++ ) {

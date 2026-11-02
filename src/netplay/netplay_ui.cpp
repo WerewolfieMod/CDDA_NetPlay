@@ -2706,6 +2706,12 @@ void run_view_loop()
     static int mp_inv_sel = 0;
     static std::string mp_inv_text;
     static std::string mp_char_json;
+    // DDA MP v4.0a-97: 'g' with items on several adjacent tiles asks which one
+    // first (the host's own choose_adjacent_highlight does the same).
+    static bool mp_pick_tiles_active = false;
+    static int mp_pick_gen = 0;
+    static std::vector<point> mp_pick_tiles;
+    static int mp_pick_sel = 0;
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
@@ -3030,7 +3036,41 @@ void run_view_loop()
                 {
                     std::string mp_pick;
                     if( netplay::client_pickup_packet( mp_pick ) ) {
+                        mp_pick_tiles_active = false;
                         mp_run_pickup( mp_pick );
+                    }
+                }
+                // DDA MP v4.0a-97: several adjacent tiles have items - ask
+                // which one to pick from before listing them.
+                {
+                    std::string mp_tiles;
+                    if( netplay::client_pickup_tiles( mp_tiles ) ) {
+                        std::istringstream iss( mp_tiles );
+                        std::string line;
+                        std::vector<point> cand;
+                        int gen = 0;
+                        if( std::getline( iss, line ) ) {
+                            try {
+                                gen = std::stoi( line );
+                            } catch( ... ) {
+                                gen = 0;
+                            }
+                        }
+                        while( std::getline( iss, line ) ) {
+                            int dx = 0;
+                            int dy = 0;
+                            if( std::sscanf( line.c_str(), "%d %d", &dx, &dy ) == 2 ) {
+                                cand.emplace_back( dx, dy );
+                            }
+                        }
+                        if( gen != 0 && !cand.empty() ) {
+                            mp_pick_gen = gen;
+                            mp_pick_tiles = std::move( cand );
+                            mp_pick_sel = 0;
+                            mp_pick_tiles_active = true;
+                            mp_tlog( string_format( "picktile: %d candidates gen=%d",
+                                                    static_cast<int>( mp_pick_tiles.size() ), gen ) );
+                        }
                     }
                 }
                 {
@@ -3545,6 +3585,13 @@ void run_view_loop()
                                             static_cast<int>( lit_level::LIT ), 0, 0, true );
                                     }
                                 }
+                                if( mp_pick_tiles_active && !mp_pick_tiles.empty() ) {
+                                    const point &pick_pt = mp_pick_tiles[mp_pick_sel];
+                                    netplay::tiles_backend_draw(
+                                        tiles_backend, 6, "cursor", "",
+                                        pick_pt.x, pick_pt.y,
+                                        static_cast<int>( lit_level::LIT ), 0, 0, true );
+                                }
                                 netplay::tiles_backend_end( tiles_backend );
                                 // The session adaptors are drawn before the
                                 // canvas upstream; redraw them once more so the
@@ -3632,6 +3679,34 @@ void run_view_loop()
             }
 
             const std::string action = ctxt.handle_input();
+            // DDA MP v4.0a-97: choose the tile to pick from (several tiles
+            // with items): arrows cycle the candidates, ENTER confirms.
+            if( mp_pick_tiles_active ) {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_key = mp_ev.get_first_input();
+                const int n = static_cast<int>( mp_pick_tiles.size() );
+                if( mp_key == 27 || action == "QUIT" ) {
+                    mp_pick_tiles_active = false;
+                    mp_tlog( "picktile: cancelled" );
+                    continue;
+                }
+                if( n > 0 && ( action == "UP" || action == "LEFT" ) ) {
+                    mp_pick_sel = ( mp_pick_sel + n - 1 ) % n;
+                    continue;
+                }
+                if( n > 0 && ( action == "DOWN" || action == "RIGHT" ) ) {
+                    mp_pick_sel = ( mp_pick_sel + 1 ) % n;
+                    continue;
+                }
+                if( n > 0 && ( action == "CONFIRM" || mp_key == 10 || mp_key == 13 ) ) {
+                    const point &pt = mp_pick_tiles[mp_pick_sel];
+                    netplay::client_send_pickup_tile( mp_pick_gen, pt.x, pt.y );
+                    mp_pick_tiles_active = false;
+                    mp_tlog( string_format( "picktile: chose %d,%d", pt.x, pt.y ) );
+                    continue;
+                }
+                continue;
+            }
             // DDA MP v4.0a-35: throw targeting (arrows move the crosshair).
             if( mp_throw_active ) {
                 const input_event mp_ev = ctxt.get_raw_input();
