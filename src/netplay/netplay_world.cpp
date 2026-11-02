@@ -2431,6 +2431,54 @@ void host_pump_client_actions()
                 netplay::host_send_pickup_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
                 break;
             }
+            case ACTION_OPEN:
+            case ACTION_CLOSE: {
+                // Same engine calls the local player's ACTION_OPEN/CLOSE end
+                // up in: map::open_door / map::close_door, but for the client's
+                // avatar instead of the host player. The target is the nearest
+                // adjacent tile the engine itself accepts (cardinals first).
+                map &here = get_map();
+                const bool opening = action == ACTION_OPEN;
+                const tripoint_bub_ms pos = av->pos_bub();
+                const bool inside = !here.is_outside( pos );
+                static const point offsets[] = {
+                    { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+                    { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+                };
+                std::optional<tripoint_bub_ms> target;
+                for( const point &off : offsets ) {
+                    const tripoint_bub_ms p( pos + tripoint_rel_ms( off.x, off.y, 0 ) );
+                    if( !here.inbounds( p ) ) {
+                        continue;
+                    }
+                    if( opening ? here.open_door( *av, p, inside, /*check_only=*/true )
+                        : here.close_door( p, inside, /*check_only=*/true ) ) {
+                        target = p;
+                        break;
+                    }
+                }
+                if( !target ) {
+                    netplay::host_send_event_to_sid(
+                        sid, opening ? _( "There is nothing that can be opened nearby." )
+                        : _( "There is nothing that can be closed nearby." ),
+                        static_cast<int>( m_info ) );
+                    break;
+                }
+                if( opening ) {
+                    here.open_door( *av, *target, inside, /*check_only=*/false );
+                } else {
+                    here.close_door( *target, inside, /*check_only=*/false );
+                }
+                // Same turn cost as the local action's activity.
+                av->set_moves( std::max( 0, av->get_moves() - to_moves<int>( 1_seconds ) ) );
+                auto cpool_it = av_move_pool.find( sid );
+                if( cpool_it != av_move_pool.end() ) {
+                    cpool_it->second = std::max( 0, cpool_it->second -
+                                                 to_moves<int>( 1_seconds ) );
+                }
+                changed = true;
+                break;
+            }
             default:
                 netplay::host_send_event_to_sid(
                     sid, _( "That action is not available to netplay clients yet." ),
