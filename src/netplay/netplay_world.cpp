@@ -592,7 +592,41 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     // engine's dirty flags re-cast for the host player on its own next draw.
     if( viewer != nullptr ) {
         here.build_map_cache_for( center.z(), false, *viewer );
+        // map::draw (just above) marks unseen-but-remembered cells as MEMORIZED
+        // in the shared visibility cache. update_visibility_cache() skips the
+        // rebuild when its inputs did not change, so those markers used to leak
+        // into the snapshot: the client then drew the whole frame from memory
+        // (all-black light) instead of the avatar's own view.
+        here.invalidate_visibility_cache();
         here.update_visibility_cache( center.z(), viewer );
+    }
+    if( mp_netplay_diag ) {
+        // Compact per-snapshot visibility histogram: shows whether the frame is
+        // being mined from the avatar's view or from map memory.
+        static int mp_snap_no = 0;
+        ++mp_snap_no;
+        if( mp_snap_no <= 40 || mp_snap_no % 20 == 0 ) {
+            const auto &vc = here.get_cache_ref( center.z() ).visibility_cache;
+            int hist[8] = {};
+            for( int dy = 0; dy < FRAMEH; dy++ ) {
+                for( int dx = 0; dx < FRAMEW; dx++ ) {
+                    const tripoint_bub_ms p( center + tripoint_rel_ms( dx - FRAMEW / 2,
+                                             dy - FRAMEH / 2, 0 ) );
+                    if( here.inbounds( p ) ) {
+                        ++hist[static_cast<int>( vc[p.x()][p.y()] )];
+                    }
+                }
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f,
+                              "snap #%d viewer=%d center=%d,%d raw=%d,%d ll 0=%d 1=%d 2=%d 3=%d 4=%d 5=%d 6=%d\n",
+                              mp_snap_no, viewer != nullptr ? 1 : 0, center.x(), center.y(),
+                              viewer != nullptr ? viewer->pos_bub().x() : -1,
+                              viewer != nullptr ? viewer->pos_bub().y() : -1,
+                              hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6] );
+                std::fclose( f );
+            }
+        }
     }
 #if defined(TILES)
     // DDA MP v3.7: encode the authoritative light texels now, right after

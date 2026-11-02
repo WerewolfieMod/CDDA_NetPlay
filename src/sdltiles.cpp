@@ -169,7 +169,7 @@ static int DrawableHeight;
 // This value is finally returned by input_manager::get_input_event.
 input_event last_input;
 
-/* DDA MP v3.9: diagnostics master switch — built-in (netplay::mp_diag_dir).
+/* DDA MP v3.9: diagnostics master switch вЂ” built-in (netplay::mp_diag_dir).
  * Default ON without any env; DDA_MP_DIAG=0|off disables, <dir> reroutes. */
 static const bool mp_netplay_diag = netplay::mp_diag_enabled();
 
@@ -1180,7 +1180,7 @@ void refresh_display()
         role = "client";
     }
     // DDA MP v3.9: while the client session is alive, log the first 400
-    // presents with the gate verdict — the fullscreen flicker (alternate
+    // presents with the gate verdict вЂ” the fullscreen flicker (alternate
     // tiles/black frames) needs per-frame gate facts to be pinned down.
     const bool mp_log_now = mp_netplay_diag &&
         ( mp_id <= 40 || mp_id % 100 == 0
@@ -7727,7 +7727,7 @@ class netplay_tile_context : public cata_tiles
 
         /* Tile id existence check for the replay renderer. A missing tile id
          * would take the base-class ASCII fallback, which constructs runtime
-         * `item` objects for ITEM category — those assert on `frozen` in a
+         * `item` objects for ITEM category вЂ” those assert on `frozen` in a
          * client process that never finalized item templates. */
         bool replay_has_tile( const std::string &id )
         {
@@ -7753,7 +7753,7 @@ class netplay_tile_context : public cata_tiles
         }
 
         /* DDA MP: replay one sprite under draw_light::fixed, so it keeps the
-         * supplied lit_level's look whatever the scene light is — like the
+         * supplied lit_level's look whatever the scene light is вЂ” like the
          * host's draw_item_highlight and draw_vpart badges. */
         void replay_draw_fixed( const char *id, TILE_CATEGORY kind,
                                 const std::string &variant, const tripoint_bub_ms &p,
@@ -7818,9 +7818,9 @@ namespace netplay
 {
 
 /* DDA MP: save the display buffer to a PNG (diagnostics; first N frames of
- * each backend, unconditional — do not gate on env, logs failures to
+ * each backend, unconditional вЂ” do not gate on env, logs failures to
  * netplay_tiles.log). */
-static void netplay_dump_display_buffer( int frame_no )
+static void netplay_dump_display_buffer( const std::string &tag )
 {
     auto dump_log = []( const std::string & msg ) {
         std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" );
@@ -7831,11 +7831,11 @@ static void netplay_dump_display_buffer( int frame_no )
         }
     };
     if( !renderer || !display_buffer ) {
-        dump_log( "dump #" + std::to_string( frame_no ) + ": no renderer/buffer" );
+        dump_log( "dump " + tag + ": no renderer/buffer" );
         return;
     }
     if( display_buffer_scope_depth != 0 ) {
-        dump_log( "dump #" + std::to_string( frame_no ) + ": inside outer scope" );
+        dump_log( "dump " + tag + ": inside outer scope" );
         return;
     }
     union pass_bits {
@@ -7846,7 +7846,7 @@ static void netplay_dump_display_buffer( int frame_no )
     pb.vp = get_shared_variant_pass();
     const bind_result br = permanent_render_target_bind( renderer, display_buffer.get(), pb.vp );
     if( br != bind_result::ok ) {
-        dump_log( "dump #" + std::to_string( frame_no ) + ": bind failed r=" +
+        dump_log( "dump " + tag + ": bind failed r=" +
                   std::to_string( static_cast<int>( br ) ) );
         return;
     }
@@ -7855,13 +7855,13 @@ static void netplay_dump_display_buffer( int frame_no )
     SDL_Surface_Ptr surface = CreateRGBSurface( 0, viewport.w, viewport.h, 32, 0, 0, 0, 0 );
     if( !surface || !surface->pixels ) {
         permanent_render_target_bind( renderer, nullptr, pb.vp );
-        dump_log( "dump #" + std::to_string( frame_no ) + ": surface alloc failed" );
+        dump_log( "dump " + tag + ": surface alloc failed" );
         return;
     }
     if( !RenderReadPixels( renderer, nullptr, GetSurfacePixelFormat( surface ),
                            surface->pixels, surface->pitch ) ) {
         permanent_render_target_bind( renderer, nullptr, pb.vp );
-        dump_log( "dump #" + std::to_string( frame_no ) + ": ReadPixels failed" );
+        dump_log( "dump " + tag + ": ReadPixels failed" );
         return;
     }
     permanent_render_target_bind( renderer, nullptr, pb.vp );
@@ -7872,16 +7872,15 @@ static void netplay_dump_display_buffer( int frame_no )
     } else if( netplay::client_is_connected() ) {
         role = "client";
     }
-    const std::string fn = "netplay_dump_" + std::string( role ) + "_" +
-                           std::to_string( frame_no ) + ".png";
+    const std::string fn = "netplay_dump_" + std::string( role ) + "_" + tag + ".png";
     if( IMG_SavePNG( surface.get(), fn.c_str() ) != 0 ) {
-        dump_log( "dump #" + std::to_string( frame_no ) + ": SavePNG failed " + fn );
+        dump_log( "dump " + tag + ": SavePNG failed " + fn );
         return;
     }
-    dump_log( "dump #" + std::to_string( frame_no ) + ": saved " + fn );
+    dump_log( "dump " + tag + ": saved " + fn );
 }
 
-/* DDA MP v3.9: creating the replay backend loads the whole tileset — the
+/* DDA MP v3.9: creating the replay backend loads the whole tileset вЂ” the
  * multi-second heavy part of the first frame. show_join_dialog now creates
  * it right after the fat-client data load, while the loading screen still
  * owns the window; done lazily on the first tile frame it froze the stale
@@ -7905,11 +7904,11 @@ void *tiles_backend_create()
     try {
         ui_adaptor dummy( ui_adaptor::disable_uis_below{} );
         // DDA MP: precheck=true loads a metadata-only bundle WITHOUT tile
-        // mappings — every sprite lookup would miss and fall into the ASCII
+        // mappings вЂ” every sprite lookup would miss and fall into the ASCII
         // surrogate path (invisible canvas; ITEM fallback aborts on
         // Item_factory::frozen). Load the real thing: full mappings and
         // atlases. force=true bypasses reuse of any precheck bundle.
-        // Tileset layering warnings debugmsg a modal error prompt mid-UI —
+        // Tileset layering warnings debugmsg a modal error prompt mid-UI вЂ”
         // capture them instead and park in the diagnostic log.
         std::string dmsg_captured;
     struct mp_prompt_guard_t {
@@ -8365,10 +8364,15 @@ void tiles_backend_end( void *handle )
     static int dump_frames = 0;
     if( mp_netplay_diag && dump_frames < 5 ) {
         ++dump_frames;
-        netplay_dump_display_buffer( dump_frames );
+        netplay_dump_display_buffer( std::to_string( dump_frames ) );
     }
     // DDA MP v4.0a-2: the replay batch is over; back to world-based seeds.
     b->tiles->set_replay_seeds( false );
+}
+
+void dump_display_buffer( const std::string &tag )
+{
+    netplay_dump_display_buffer( tag );
 }
 
 /* DDA MP v4.0a-7: turn-pacing hint on the client. There is no spare screen
@@ -8385,7 +8389,7 @@ void client_status_hint( const std::string &text )
     }
     last = text;
     const std::string base = "Cataclysm: Dark Days Ahead";
-    const std::string title = text.empty() ? base : base + " — " + text;
+    const std::string title = text.empty() ? base : base + " вЂ” " + text;
     SetWindowTitle( ::window.get(), title.c_str() );
 }
 

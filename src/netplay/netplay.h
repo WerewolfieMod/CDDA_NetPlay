@@ -639,6 +639,9 @@ void tiles_backend_tile_size( void *handle, int &w, int &h );
 /// the curses window interior); {0,0} on failure.
 void tiles_backend_font_size( int &w, int &h );
 void tiles_backend_end( void *handle );
+/// Diagnostics: write the display buffer to netplay_dump_<role>_<tag>.png and
+/// log the result to netplay_tiles.log.
+void dump_display_buffer( const std::string &tag );
 #endif // TILES
 
 } // namespace netplay

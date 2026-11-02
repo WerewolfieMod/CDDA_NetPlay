@@ -1052,11 +1052,19 @@ size_t cataimgui::window::str_height_to_pixels( size_t len )
 
 size_t cataimgui::get_string_width( const std::string_view str )
 {
+    if( ImGui::GetFont() == nullptr ) {
+        // no frame has bound a font yet (early startup): measuring would
+        // dereference NULL inside ImFont::GetFontBaked
+        return str.size() * 8;
+    }
     return str.size() * ImGui::CalcTextSize( " " ).x;
 }
 
 size_t cataimgui::get_string_height( const std::string_view str, const float wrap_width )
 {
+    if( ImGui::GetFont() == nullptr ) {
+        return str.size() * 16;
+    }
     const std::string new_str = remove_color_tags( str );
     size_t chars_per_line = size_t( wrap_width );
     if( chars_per_line == 0 ) {

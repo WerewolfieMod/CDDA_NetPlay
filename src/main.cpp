@@ -819,19 +819,11 @@ void initialize_imgui()
     // Load the colors of ImGui to match the colors set by the user.
     cataimgui::init_colors();
 
-#if defined(TILES)
-    // Prime one ImGui frame so the context has a current font. Code that
-    // measures/draws ImGui text before the first ui_manager redraw (the
-    // network client's join and loading screens) used to run with a NULL
-    // current font and crash in ImFont::GetFontBaked.
-    if( imclient ) {
-        display_buffer_draw_scope draw_scope;
-        if( !display_buffer_scope_is_invalid() ) {
-            imclient->new_frame();
-            imclient->end_frame();
-        }
-    }
-#endif
+    // NOTE: do not prime an ImGui frame here. A frame created before the
+    // tileset/renderer is fully up leaves the SDL renderer compositing the
+    // display buffer wrongly: the network client's map stayed black until a
+    // menu forced a new frame. Early text measuring is guarded instead
+    // (cataimgui::get_string_* and text.cpp check for a NULL current font).
 
     // set decimal point for float input widgets
     // uses system locale, because that's what imgui uses to parse and display floats
