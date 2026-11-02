@@ -2455,6 +2455,12 @@ void host_pump_client_actions()
                 }
                 if( action == ACTION_PICKUP && tiles.size() > 1 ) {
                     const int gen = ++av_pick_tile_gen[sid];
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                        std::fprintf( f, "pickup tiles sid=%d n=%d gen=%d pos=%d,%d\n",
+                                      sid, static_cast<int>( tiles.size() ), gen,
+                                      pos.x(), pos.y() );
+                        std::fclose( f );
+                    }
                     std::string text = std::to_string( gen );
                     for( const tripoint_bub_ms &p : tiles ) {
                         text += "\n" + std::to_string( p.x() - pos.x() ) + " " +
