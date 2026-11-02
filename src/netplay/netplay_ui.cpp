@@ -3585,12 +3585,18 @@ void run_view_loop()
                                             static_cast<int>( lit_level::LIT ), 0, 0, true );
                                     }
                                 }
-                                if( mp_pick_tiles_active && !mp_pick_tiles.empty() ) {
-                                    const point &pick_pt = mp_pick_tiles[mp_pick_sel];
-                                    netplay::tiles_backend_draw(
-                                        tiles_backend, 6, "cursor", "",
-                                        pick_pt.x, pick_pt.y,
-                                        static_cast<int>( lit_level::LIT ), 0, 0, true );
+                                if( mp_pick_tiles_active ) {
+                                    // The host's own choose_adjacent_highlight
+                                    // marks every candidate with the tileset's
+                                    // "highlight" overlay (cata_tiles::
+                                    // draw_highlight uses the same id). Draw it
+                                    // on all of them, not just one cursor.
+                                    for( const point &c : mp_pick_tiles ) {
+                                        netplay::tiles_backend_draw(
+                                            tiles_backend, 6, "highlight", "",
+                                            c.x, c.y,
+                                            static_cast<int>( lit_level::LIT ), 0, 0, true );
+                                    }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
                                 // The session adaptors are drawn before the
@@ -3684,26 +3690,50 @@ void run_view_loop()
             if( mp_pick_tiles_active ) {
                 const input_event mp_ev = ctxt.get_raw_input();
                 const int mp_key = mp_ev.get_first_input();
-                const int n = static_cast<int>( mp_pick_tiles.size() );
                 if( mp_key == 27 || action == "QUIT" ) {
                     mp_pick_tiles_active = false;
                     mp_tlog( "picktile: cancelled" );
                     continue;
                 }
-                if( n > 0 && ( action == "UP" || action == "LEFT" ) ) {
-                    mp_pick_sel = ( mp_pick_sel + n - 1 ) % n;
-                    continue;
+                // Same as the host's choose_adjacent_highlight: every candidate
+                // tile is highlighted and the movement key towards one of them
+                // picks that tile.
+                point dir( 0, 0 );
+                bool have_dir = false;
+                if( action == "UP" ) {
+                    dir = point( 0, -1 );
+                    have_dir = true;
+                } else if( action == "DOWN" ) {
+                    dir = point( 0, 1 );
+                    have_dir = true;
+                } else if( action == "LEFT" ) {
+                    dir = point( -1, 0 );
+                    have_dir = true;
+                } else if( action == "RIGHT" ) {
+                    dir = point( 1, 0 );
+                    have_dir = true;
+                } else if( action == "LEFTUP" ) {
+                    dir = point( -1, -1 );
+                    have_dir = true;
+                } else if( action == "RIGHTUP" ) {
+                    dir = point( 1, -1 );
+                    have_dir = true;
+                } else if( action == "LEFTDOWN" ) {
+                    dir = point( -1, 1 );
+                    have_dir = true;
+                } else if( action == "RIGHTDOWN" ) {
+                    dir = point( 1, 1 );
+                    have_dir = true;
                 }
-                if( n > 0 && ( action == "DOWN" || action == "RIGHT" ) ) {
-                    mp_pick_sel = ( mp_pick_sel + 1 ) % n;
-                    continue;
-                }
-                if( n > 0 && ( action == "CONFIRM" || mp_key == 10 || mp_key == 13 ) ) {
-                    const point &pt = mp_pick_tiles[mp_pick_sel];
-                    netplay::client_send_pickup_tile( mp_pick_gen, pt.x, pt.y );
-                    mp_pick_tiles_active = false;
-                    mp_tlog( string_format( "picktile: chose %d,%d", pt.x, pt.y ) );
-                    continue;
+                if( have_dir ) {
+                    for( const point &c : mp_pick_tiles ) {
+                        if( c == dir ) {
+                            netplay::client_send_pickup_tile( mp_pick_gen, c.x, c.y );
+                            mp_pick_tiles_active = false;
+                            mp_tlog( string_format( "picktile: chose %d,%d", c.x, c.y ) );
+                            break;
+                        }
+                    }
                 }
                 continue;
             }
