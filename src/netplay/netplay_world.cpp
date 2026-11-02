@@ -2565,8 +2565,9 @@ void host_pump_client_actions()
     for( int budget = 0; budget < 4; budget++ ) {
         int psid = 0;
         int generation = 0;
+        int equip = 0;
         std::vector<int> nodes;
-        if( !netplay::host_pop_pickup_action( psid, generation, nodes ) ) {
+        if( !netplay::host_pop_pickup_action( psid, generation, nodes, equip ) ) {
             break;
         }
         const auto nodes_it = av_pick_nodes.find( psid );
@@ -2633,6 +2634,25 @@ void host_pump_client_actions()
         }
         if( npc_ptr->activity && npc_ptr->activity.id() == mp_act_pickup ) {
             npc_ptr->cancel_activity();
+        }
+        // v4.0a-101: the client asked for the item in hand / worn right away,
+        // like the host's own pickup row (pickup.cpp handle_problematic_pickup).
+        if( equip != 0 && !nodes.empty() ) {
+            const av_pick_row &frow = nodes_it->second[nodes.front()];
+            item *picked = nullptr;
+            for( item *cand : npc_ptr->inv_dump() ) {
+                if( cand != nullptr && cand->typeId().str() == frow.type ) {
+                    picked = cand;
+                    break;
+                }
+            }
+            if( picked != nullptr ) {
+                if( equip == 1 ) {
+                    npc_ptr->wield( *picked );
+                } else if( equip == 2 ) {
+                    npc_ptr->wear_item( *picked, false );
+                }
+            }
         }
         av_send_status( psid );
     }

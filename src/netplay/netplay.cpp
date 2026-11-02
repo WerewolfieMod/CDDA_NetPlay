@@ -419,6 +419,7 @@ struct netplay_state {
         int sid = 0;
         int generation = 0;
         std::vector<int> nodes;
+        int equip = 0;
     };
     std::mutex pickup_act_mutex;
     std::deque<pickup_action> pickup_actions;
@@ -895,10 +896,15 @@ static void host_session_reader( int sid, socket_t sock )
             for( uint16_t i = 0; i < n && r.ok; i++ ) {
                 nodes.push_back( r.get_i32() );
             }
+            int equip = 0;
+            // v4.0a-101: optional trailing byte - take / wield / wear.
+            if( r.ok && r.off < r.size ) {
+                equip = r.get_u8();
+            }
             if( r.ok ) {
                 std::lock_guard<std::mutex> lk( state.pickup_act_mutex );
                 if( state.pickup_actions.size() < 8 ) {
-                    state.pickup_actions.push_back( { sid, generation, std::move( nodes ) } );
+                    state.pickup_actions.push_back( { sid, generation, std::move( nodes ), equip } );
                 }
             }
         } else if( op == frame::PICKUP_TILE ) {
@@ -1544,7 +1550,7 @@ bool client_pickup_packet( std::string &out )
     return true;
 }
 
-bool client_send_pickup_action( int generation, const std::vector<int> &nodes )
+bool client_send_pickup_action( int generation, const std::vector<int> &nodes, int equip )
 {
     if( !state.connected ) {
         return false;
@@ -1555,10 +1561,11 @@ bool client_send_pickup_action( int generation, const std::vector<int> &nodes )
     for( const int node : nodes ) {
         put_i32( p, node );
     }
+    p.push_back( static_cast<char>( equip & 0xFF ) );
     return send_all( state.client_sock, encode_frame( frame::PICKUP_ACTION, p ) );
 }
 
-bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes )
+bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes, int &equip )
 {
     std::lock_guard<std::mutex> lk( state.pickup_act_mutex );
     if( state.pickup_actions.empty() ) {
@@ -1569,6 +1576,7 @@ bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes 
     sid = a.sid;
     generation = a.generation;
     nodes = std::move( a.nodes );
+    equip = a.equip;
     return true;
 }
 

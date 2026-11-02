@@ -1550,8 +1550,23 @@ static void mp_run_pickup( const std::string &text )
         mp_inv_log( string_format( "pickup: rows=%d chosen=%d",
                                    static_cast<int>( pkt.entries.size() ),
                                    static_cast<int>( nodes.size() ) ) );
+        int equip = 0;
+        if( nodes.size() == 1 ) {
+            // Same choice the host's pickup offers for an item that does not fit
+            // or that the player wants in hand / worn right away.
+            uilist amenu;
+            amenu.text = _( "What to do with the picked item?" );
+            amenu.addentry( 0, true, 't', _( "Take" ) );
+            amenu.addentry( 1, true, 'w', _( "Wield" ) );
+            amenu.addentry( 2, true, 'e', _( "Wear" ) );
+            amenu.query();
+            if( amenu.ret < 0 ) {
+                return;
+            }
+            equip = amenu.ret;
+        }
         if( !nodes.empty() ) {
-            netplay::client_send_pickup_action( pkt.header.generation, nodes );
+            netplay::client_send_pickup_action( pkt.header.generation, nodes, equip );
         }
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "pickup error: " ) + e.what() );
