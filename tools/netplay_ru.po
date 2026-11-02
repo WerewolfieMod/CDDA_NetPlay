@@ -1,0 +1,82 @@
+# DDA MP (netplay) Russian translations.
+# These msgids are added by the multiplayer fork and are missing from the
+# shipped cataclysm-dda.mo, so they fall back to English. Merge this catalogue
+# into lang/mo/ru/LC_MESSAGES/cataclysm-dda.mo (msgcat + msgfmt) to have the
+# netplay UI / messages translated.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: cataclysm-dda (DDA MP)\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2);\n"
+
+msgid "Select the items to pick up"
+msgstr "Выберите предметы для подбора"
+
+msgid "You can't carry that."
+msgstr "Вы не можете это унести."
+
+msgid "There is nothing to pick up here."
+msgstr "Здесь нечего подбирать."
+
+msgid "There is nothing that can be opened nearby."
+msgstr "Рядом нет ничего, что можно открыть."
+
+msgid "There is nothing that can be closed nearby."
+msgstr "Рядом нет ничего, что можно закрыть."
+
+msgid "That action is not available to netplay clients yet."
+msgstr "Это действие пока недоступно клиентам сетевой игры."
+
+msgid "The item list changed. Reopen it and try again."
+msgstr "Список предметов изменился. Откройте его заново."
+
+msgid "The tiles changed. Press pickup again."
+msgstr "Клетки изменились. Нажмите подбор ещё раз."
+
+msgid "The host disconnected."
+msgstr "Хост отключился."
+
+msgid "The host did not answer the avatar bind."
+msgstr "Хост не ответил на привязку аватара."
+
+msgid "The host did not answer the avatar profile."
+msgstr "Хост не ответил на профиль аватара."
+
+msgid "The host cut the avatar exchange short: %s"
+msgstr "Хост прервал обмен данными аватара: %s"
+
+msgid "Bind refused: %s"
+msgstr "Привязка отклонена: %s"
+
+msgid "The host refused the avatar: %s"
+msgstr "Хост отклонил аватара: %s"
+
+msgid ""
+"The host world '%s' is not available on this machine, so a new avatar cannot "
+"be created here (watch mode only)."
+msgstr ""
+"Мир хоста «%s» недоступен на этой машине, поэтому создать нового аватара "
+"здесь нельзя (только режим наблюдения)."
+
+msgid ""
+"The host world data is not loaded on this machine, so a new avatar cannot be "
+"created here (watch mode only)."
+msgstr ""
+"Данные мира хоста не загружены на этой машине, поэтому создать нового "
+"аватара здесь нельзя (только режим наблюдения)."
+
+msgid "Take"
+msgstr "Взять"
+
+msgid "Wield"
+msgstr "Взять в руки"
+
+msgid "Wear"
+msgstr "Надеть"
+
+msgid "What to do with the picked item?"
+msgstr "Что сделать с выбранным предметом?"
