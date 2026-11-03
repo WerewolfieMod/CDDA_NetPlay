@@ -251,6 +251,29 @@ static void update_state( const std::string &context, const std::string &step )
         }
 #endif
     }
+#ifdef TILES
+    // DDA MP v4.1: the splash upload above runs only on the first update; if
+    // the renderer was recovering (upload skipped) or the ImGui viewport had
+    // no size yet, the screen stayed black for the whole load. Retry until the
+    // image is really there, then re-run the layout once the viewport exists.
+    if( !gLUI->chosen_load_img.get_unrelative_path().empty() ) {
+        if( ( gLUI->img_w <= 0 || !gLUI->splash ) && !renderer_should_abort_frame() ) {
+            static unsigned mp_retry = 0;
+            if( ( ++mp_retry % 8 ) == 1 ) {
+                SDL_Surface_Ptr surf = load_image(
+                                            gLUI->chosen_load_img.get_unrelative_path().u8string().c_str() );
+                if( surf ) {
+                    gLUI->img_w = surf->w;
+                    gLUI->img_h = surf->h;
+                    gLUI->splash = CreateTextureFromSurface( get_sdl_renderer(), surf );
+                    layout();
+                }
+            }
+        } else if( gLUI->splash_size.x <= 0.0f ) {
+            layout();
+        }
+    }
+#endif
     gLUI->context = std::string( context );
     gLUI->step = std::string( step );
 }
