@@ -3139,9 +3139,26 @@ void run_view_loop()
 
             bool mp_canvas_ok = false;
             snapshot snap;
+            // DDA MP v4.1: never present a frame without the sprite payload if
+            // the previous one had it. The host omits the optional tile array on
+            // some snapshots; drawing the ASCII/black grid for that one frame is
+            // exactly the flash seen while the screen is busy. Reuse the last
+            // tile payload until a fresh one arrives.
+            static std::vector<tile_cell> mp_tiles_cache;
+            static int mp_tiles_w = 0;
+            static int mp_tiles_h = 0;
             if( client_receive( snap ) && snap.width > 0 && snap.height > 0
                 && snap.width <= SNAP_MAX && snap.height <= SNAP_MAX
                 && snap.cells.size() == static_cast<size_t>( snap.width ) * snap.height ) {
+                if( !snap.tiles.empty() &&
+                    snap.tiles.size() == static_cast<size_t>( snap.width ) * snap.height ) {
+                    mp_tiles_cache = snap.tiles;
+                    mp_tiles_w = snap.width;
+                    mp_tiles_h = snap.height;
+                } else if( mp_tiles_w == snap.width && mp_tiles_h == snap.height &&
+                           mp_tiles_cache.size() == snap.cells.size() ) {
+                    snap.tiles = mp_tiles_cache;
+                }
                 // Dimensions feed the canvas centering below even without the
                 // ASCII window. A valid picture also stops the snapshot
                 // request loop above.
