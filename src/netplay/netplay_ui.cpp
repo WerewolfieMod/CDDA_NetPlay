@@ -1469,6 +1469,52 @@ class mp_pickup_preset : public inventory_selector_preset
             return std::string();
         }
 };
+
+/* DDA MP v4.0a-105: the pickup rows act on the client's own keybindings, the
+ * same way the host's pickup does: ENTER takes the row, the "Wield" action key
+ * puts it in hand and the "Wear" action key puts it on. The keys come from the
+ * game's keybinding table, so a rebind on the client is honoured. Only the row
+ * indices travel to the host, which applies them with its own pickup code. */
+class mp_pickup_selector : public inventory_multiselector
+{
+    public:
+        explicit mp_pickup_selector( Character &u, const inventory_selector_preset &preset ) :
+            inventory_multiselector( u, preset, _( "ITEMS TO PICK UP" ), {},
+                                     /*allow_select_contained=*/true ) {}
+
+        /// 0 = take, 1 = wield, 2 = wear; meaningful when nodes is non-empty.
+        int equip = 0;
+        /// Row indices the host should act on; empty when the menu was closed.
+        std::vector<int> nodes;
+
+        /// Rows marked with SPACE, falling back to the highlighted row.
+        std::vector<int> chosen_nodes() const {
+            std::vector<int> out;
+            for( const std::pair<item_location, int> &drop : to_use ) {
+                const std::string nv = drop.first->get_var( "mp_node", std::string() );
+                if( !nv.empty() ) {
+                    out.push_back( std::atoi( nv.c_str() ) );
+                }
+            }
+            if( out.empty() ) {
+                const inventory_entry &hl = get_highlighted();
+                if( hl.is_item() ) {
+                    const std::string nv = hl.any_item()->get_var( "mp_node", std::string() );
+                    if( !nv.empty() ) {
+                        out.push_back( std::atoi( nv.c_str() ) );
+                    }
+                }
+            }
+            return out;
+        }
+};
+
+/// First key bound to a default-mode action, so the client's rebinds apply.
+int mp_action_hotkey( action_id act, int fallback )
+{
+    const std::optional<input_event> ev = hotkey_for_action( act, 1, false );
+    return ev ? ev->get_first_input() : fallback;
+}
 } // namespace
 
 static void mp_run_pickup( const std::string &text )
@@ -1529,42 +1575,45 @@ static void mp_run_pickup( const std::string &text )
         if( added == 0 ) {
             return;
         }
+        int equip = 0;
         std::vector<int> nodes;
         {
             ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
             mp_pickup_preset preset;
-            inventory_multiselector sel( viewer, preset, _( "ITEMS TO PICK UP" ), {},
-                                         /*allow_select_contained=*/true );
+            mp_pickup_selector sel( viewer, preset );
             sel.set_title( _( "Pickup" ) );
             sel.set_hint( _( "Select the items to pick up" ) );
             sel.clear_items();
             sel.add_character_items( viewer );
-            const drop_locations picked = sel.execute();
-            for( const drop_location &dl : picked ) {
-                const std::string nv = dl.first->get_var( "mp_node", std::string() );
-                if( !nv.empty() ) {
-                    nodes.push_back( std::atoi( nv.c_str() ) );
+            const int wield_key = mp_action_hotkey( ACTION_WIELD, 'w' );
+            const int wear_key = mp_action_hotkey( ACTION_WEAR, 'W' );
+            sel.row_action_handler = [&sel, wield_key, wear_key]( const std::string & action,
+            const input_event & raw ) {
+                int kind = -1;
+                if( action == "CONFIRM" ) {
+                    kind = 0;
+                } else if( raw.get_first_input() > 0 && raw.get_first_input() == wield_key ) {
+                    kind = 1;
+                } else if( raw.get_first_input() > 0 && raw.get_first_input() == wear_key ) {
+                    kind = 2;
+                } else {
+                    return false;
                 }
-            }
+                std::vector<int> chosen = sel.chosen_nodes();
+                if( chosen.empty() ) {
+                    return false;
+                }
+                sel.nodes = std::move( chosen );
+                sel.equip = kind;
+                return true;
+            };
+            sel.execute();
+            nodes = sel.nodes;
+            equip = sel.equip;
         }
-        mp_inv_log( string_format( "pickup: rows=%d chosen=%d",
+        mp_inv_log( string_format( "pickup: rows=%d chosen=%d equip=%d",
                                    static_cast<int>( pkt.entries.size() ),
-                                   static_cast<int>( nodes.size() ) ) );
-        int equip = 0;
-        if( nodes.size() == 1 ) {
-            // Same choice the host's pickup offers for an item that does not fit
-            // or that the player wants in hand / worn right away.
-            uilist amenu;
-            amenu.text = _( "What to do with the picked item?" );
-            amenu.addentry( 0, true, 't', _( "Take" ) );
-            amenu.addentry( 1, true, 'w', _( "Wield" ) );
-            amenu.addentry( 2, true, 'e', _( "Wear" ) );
-            amenu.query();
-            if( amenu.ret < 0 ) {
-                return;
-            }
-            equip = amenu.ret;
-        }
+                                   static_cast<int>( nodes.size() ), equip ) );
         if( !nodes.empty() ) {
             netplay::client_send_pickup_action( pkt.header.generation, nodes, equip );
         }

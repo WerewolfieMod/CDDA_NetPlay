@@ -4575,6 +4575,11 @@ drop_locations inventory_multiselector::execute( bool allow_empty )
 
         const inventory_input input = get_input();
 
+        if( row_action_handler &&
+            row_action_handler( input.action, ctxt.get_raw_input() ) ) {
+            return drop_locations();
+        }
+
         if( input.action == "CONFIRM" ) {
             if( to_use.empty() && !allow_empty ) {
                 popup_getkey( _( "No items were selected.  Use %s to select them." ),

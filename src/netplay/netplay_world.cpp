@@ -2646,12 +2646,18 @@ void host_pump_client_actions()
                     break;
                 }
             }
+            bool equipped = false;
             if( picked != nullptr ) {
                 if( equip == 1 ) {
-                    npc_ptr->wield( *picked );
+                    equipped = npc_ptr->wield( *picked );
                 } else if( equip == 2 ) {
-                    npc_ptr->wear_item( *picked, false );
+                    equipped = npc_ptr->wear_item( *picked, false ).has_value();
                 }
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "pickup equip sid=%d equip=%d item=%s ok=%d\n",
+                              psid, equip, frow.type.c_str(), equipped ? 1 : 0 );
+                std::fclose( f );
             }
         }
         av_send_status( psid );

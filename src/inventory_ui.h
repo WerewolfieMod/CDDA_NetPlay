@@ -686,6 +686,15 @@ class inventory_selector
         uint64_t item_entry_count() const;
         drop_location get_only_choice() const;
 
+        /**
+         * Optional hook for selectors that turn the highlighted row into an
+         * action instead of a selection (used by the multiplayer client's
+         * pickup menu). Called from execute() before the standard handling for
+         * every input; returning true consumes the key and closes the selector
+         * without a selection.
+         */
+        std::function<bool( const std::string &action, const input_event &raw )> row_action_handler;
+
         /** Apply filter string to all columns. */
         void set_filter( const std::string &str );
         /** Get the last filter string set by set_filter or entered by the player. */
