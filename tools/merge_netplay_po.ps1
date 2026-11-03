@@ -3,9 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Mo,
     [switch]$Backup
 )
-# Merge msgid/msgstr pairs from a .po into an existing gettext .mo catalogue.
-# The whole merge is done in C#: PowerShell unrolls returned Dictionary objects,
-# which made an earlier PowerShell version write only the header.
+# Merge msgid/msgstr pairs (with optional msgctxt) from a .po into a .mo.
 $ErrorActionPreference = 'Stop'
 
 Add-Type -TypeDefinition @"
@@ -32,9 +30,9 @@ public static class MoMerge {
             if (c == '\\' && i + 1 < s.Length) {
                 i++;
                 switch (s[i]) {
-                    case 'n': sb.Append('\n'); break;
-                    case 't': sb.Append('\t'); break;
-                    case 'r': sb.Append('\r'); break;
+                    case 'n': sb.Append((char)10); break;
+                    case 't': sb.Append((char)9); break;
+                    case 'r': sb.Append((char)13); break;
                     case '"': sb.Append('"'); break;
                     case '\\': sb.Append('\\'); break;
                     default: sb.Append(s[i]); break;
@@ -44,17 +42,23 @@ public static class MoMerge {
         return sb.ToString();
     }
 
+    static string KeyOf(string ctx, string id) {
+        return ctx == null ? id : ctx + (char)4 + id;
+    }
+
     static Dictionary<string, string> ReadPo(string path) {
         Dictionary<string, string> map = new Dictionary<string, string>(StringComparer.Ordinal);
         string cur = "";
-        string id = null, str = null;
+        string id = null, str = null, ctx = null, curCtx = null;
         foreach (string raw in File.ReadAllLines(path, Encoding.UTF8)) {
             string line = raw.Trim();
             if (line.Length == 0 || line.StartsWith("#")) continue;
-            if (line.StartsWith("msgid ")) {
-                if (id != null && str != null) map[id] = str;
+            if (line.StartsWith("msgctxt ")) {
+                ctx = Unescape(line.Substring(8).Trim('"'));
+            } else if (line.StartsWith("msgid ")) {
+                if (id != null && str != null) map[KeyOf(curCtx, id)] = str;
                 id = Unescape(line.Substring(6).Trim('"'));
-                str = null; cur = "id";
+                str = null; curCtx = ctx; ctx = null; cur = "id";
             } else if (line.StartsWith("msgstr ")) {
                 str = Unescape(line.Substring(7).Trim('"'));
                 cur = "str";
@@ -63,7 +67,7 @@ public static class MoMerge {
                 if (cur == "id") id += piece; else if (cur == "str") str += piece;
             }
         }
-        if (id != null && str != null) map[id] = str;
+        if (id != null && str != null) map[KeyOf(curCtx, id)] = str;
         return map;
     }
 
@@ -87,7 +91,8 @@ public static class MoMerge {
     public static string Run(string poPath, string moPath, bool backup) {
         Dictionary<string, string> map = ReadMo(moPath);
         int before = map.Count;
-        foreach (KeyValuePair<string, string> kv in ReadPo(poPath)) map[kv.Key] = kv.Value;
+        Dictionary<string, string> add = ReadPo(poPath);
+        foreach (KeyValuePair<string, string> kv in add) map[kv.Key] = kv.Value;
         List<string> keys = new List<string>(map.Keys);
         keys.Sort(new Utf8Order());
         int n = keys.Count;
@@ -116,14 +121,13 @@ public static class MoMerge {
             if (backup && File.Exists(moPath)) File.Copy(moPath, moPath + ".bak", true);
             File.WriteAllBytes(moPath, ms.ToArray());
         }
-        // verify
         Dictionary<string, string> check = ReadMo(moPath);
         int bad = 0;
-        foreach (KeyValuePair<string, string> kv in ReadPo(poPath)) {
+        foreach (KeyValuePair<string, string> kv in add) {
             string v;
             if (!check.TryGetValue(kv.Key, out v) || v != kv.Value) bad++;
         }
-        return "po=" + ReadPo(poPath).Count + " before=" + before + " after=" + n +
+        return "po=" + add.Count + " before=" + before + " after=" + n +
                " readback=" + check.Count + " mismatches=" + bad;
     }
 }
