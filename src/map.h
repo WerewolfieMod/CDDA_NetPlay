@@ -654,6 +654,13 @@ class map
          */
         void shift( const point_rel_sm &s );
         /**
+         * DDA MP v4.2: populate the bubble grid from submaps already present in
+         * MAPBUFFER without running mapgen or actualization. Used by the
+         * netplay client, whose synthetic bubble is filled from host data and
+         * has no save/overmap context of its own.
+         */
+        void mp_load_bubble_storage( const tripoint_abs_sm &origin );
+        /**
          * Moves the map vertically to (not by!) newz.
          * Does not actually shift anything, only forces cache updates.
          * In the future, it will either actually shift the map or it will get removed

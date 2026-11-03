@@ -289,6 +289,11 @@ struct snapshot {
     int origin_x = 0;
     int origin_y = 0;
     int origin_z = 0;
+    /// DDA MP v4.2: host world clock and weather, so the client's native
+    /// lighting/panels read the same time as the host.
+    bool has_time = false;
+    int turn = 0;
+    std::string weather;
 };
 
 /// One keyboard pseudo-event from the client.
@@ -698,6 +703,11 @@ void tiles_backend_tile_size( void *handle, int &w, int &h );
 /// the curses window interior); {0,0} on failure.
 void tiles_backend_font_size( int &w, int &h );
 void tiles_backend_end( void *handle );
+/// DDA MP v4.2: draw the whole map through the game's own cata_tiles::draw()
+/// on the backend's loaded tileset instance (the headless client's global
+/// tilecontext may have stale atlas generations). Call inside a begin/end pair.
+bool tiles_backend_draw_native( void *handle, int dest_x, int dest_y,
+                                int cx, int cy, int cz, int px_w, int px_h );
 /// Diagnostics: write the display buffer to netplay_dump_<role>_<tag>.png and
 /// log the result to netplay_tiles.log.
 void dump_display_buffer( const std::string &tag );

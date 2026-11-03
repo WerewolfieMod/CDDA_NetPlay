@@ -1296,6 +1296,10 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     put_u16( p, static_cast<uint16_t>( snap.width ) );
     put_u16( p, static_cast<uint16_t>( snap.height ) );
     put_str( p, snap.status_line );
+    // DDA MP v4.2: host clock/weather for the client's native renderer.
+    p.push_back( static_cast<char>( snap.has_time ? 1 : 0 ) );
+    put_i32( p, snap.turn );
+    put_str( p, snap.weather );
     for( const cell &c : snap.cells ) {
         put_u32( p, static_cast<uint32_t>( c.glyph ) );
         put_i32( p, static_cast<int32_t>( c.color ) );
@@ -2059,6 +2063,9 @@ static void client_run( socket_t sock )
             snap.width = static_cast<int>( r.get_u16() );
             snap.height = static_cast<int>( r.get_u16() );
             snap.status_line = r.get_str();
+            snap.has_time = r.get_u8() != 0;
+            snap.turn = r.get_i32();
+            snap.weather = r.get_str();
             // DDA MP v4.0a-82: validate dimensions in size_t; the u16 fields
             // could overflow the old int product and let a malformed frame
             // drive the cell reader past the payload.

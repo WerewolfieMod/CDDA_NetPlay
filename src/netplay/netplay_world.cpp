@@ -743,6 +743,11 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
 #endif
 
     out.status_line = status_line_for( u );
+    // DDA MP v4.2: the client's native renderer derives light and the clock
+    // from the same world state, so ship the host's clock and weather.
+    out.has_time = true;
+    out.turn = to_turn<int>( calendar::turn );
+    out.weather = get_weather().weather_id.str();
 }
 
 /* DDA MP v4.0a-2: one snapshot per client session, centered on that

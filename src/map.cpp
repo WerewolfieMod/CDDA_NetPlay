@@ -9394,6 +9394,16 @@ bool generate_uniform_omt( const tripoint_abs_sm &p, const oter_id &terrain_type
     return ret;
 }
 
+void map::mp_load_bubble_storage( const tripoint_abs_sm &origin )
+{
+    set_abs_sub( origin );
+    for( int gx = 0; gx < my_MAPSIZE; gx++ ) {
+        for( int gy = 0; gy < my_MAPSIZE; gy++ ) {
+            loadn( point_bub_sm( gx, gy ), false );
+        }
+    }
+}
+
 void map::loadn( const point_bub_sm &grid, bool update_vehicles )
 {
     dbg( D_INFO ) << "map::loadn(game[" << g.get() << "], worldx[" << abs_sub.x()

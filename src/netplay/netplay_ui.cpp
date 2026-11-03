@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <set>
+#include <tuple>
 #include <memory>
 #include <string>
 
@@ -29,8 +31,14 @@
 #include "cata_utility.h" // write_to_file / read_from_file_optional (client prefs)
 #include "path_info.h"   // PATH_INFO::config_dir (client prefs)
 #include "sdl_wrappers.h" // GetTicks (view probe timestamps)
+#include "sdltiles.h"     // display_buffer_draw_scope (single-pass client frame)
 #include "game.h"        // g (fat client world data load)
+#include "weather.h"      // host clock/weather for native lighting
 #include "map.h"         // get_map (client-side pickup selector scratch tile)
+#include "mapbuffer.h"   // synthetic client-side map bubble
+#include "overmapbuffer.h" // weather/overmap context for map::load
+
+#include "submap.h"      // synthetic client-side map bubble
 #include "lightmap.h"    // lit_level (client light overlay)
 #include "mtype.h"
 #include "input_context.h"
@@ -2612,6 +2620,255 @@ static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
     return false;
 }
 
+/* DDA MP v4.2: native renderer adapter.
+ *
+ * Instead of replaying pre-resolved sprite ids through a private backend, the
+ * client writes the host's raw cell state into its own map and lets the game's
+ * single-player renderer (cata_tiles::draw) draw the frame. Terrain, furniture,
+ * traps, items, the avatar, lighting and animations then come from the same
+ * code path the host uses. The synthesized map lives at a fixed local origin
+ * around the client's avatar, so no world save and no mapgen travel is needed;
+ * the streamed frame is the renderer's viewport.
+ */
+static bool mp_native_render_enabled()
+{
+    static const bool enabled = []() {
+        const char *env = std::getenv( "DDA_MP_NATIVE_RENDER" );
+        return env == nullptr || env[0] == '\0' || std::string( env ) != "0";
+    }();
+    return enabled;
+}
+
+#if defined(TILES)
+static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
+{
+    static bool ready = false;
+    static tripoint_abs_ms bubble_center;
+    const bool inside = ready &&
+                        std::abs( center_abs.x() - bubble_center.x() ) <= 40 &&
+                        std::abs( center_abs.y() - bubble_center.y() ) <= 40 &&
+                        center_abs.z() == bubble_center.z();
+    if( inside ) {
+        return;
+    }
+    mp_inv_log( "native: ensure bubble begin" );
+    map &here = get_map();
+    static const ter_id t_open_air( "t_open_air" );
+    // The client keeps no save of its own. Fill the mapbuffer with empty,
+    // transparent submaps for a 7x7 overmap-tile block (all z levels) so
+    // map::load() never runs mapgen, then load that bubble. The streamed
+    // frame overwrites the visible cells; everything else stays open air.
+    const tripoint_abs_omt omt0 = project_to<coords::omt>( center_abs );
+    for( int ox = -3; ox <= 3; ox++ ) {
+        for( int oy = -3; oy <= 3; oy++ ) {
+            const tripoint_abs_sm base = project_to<coords::sm>(
+                                             tripoint_abs_omt( omt0.x() + ox, omt0.y() + oy, omt0.z() ) );
+            for( int sx = 0; sx < 2; sx++ ) {
+                for( int sy = 0; sy < 2; sy++ ) {
+                    for( int z = -OVERMAP_DEPTH; z <= OVERMAP_HEIGHT; z++ ) {
+                        const tripoint_abs_sm addr( base.x() + sx, base.y() + sy, z );
+                        if( MAPBUFFER.submap_exists( addr ) ) {
+                            continue;
+                        }
+                        auto sm = std::make_unique<submap>();
+                        for( int mx = 0; mx < SEEX; mx++ ) {
+                            for( int my = 0; my < SEEY; my++ ) {
+                                sm->set_ter( point_sm_ms( mx, my ), t_open_air );
+                            }
+                        }
+                        MAPBUFFER.add_submap( addr, sm );
+                    }
+                }
+            }
+        }
+    }
+    const tripoint_abs_sm csm = project_to<coords::sm>( center_abs );
+    const tripoint_abs_sm origin( csm.x() - MAPSIZE / 2, csm.y() - MAPSIZE / 2, csm.z() );
+    int missing = 0;
+    for( int gx = 0; gx < MAPSIZE; gx++ ) {
+        for( int gy = 0; gy < MAPSIZE; gy++ ) {
+            const tripoint_abs_sm gas = origin + tripoint_rel_sm( gx, gy, 0 );
+            const tripoint_abs_sm base = project_to<coords::sm>(
+                                             project_to<coords::omt>( gas ) );
+            for( int dx = 0; dx < 2; dx++ ) {
+                for( int dy = 0; dy < 2; dy++ ) {
+                    for( int z = -OVERMAP_DEPTH; z <= OVERMAP_HEIGHT; z++ ) {
+                        if( !MAPBUFFER.submap_exists(
+                                tripoint_abs_sm( base.x() + dx, base.y() + dy, z ) ) ) {
+                            ++missing;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    mp_inv_log( string_format( "native: submaps ready, missing=%d, overmap", missing ) );
+    // map::loadn() asks the current overmap for weather settings; the client
+    // never loaded one. Create/load the host's overmap chunk first (same world
+    // seed, so the base world matches the host's).
+    overmap_buffer.get( project_to<coords::om>( center_abs ).xy() );
+    // Populate the grid directly: map::load() also actualizes every submap
+    // (map extras/monsters) and reconciles items, which assumes a real save.
+    // Only the storage and caches are needed for rendering.
+    here.mp_load_bubble_storage( origin );
+
+    mp_inv_log( "native: bubble loaded, placing avatar" );
+    get_avatar().setpos( center_abs, false );
+    ready = true;
+    bubble_center = center_abs;
+    mp_inv_log( string_format( "native: bubble at %d,%d z%d", center_abs.x(),
+                               center_abs.y(), center_abs.z() ) );
+}
+
+static void mp_native_apply_snapshot( const snapshot &snap )
+{
+    const tripoint_abs_ms center_abs( snap.origin_x, snap.origin_y, snap.origin_z );
+    mp_native_ensure_bubble( center_abs );
+    map &here = get_map();
+    get_avatar().setpos( center_abs, false );
+    const tripoint_bub_ms center = here.get_bub( center_abs );
+    if( !here.inbounds( center ) ) {
+        return;
+    }
+    if( snap.has_time ) {
+        calendar::turn = time_point::from_turn( snap.turn );
+        if( !snap.weather.empty() ) {
+            const weather_type_id w( snap.weather );
+            if( w.is_valid() ) {
+                get_weather().weather_id = w;
+            }
+        }
+        g->reset_light_level();
+    }
+    static const furn_id f_null( "f_null" );
+    static const trap_id tr_null( "tr_null" );
+    for( int y = 0; y < snap.height; y++ ) {
+        for( int x = 0; x < snap.width; x++ ) {
+            const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
+            const tripoint_bub_ms p = center + tripoint_rel_ms( x - snap.width / 2,
+                                       y - snap.height / 2, 0 );
+            if( !here.inbounds( p ) ) {
+                continue;
+            }
+            if( !t.ter.empty() && ter_str_id( t.ter ).is_valid() ) {
+                here.ter_set( p, ter_id( t.ter ) );
+            }
+            if( !t.furn.empty() && t.furn.rfind( "vp_", 0 ) != 0 &&
+                furn_str_id( t.furn ).is_valid() ) {
+                here.furn_set( p, furn_id( t.furn ) );
+            } else {
+                here.furn_set( p, f_null );
+            }
+            if( !t.trap.empty() && trap_str_id( t.trap ).is_valid() ) {
+                here.trap_set( p, trap_id( t.trap ) );
+            } else {
+                here.trap_set( p, tr_null );
+            }
+            here.i_clear( p );
+            if( !t.item.empty() && item::type_is_defined( itype_id( t.item ) ) ) {
+                here.add_item_or_charges( p, item( itype_id( t.item ), calendar::turn ), false );
+            }
+        }
+    }
+    here.build_map_cache_for( center.z(), /*skip_lightmap=*/false, get_avatar() );
+    here.update_visibility_cache( center.z() );
+    static int mp_light_logs = 0;
+    if( mp_light_logs < 3 ) {
+        ++mp_light_logs;
+        const lit_level ll = here.get_cache_ref( center.z() ).visibility_cache[center.x()][center.y()];
+        mp_inv_log( string_format( "native: light z=%d g=%d ll=%d turn=%d ter=%s furn=%s items=%d",
+                                   center.z(), static_cast<int>( g->light_level( center.z() ) ),
+                                   static_cast<int>( ll ), to_turn<int>( calendar::turn ),
+                                   here.ter( center ).id().str().c_str(),
+                                   here.furn( center ).id().str().c_str(),
+                                   static_cast<int>( here.i_at( center ).size() ) ) );
+    }
+}
+/// Draw the frame with the game's own renderer. False = caller falls back to
+/// the replay backend for this frame.
+static bool mp_native_draw_map( void *backend, const snapshot &snap, int dest_x, int dest_y,
+                                int tw, int th )
+{
+    if( backend == nullptr || tw <= 0 || th <= 0 || snap.tiles.empty() || !snap.has_origin ) {
+        return false;
+    }
+    try {
+        mp_native_apply_snapshot( snap );
+        // cata_tiles::draw places the view with the global POSX/POSY ("player
+        // offset inside the terrain window"); the headless client has no
+        // game::init_ui, so set them for the streamed viewport.
+        const int old_posx = POSX;
+        const int old_posy = POSY;
+        POSX = snap.width / 2;
+        POSY = snap.height / 2;
+        const map &here = get_map();
+        const tripoint_bub_ms center = here.get_bub(
+                                           tripoint_abs_ms( snap.origin_x, snap.origin_y, snap.origin_z ) );
+        const bool ok = netplay::tiles_backend_draw_native(
+                            backend, dest_x, dest_y, center.x(), center.y(), center.z(),
+                            snap.width * tw, snap.height * th );
+        POSX = old_posx;
+        POSY = old_posy;
+        if( !ok ) {
+            return false;
+        }
+        static int mp_native_ok = 0;
+        if( mp_native_ok < 3 ) {
+            ++mp_native_ok;
+            mp_inv_log( string_format( "native: draw ok %dx%d at %d,%d", snap.width,
+                                       snap.height, dest_x, dest_y ) );
+        }
+        return true;
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "native: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "native: unknown error" );
+    }
+    return false;
+}
+#endif
+
+static catacurses::window mp_native_terrain_win;
+static int mp_ntw_w = -1;
+static int mp_ntw_h = -1;
+static int mp_ntw_x = -1;
+static int mp_ntw_y = -1;
+
+/// DDA MP v4.2: hand the map to the game's normal terrain-window path. The
+/// window is marked dirty; curses_drawwindow() then calls cata_tiles::draw()
+/// with g->ter_view_p during the regular present, exactly like single player
+/// (no separate canvas pass, no extra display-buffer scope, one present).
+static void mp_native_setup_terrain_window( const snapshot &snap, int dest_x, int dest_y,
+        int tw, int th, int font_w, int font_h )
+{
+    if( font_w <= 0 || font_h <= 0 ) {
+        return;
+    }
+    const int term_w = std::max( 1, ( snap.width * tw + font_w - 1 ) / font_w );
+    const int term_h = std::max( 1, ( snap.height * th + font_h - 1 ) / font_h );
+    const int cell_x = std::max( 0, dest_x ) / font_w;
+    const int cell_y = std::max( 0, dest_y ) / font_h;
+    if( !mp_native_terrain_win || term_w != mp_ntw_w || term_h != mp_ntw_h ||
+        cell_x != mp_ntw_x || cell_y != mp_ntw_y ) {
+        mp_native_terrain_win = catacurses::newwin( term_h, term_w, point( cell_x, cell_y ) );
+        g->w_terrain = mp_native_terrain_win;
+        mp_ntw_w = term_w;
+        mp_ntw_h = term_h;
+        mp_ntw_x = cell_x;
+        mp_ntw_y = cell_y;
+    }
+    TERRAIN_WINDOW_WIDTH = snap.width;
+    TERRAIN_WINDOW_HEIGHT = snap.height;
+    TERRAIN_WINDOW_TERM_WIDTH = term_w;
+    TERRAIN_WINDOW_TERM_HEIGHT = term_h;
+    POSX = snap.width / 2;
+    POSY = snap.height / 2;
+    g->ter_view_p = get_map().get_bub(
+                        tripoint_abs_ms( snap.origin_x, snap.origin_y, snap.origin_z ) );
+    werase( mp_native_terrain_win );
+    wnoutrefresh( mp_native_terrain_win );
+}
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -3135,6 +3392,13 @@ void run_view_loop()
             // windows repaint at random moments inside the input pump �
             // the screen alternated between stamped tiles and the cleared
             // black buffer (the observed flicker).
+            // DDA MP v4.1: keep the UI redraw and the tileset canvas inside one
+            // display-buffer scope. Previously each pass opened its own scope;
+            // two bind/unbind cycles per iteration left the presented buffer on
+            // a frame boundary, which flickered for a frame and stuck on the
+            // wrong buffer once mouse motion changed the timing.
+            std::optional<display_buffer_draw_scope> mp_frame_scope;
+            mp_frame_scope.emplace();
             ui_manager::redraw();
 
             bool mp_canvas_ok = false;
@@ -3298,10 +3562,26 @@ void run_view_loop()
                             netplay::tiles_backend_set_origin( tiles_backend,
                                                                snap.origin_x, snap.origin_y,
                                                                snap.origin_z, snap.has_origin );
-                            if( netplay::tiles_backend_begin( tiles_backend, dest_x, dest_y,
-                                                              canvas_w, canvas_h, PIVOT, PIVOT ) ) {
+                            if( mp_native_render_enabled() ) {
+                                // DDA MP v4.2: native path. Mirror the map and
+                                // mark the terrain window dirty; the map itself
+                                // is drawn by curses_drawwindow ->
+                                // cata_tiles::draw during the regular present.
+                                mp_native_apply_snapshot( snap );
+                                mp_native_setup_terrain_window( snap, dest_x, dest_y, tw, th,
+                                                                font_px_w, font_px_h );
+                                mp_canvas_ok = true;
+                            } else if( netplay::tiles_backend_begin( tiles_backend, dest_x, dest_y,
+                                    canvas_w, canvas_h, PIVOT, PIVOT ) ) {
                                 mp_canvas_ok = true;
                                 mp_frame_trace( "begin ok" );
+                                // DDA MP v4.2: draw the frame with the game's
+                                // own renderer over the map mirror. When it
+                                // succeeds the replay pass only adds the
+                                // pre-resolved creature overlays; terrain,
+                                // items and lighting come from cata_tiles.
+                                const bool mp_native = mp_native_render_enabled() &&
+                                                       mp_native_draw_map( tiles_backend, snap, dest_x, dest_y, tw, th );
                                 // DDA MP debug: sizes of the snapshot feeding
                                 // this frame (the light prepass and the draw
                                 // loops both iterate snap.width/height and
@@ -3376,7 +3656,7 @@ void run_view_loop()
                                         // the lit frame (or, in the fallback, the
                                         // overlay below) replicas the host's light.
                                         const int mp_lit = static_cast<int>( t.light );
-                                        if( !t.ter.empty() ) {
+                                        if( !mp_native && !t.ter.empty() ) {
                                             trace_draw( 0, t.ter.c_str() );
                                             netplay::tiles_backend_draw( tiles_backend, 0,
                                                     t.ter.c_str(), "", x - snap.width / 2,
@@ -3384,13 +3664,13 @@ void run_view_loop()
                                                     static_cast<int>( t.ter_sub ),
                                                     static_cast<int>( t.ter_rot ) );
                                         }
-                                        if( !t.trap.empty() ) {
+                                        if( !mp_native && !t.trap.empty() ) {
                                             trace_draw( 5, t.trap.c_str() );
                                             netplay::tiles_backend_draw( tiles_backend, 5,
                                                     t.trap.c_str(), "", x - snap.width / 2,
                                                     y - snap.height / 2, mp_lit, 0, 0 );
                                         }
-                                        if( !t.furn.empty() ) {
+                                        if( !mp_native && !t.furn.empty() ) {
                                             if( t.furn.rfind( "vp_", 0 ) == 0 ) {
                                                 // Legacy (pre-v3.3) vehicle part
                                                 // carried in the furniture slot:
@@ -3423,7 +3703,7 @@ void run_view_loop()
                                         // draws the "layering.json" layers
                                         // (sink dishes, cupboard clutter...)
                                         // before the plain top item.
-                                        for( const tile_item_layer &l : t.item_layers ) {
+                                        if( !mp_native ) for( const tile_item_layer &l : t.item_layers ) {
                                             trace_draw( 2, l.sprite.c_str() );
                                             netplay::tiles_backend_draw( tiles_backend, 2,
                                                     l.sprite.c_str(), "", x - snap.width / 2,
@@ -3432,7 +3712,7 @@ void run_view_loop()
                                                     static_cast<int>( l.dx ),
                                                     static_cast<int>( l.dy ) );
                                         }
-                                        if( !t.item.empty() && !t.item_skip_top ) {
+                                        if( !mp_native && !t.item.empty() && !t.item_skip_top ) {
                                             trace_draw( 2, t.item.c_str() );
                                             // v3.9.1: the itype variant the host
                                             // drew this item with (see tile_cell).
@@ -3441,7 +3721,7 @@ void run_view_loop()
                                                     y - snap.height / 2, mp_lit, 0, 0,
                                                     false, t.item_variant.c_str() );
                                         }
-                                        if( !t.vpart.empty() ) {
+                                        if( !mp_native && !t.vpart.empty() ) {
                                             // Tileset id keeps the variant in
                                             // "vp_{id}#{variant}" form; the
                                             // vehicle-part path expects the
@@ -3705,6 +3985,9 @@ void run_view_loop()
             // refresh_display() every iteration; here input pumping alone is
             // not a reliable present trigger, so the first frame would sit
             // in the buffer until the first keypress without this.
+            // Close the frame scope before presenting: the window target must
+            // be bound again when refresh_display() copies the buffer out.
+            mp_frame_scope.reset();
             refresh_display();
 
             // DDA MP v3.9 probe: first iterations with ticks/snap facts, so a

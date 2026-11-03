@@ -4215,6 +4215,17 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
 
         // game::w_terrain can be drawn by the tilecontext.
         // skip the normal drawing code for it.
+        static int mp_cdw = 0;
+        if( mp_cdw < 3 && netplay::client_is_connected() ) {
+            ++mp_cdw;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "client terrain window: %dx%d dest=%d,%d term=%dx%d posx=%d\n",
+                              TERRAIN_WINDOW_WIDTH, TERRAIN_WINDOW_HEIGHT,
+                              win->pos.x * fontwidth, win->pos.y * fontheight,
+                              TERRAIN_WINDOW_TERM_WIDTH, TERRAIN_WINDOW_TERM_HEIGHT, POSX );
+                std::fclose( f );
+            }
+        }
         tilecontext->draw(
             point( win->pos.x * fontwidth, win->pos.y * fontheight ),
             g->ter_view_p,
@@ -8351,6 +8362,33 @@ void tiles_backend_clear_screen( void *handle )
     ui_manager::invalidate_all_ui_adaptors();
     cata_cursesport::bump_curses_render_epoch();
     needupdate = true;
+}
+
+bool tiles_backend_draw_native( void *handle, int dest_x, int dest_y,
+                                int cx, int cy, int cz, int px_w, int px_h )
+{
+    netplay_tile_backend *b = netplay_backend_cast( handle );
+    if( b == nullptr || !b->tiles || !b->tiles->is_valid() ) {
+        return false;
+    }
+    std::multimap<point, formatted_text> overlay_strings;
+    color_block_overlay_container color_blocks;
+    {
+        static int mp_ndbg = 0;
+        if( mp_ndbg < 3 && netplay::mp_diag_enabled() ) {
+            ++mp_ndbg;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "native draw: valid=%d tile=%dx%d scope=%d invalid=%d\n",
+                              b->tiles->is_valid() ? 1 : 0, b->tiles->get_tile_width(),
+                              b->tiles->get_tile_height(), b->scope != nullptr ? 1 : 0,
+                              display_buffer_scope_is_invalid() ? 1 : 0 );
+                std::fclose( f );
+            }
+        }
+    }
+    b->tiles->draw( point( dest_x, dest_y ), tripoint_bub_ms( cx, cy, cz ),
+                    px_w, px_h, overlay_strings, color_blocks );
+    return true;
 }
 
 void tiles_backend_end( void *handle )
