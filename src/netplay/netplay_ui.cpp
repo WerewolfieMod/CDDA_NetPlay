@@ -3614,10 +3614,21 @@ void run_view_loop()
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
-                                // The session adaptors are drawn before the
-                                // canvas upstream; redraw them once more so the
-                                // sidebar/message log sit above the map.
-                                if( !mp_side.cells.empty() ) {
+                                                                // The session adaptors are drawn before the
+                                // canvas upstream; repaint them above the map, but
+                                // only when their content changed: a full
+                                // ui_manager::redraw() every frame repaints the
+                                // background over the canvas and makes the client
+                                // flicker.
+                                static std::size_t mp_side_sig = 0;
+                                std::size_t side_sig = mp_side.cells.size() * 7919u;
+                                for( const sidebar_cell &sc : mp_side.cells ) {
+                                    side_sig = side_sig * 131u + sc.text.size() +
+                                               static_cast<std::size_t>( sc.color ) * 7u +
+                                               static_cast<std::size_t>( sc.bg ) * 13u;
+                                }
+                                if( !mp_side.cells.empty() && side_sig != mp_side_sig ) {
+                                    mp_side_sig = side_sig;
                                     ui_manager::redraw();
                                 }
                                 if( mp_throw_active ) {
