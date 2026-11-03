@@ -1636,6 +1636,36 @@ static int mp_base_color_index( nc_color c )
     return 8; // dark gray fallback
 }
 
+/* DDA MP v4.1: give every item the session avatar carries a stable id. The id
+ * rides in the item's own variables, so it survives serialization into the
+ * client's mirror and the client can name the exact host item while acting.
+ * "mp_uid" is excluded from item stacking (item.cpp), so tagging never changes
+ * whether two items merge. */
+static void mp_tag_avatar_items( npc &av )
+{
+    static unsigned long long seq = 0;
+    std::function<void( item_location )> tag = [&]( item_location loc ) {
+        if( !loc ) {
+            return;
+        }
+        if( loc->get_var( "mp_uid", std::string() ).empty() ) {
+            loc->set_var( "mp_uid", string_format( "%d.%llu",
+                                                   to_turn<int>( calendar::turn ), ++seq ) );
+        }
+        for( item *child : loc->get_contents().all_items_top() ) {
+            if( child != nullptr ) {
+                tag( item_location( loc, child ) );
+            }
+        }
+    };
+    for( item *it : av.inv_dump() ) {
+        if( it == nullptr ) {
+            continue;
+        }
+        tag( av.is_wielding( *it ) ? av.get_wielded_item() : item_location( av, it ) );
+    }
+}
+
 static void av_send_status( int sid )
 {
     const auto sid_it = av_sid_to_npc.find( sid );
@@ -1656,6 +1686,9 @@ static void av_send_status( int sid )
         g->mp_anchor_map_on( *av, true );
     }
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
+    // DDA MP v4.1: tag the avatar's items before the raw snapshot so the
+    // client's mirror and the row listing carry the same stable ids.
+    mp_tag_avatar_items( *av );
     // DDA MP v4.0a-27: the raw NPC saves the client's own @ menu; the client
     // deserializes it into a temp NPC and opens Character::disp_info().
     {
@@ -1663,11 +1696,10 @@ static void av_send_status( int sid )
             const char *env = std::getenv( "DDA_MP_NO_INFO_JSON" );
             return env == nullptr || env[0] == '\0' || std::string( env ) == "0";
         }();
-        // Serializing the whole NPC is comparatively expensive; the @ menu
-        // does not need frame-fresh data, so refresh it roughly every 10
-        // status pushes (the first push after join always sends).
-        static std::map<int, int> mp_info_tick;
-        if( mp_send_info && ( ++mp_info_tick[sid] % 10 ) == 1 ) {
+        // Serializing the whole NPC is comparatively expensive, but the client
+        // runs its menus on this mirror, so every status push carries a fresh
+        // raw snapshot (v4.1).
+        if( mp_send_info ) {
             std::ostringstream os;
             JsonOut js( os );
             av->serialize( js );
@@ -1865,6 +1897,7 @@ static void av_send_status( int sid )
     // source adapter (same fields the client renderer consumes). The parallel
     // location list lets client actions address rows by index.
     {
+        mp_tag_avatar_items( *av );
         const netplay::character_inventory_source inv_src( *av );
         netplay::inv_packet pkt;
         pkt.header = inv_src.header();

@@ -53,6 +53,10 @@ struct inv_entry_view {
     int dx = 0;                 // tile offset from the session avatar
     int dy = 0;
     bool can_take = true;       // host can_stash() result for this item
+    // DDA MP v4.1: stable host item id (the avatar's items are tagged with
+    // mp_uid), so the client's mirror can address the same host item
+    // regardless of order or of items appearing/disappearing in between.
+    std::string uid;
 };
 
 /// Header numbers shown above the host inventory (volume/weight/space).
@@ -169,6 +173,7 @@ class character_inventory_source : public inventory_source
                 e.filthy = it.is_filthy();
                 e.active = it.active;
                 e.throw_range = u.throw_range( it );
+                e.uid = it.get_var( "mp_uid", std::string() );
                 const item_category &cat = it.get_category_shallow();
                 e.category = cat.name_header();
                 e.category_id = cat.get_id().str();
@@ -295,6 +300,8 @@ inline std::string serialize_inv_entries( const std::vector<inv_entry_view> &ent
         out += inv_wire::field( e.dy );
         out += inv_wire::sep;
         out += inv_wire::field( e.can_take ? 1 : 0 );
+        out += inv_wire::sep;
+        out += inv_wire::clean( e.uid );
         out += '\n';
     }
     return out;
@@ -372,6 +379,9 @@ inline std::vector<inv_entry_view> parse_inv_entries( const std::string &text )
         }
         if( f.size() > 23 ) {
             e.can_take = std::atoi( f[23].c_str() ) != 0;
+        }
+        if( f.size() > 24 ) {
+            e.uid = f[24];
         }
         out.push_back( std::move( e ) );
     }

@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
 
 #include "cursesdef.h"
@@ -1420,29 +1422,67 @@ static int mp_client_item_menu( Character &you, const item &it )
     return menu.ret;
 }
 
-/* DDA MP v4.0a-27: the client's own @ menu. The host streams the session NPC
- * as JSON; deserializing it into a temporary NPC gives Character::disp_info()
- * the real stats/traits/skills instead of a blank shell. Gated by try/catch so
- * a bad payload can never take the client down. */
+/* DDA MP v4.1: the client's character mirror. The host serializes the session
+ * avatar (raw state: stats, skills, effects, every item), the client
+ * deserializes it once per revision and runs the game's own menus on it. The
+ * streamed item packets stay only as a fallback and as the row-id map. */
+static npc *mp_mirror()
+{
+    static std::unique_ptr<npc> npc_mirror;
+    static std::string src;
+    std::string json;
+    if( !netplay::client_character_json( json ) || json.empty() ) {
+        return npc_mirror.get();
+    }
+    if( npc_mirror && json == src ) {
+        return npc_mirror.get();
+    }
+    try {
+        JsonValue jv = json_loader::from_string( json );
+        auto next = std::make_unique<npc>();
+        next->deserialize( jv.get_object() );
+        npc_mirror = std::move( next );
+        src = json;
+        int tagged = 0;
+        const std::vector<item *> dump = npc_mirror->inv_dump();
+        for( const item *it : dump ) {
+            if( it != nullptr && !it->get_var( "mp_uid", std::string() ).empty() ) {
+                ++tagged;
+            }
+        }
+        mp_inv_log( string_format( "mirror: rebuilt %d bytes, items=%d tagged=%d",
+                                   static_cast<int>( json.size() ),
+                                   static_cast<int>( dump.size() ), tagged ) );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "mirror error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "mirror error: unknown" );
+    }
+    return npc_mirror.get();
+}
+
+/* DDA MP v4.0a-27: the client's own @ menu. Running it on the mirror gives
+ * Character::disp_info() the real stats/traits/skills and live item list. */
 static void mp_run_character_info( const std::string &text )
 {
     static const bool mp_info_disabled = []() {
         const char *env = std::getenv( "DDA_MP_NO_INFO_JSON" );
         return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
     }();
-    if( mp_info_disabled || text.empty() ) {
+    if( mp_info_disabled ) {
         return;
     }
+    ( void )text;
     try {
-        JsonValue jv = json_loader::from_string( text );
-        JsonObject jo = jv.get_object();
-        npc tmp;
-        tmp.deserialize( jo );
-        mp_inv_log( "info: opening @ menu" );
+        npc *mirror = mp_mirror();
+        if( mirror == nullptr ) {
+            return;
+        }
+        mp_inv_log( "info: opening @ menu on the mirror" );
         // Same layering rule as the inventory: hide the pre-session main menu,
         // keep the @ menu and its own submenus above the blocker.
         ui_adaptor mp_info_blocker( ui_adaptor::disable_uis_below{} );
-        tmp.disp_info( false );
+        mirror->disp_info( false );
         mp_inv_log( "info: closed" );
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "info error: " ) + e.what() );
@@ -1627,11 +1667,13 @@ static void mp_run_pickup( const std::string &text )
 
 /* DDA MP v4.0a-17: exact host inventory on the client.
  *
- * Instead of re-drawing an approximation, rebuild the avatar's item tree from
- * the streamed rows (real itypes, counts, charges, invlets, container nesting)
- * on a temporary NPC and hand it to the game's own inventory_pick_selector.
- * The UI is then drawn by the same code path as on the host; actions only ever
- * touch the temporary copy, so the client avatar and host stay untouched. */
+ * The client keeps a real Character mirror of its avatar (raw JSON from the
+ * host). The game's own inventory_pick_selector runs on that mirror, so the
+ * list, categories, counts, invlets and item info are the original UI over the
+ * original item objects. Each mirror item is tagged with the host row index
+ * through its stable mp_uid, so an action names the very same host item even
+ * if the mirror rebuilt the inventory in a different order. The streamed rows
+ * remain only as a fallback when no mirror snapshot is available. */
 static void mp_run_host_inventory( const std::string &text )
 {
     if( text.empty() ) {
@@ -1647,10 +1689,54 @@ static void mp_run_host_inventory( const std::string &text )
                                static_cast<int>( pkt.entries.size() ),
                                static_cast<int>( text.size() ),
                                pkt.header.hotkeys_assigned, pkt.header.hotkeys_total ) );
-    npc viewer;
-    viewer.name = "client";
-
+    npc fallback_viewer;
+    npc *mirror = mp_mirror();
+    bool use_mirror = false;
+    if( mirror != nullptr ) {
+        // Map the stable host item ids from this listing onto the mirror's
+        // items and tag them with the host row index, so a row action still
+        // addresses the very same host item even if the mirror rebuilt the
+        // inventory in a different order.
+        std::map<std::string, int> uid_node;
+        for( std::size_t i = 0; i < pkt.entries.size(); i++ ) {
+            if( !pkt.entries[i].uid.empty() ) {
+                uid_node[pkt.entries[i].uid] = static_cast<int>( i );
+            }
+        }
+        int matched = 0;
+        std::function<void( item_location )> walk_mirror = [&]( item_location loc ) {
+            if( !loc ) {
+                return;
+            }
+            const auto hit = uid_node.find( loc->get_var( "mp_uid", std::string() ) );
+            if( hit != uid_node.end() ) {
+                loc->set_var( "mp_node", std::to_string( hit->second ) );
+                ++matched;
+            } else {
+                loc->erase_var( "mp_node" );
+            }
+            for( item *child : loc->get_contents().all_items_top() ) {
+                if( child != nullptr ) {
+                    walk_mirror( item_location( loc, child ) );
+                }
+            }
+        };
+        for( item *it : mirror->inv_dump() ) {
+            if( it == nullptr ) {
+                continue;
+            }
+            walk_mirror( mirror->is_wielding( *it ) ? mirror->get_wielded_item() :
+                         item_location( *mirror, it ) );
+        }
+        use_mirror = matched > 0 && matched * 2 >= static_cast<int>( pkt.entries.size() );
+        mp_inv_log( string_format( "mirror: rows=%d matched=%d use=%d",
+                                   static_cast<int>( pkt.entries.size() ), matched,
+                                   use_mirror ? 1 : 0 ) );
+    }
+    npc &viewer = use_mirror ? *mirror : fallback_viewer;
     std::size_t i = 0;
+    if( !use_mirror ) {
+        viewer.name = "client";
     std::function<item()> build = [&]() -> item {
         const netplay::inv_entry_view &e = pkt.entries[i];
         const int depth = e.depth;
@@ -1730,6 +1816,7 @@ static void mp_run_host_inventory( const std::string &text )
     if( lost > 0 ) {
         mp_inv_log( string_format( "warn: %d top-level items lost", lost ) );
     }
+    } // !use_mirror
 
     // Same preset/state as game_menus::inv::common, so the client's category
     // view/sort mode matches the host's inventory instead of a fresh default.
