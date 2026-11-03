@@ -942,8 +942,7 @@ static int mp_inv_split = 0;
  * the streamed canvas and sends the tile offset; the host performs the throw
  * with Character::throw_item so range/blocking rules stay authoritative. */
 static bool mp_throw_active = false;
-static int mp_throw_node = 0;
-static int mp_throw_gen = 0;
+static std::string mp_throw_uid;
 static int mp_throw_dx = 1;
 static int mp_throw_dy = 0;
 static float mp_canvas_cx = 0.0f;
@@ -1241,7 +1240,7 @@ static void mp_inv_log( const std::string &msg )
     }
 }
 
-static void mp_run_client_throw( const item &thrown, int node, int generation,
+static void mp_run_client_throw( const item &thrown, const std::string &uid,
                                  const tripoint_abs_ms &origin );
 
 /* DDA MP v4.0a-18: the item action menu, same entries/hotkeys/texts as the
@@ -1676,148 +1675,21 @@ static void mp_run_pickup( const std::string &text )
  * remain only as a fallback when no mirror snapshot is available. */
 static void mp_run_host_inventory( const std::string &text )
 {
-    if( text.empty() ) {
-        return;
-    }
     try {
     // Block only the UI that existed before the session (the main menu we
     // joined from). Created before the inventory windows, so every session
     // window and popup draws above it while pre-session UI stays hidden.
     ui_adaptor mp_session_blocker( ui_adaptor::disable_uis_below{} );
-    const netplay::inv_packet pkt = netplay::parse_inv_packet( text );
-    mp_inv_log( string_format( "open: rows=%d bytes=%d hotkeys=%d/%d",
-                               static_cast<int>( pkt.entries.size() ),
-                               static_cast<int>( text.size() ),
-                               pkt.header.hotkeys_assigned, pkt.header.hotkeys_total ) );
-    npc fallback_viewer;
+    // DDA MP v4.1: the inventory exists only on the mirror. No rows are
+    // rebuilt here any more; if the snapshot has not arrived yet the menu
+    // waits for it instead of showing a synthetic copy.
+    (void)text;
     npc *mirror = mp_mirror();
-    bool use_mirror = false;
-    if( mirror != nullptr ) {
-        // Map the stable host item ids from this listing onto the mirror's
-        // items and tag them with the host row index, so a row action still
-        // addresses the very same host item even if the mirror rebuilt the
-        // inventory in a different order.
-        std::map<std::string, int> uid_node;
-        for( std::size_t i = 0; i < pkt.entries.size(); i++ ) {
-            if( !pkt.entries[i].uid.empty() ) {
-                uid_node[pkt.entries[i].uid] = static_cast<int>( i );
-            }
-        }
-        int matched = 0;
-        std::function<void( item_location )> walk_mirror = [&]( item_location loc ) {
-            if( !loc ) {
-                return;
-            }
-            const auto hit = uid_node.find( loc->get_var( "mp_uid", std::string() ) );
-            if( hit != uid_node.end() ) {
-                loc->set_var( "mp_node", std::to_string( hit->second ) );
-                ++matched;
-            } else {
-                loc->erase_var( "mp_node" );
-            }
-            for( item *child : loc->get_contents().all_items_top() ) {
-                if( child != nullptr ) {
-                    walk_mirror( item_location( loc, child ) );
-                }
-            }
-        };
-        for( item *it : mirror->inv_dump() ) {
-            if( it == nullptr ) {
-                continue;
-            }
-            walk_mirror( mirror->is_wielding( *it ) ? mirror->get_wielded_item() :
-                         item_location( *mirror, it ) );
-        }
-        use_mirror = matched > 0 && matched * 2 >= static_cast<int>( pkt.entries.size() );
-        mp_inv_log( string_format( "mirror: rows=%d matched=%d use=%d",
-                                   static_cast<int>( pkt.entries.size() ), matched,
-                                   use_mirror ? 1 : 0 ) );
+    if( mirror == nullptr ) {
+        mp_inv_log( "inventory: no mirror snapshot yet" );
+        return;
     }
-    npc &viewer = use_mirror ? *mirror : fallback_viewer;
-    std::size_t i = 0;
-    if( !use_mirror ) {
-        viewer.name = "client";
-    std::function<item()> build = [&]() -> item {
-        const netplay::inv_entry_view &e = pkt.entries[i];
-        const int depth = e.depth;
-        const std::size_t node = i;
-        ++i;
-        item it( itype_id( e.id ), calendar::turn );
-        // Row index travels with the item; the host uses it to address the
-        // very same entry when an action comes back.
-        it.set_var( "mp_node", std::to_string( node ) );
-        if( e.charges > 0 &&
-            ( it.count_by_charges() || it.is_magazine() || it.is_ammo() || it.is_tool() ) ) {
-            it.charges = e.charges;
-        }
-        if( e.invlet != '\0' ) {
-            it.invlet = e.invlet;
-        }
-        it.is_favorite = e.favorite;
-        if( e.damage > 0 ) {
-            it.set_damage( e.damage );
-        }
-        if( e.filthy ) {
-            it.set_flag( flag_FILTHY );
-        }
-        it.active = e.active;
-        if( e.throw_range > 0 ) {
-            it.set_var( "mp_throw_range", std::to_string( e.throw_range ) );
-        }
-        while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
-            item child = build();
-            pocket_type pk = pocket_type::CONTAINER;
-            if( !it.get_contents().has_pocket_type( pk ) ) {
-                if( it.get_contents().has_pocket_type( pocket_type::MAGAZINE_WELL ) ) {
-                    pk = pocket_type::MAGAZINE_WELL;
-                } else if( it.get_contents().has_pocket_type( pocket_type::MOD ) ) {
-                    pk = pocket_type::MOD;
-                } else {
-                    continue;
-                }
-            }
-            it.force_insert_item( child, pk );
-        }
-        return it;
-    };
-
-    int lost = 0;
-    while( i < pkt.entries.size() ) {
-        const netplay::inv_entry_view &e = pkt.entries[i];
-        if( e.depth != 0 ) {
-            ++i;
-            continue;
-        }
-        if( !item::type_is_defined( itype_id( e.id ) ) ) {
-            const int depth = e.depth;
-            ++i;
-            while( i < pkt.entries.size() && pkt.entries[i].depth > depth ) {
-                ++i;
-            }
-            continue;
-        }
-        item it = build();
-        if( e.wielded ) {
-            viewer.set_wielded_item( it );
-        } else if( e.worn ) {
-            if( !viewer.wear_item( it, false, true, false, true ) ) {
-                if( !viewer.i_add( it, false, nullptr, nullptr, false, false ) ) {
-                    ++lost;
-                    mp_inv_log( "warn: cannot wear/store " + e.id );
-                }
-            }
-        } else {
-            if( !viewer.i_add( it, false, nullptr, nullptr, false, false ) ) {
-                ++lost;
-                mp_inv_log( "warn: cannot store " + e.id );
-            }
-        }
-    }
-    if( lost > 0 ) {
-        mp_inv_log( string_format( "warn: %d top-level items lost", lost ) );
-    }
-    } // !use_mirror
-
+    npc &viewer = *mirror;
     // Same preset/state as game_menus::inv::common, so the client's category
     // view/sort mode matches the host's inventory instead of a fresh default.
     inventory_selector_preset inv_preset = default_preset;
@@ -1825,8 +1697,8 @@ static void mp_run_host_inventory( const std::string &text )
     inventory_pick_selector sel( viewer, inv_preset );
     sel.set_title( _( "Inventory" ) );
     int assigned = 0;
-    for( const netplay::inv_entry_view &e : pkt.entries ) {
-        if( e.invlet != '\0' ) {
+    for( const item *it : viewer.inv_dump() ) {
+        if( it != nullptr && it->invlet != '\0' ) {
             ++assigned;
         }
     }
@@ -1873,12 +1745,11 @@ static void mp_run_host_inventory( const std::string &text )
             break;
         }
         const item &it = *chosen;
-        const std::string node_var = it.get_var( "mp_node", std::string() );
-        if( node_var.empty() ) {
-            mp_inv_log( "action: row has no mp_node id, ignored" );
+        const std::string uid = it.get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            mp_inv_log( "action: item has no mp_uid, ignored" );
             break;
         }
-        const int node = std::atoi( node_var.c_str() );
         const int act = mp_client_item_menu( viewer, it );
         if( act == 'o' && it.is_container() ) {
             open_stack.push_back( chosen );
@@ -1896,19 +1767,18 @@ static void mp_run_host_inventory( const std::string &text )
             insert_menu.set_hint( string_format( _( "Choose an item to put into your %s" ),
                                                  it.tname( 1, false ) ) );
             const drop_locations picked = insert_menu.execute();
-            std::vector<int> insert_nodes;
+            std::vector<std::string> insert_uids;
             for( const drop_location &dl : picked ) {
-                const std::string src_node = dl.first->get_var( "mp_node", std::string() );
-                if( !src_node.empty() ) {
-                    insert_nodes.push_back( std::atoi( src_node.c_str() ) );
+                const std::string src_uid = dl.first->get_var( "mp_uid", std::string() );
+                if( !src_uid.empty() ) {
+                    insert_uids.push_back( src_uid );
                 }
             }
-            if( !insert_nodes.empty() ) {
-                netplay::client_send_inventory_action(
-                    node, 'i', pkt.header.generation, insert_nodes );
+            if( !insert_uids.empty() ) {
+                netplay::client_send_inventory_uid( uid, 'i', insert_uids );
             }
-            mp_inv_log( string_format( "action: node=%d key=i targets=%d", node,
-                                       static_cast<int>( insert_nodes.size() ) ) );
+            mp_inv_log( string_format( "action: uid key=i targets=%d",
+                                       static_cast<int>( insert_uids.size() ) ) );
             break;
         }
         if( act == 'v' && it.is_container() ) {
@@ -1925,16 +1795,15 @@ static void mp_run_host_inventory( const std::string &text )
                 pocket->settings.serialize( js );
             }
             js.end_array();
-            netplay::client_send_inventory_settings( node, pkt.header.generation, os.str() );
-            mp_inv_log( string_format( "action: node=%d key=v settings", node ) );
+            netplay::client_send_inventory_settings_uid( uid, os.str() );
+            mp_inv_log( "action: uid key=v settings" );
             break;
         }
         if( act == '=' ) {
             const int invlet = popup_getkey(
                                    _( "Enter new letter.  Press SPACE to clear a manually-assigned letter, ESCAPE to cancel." ) );
             if( invlet != KEY_ESCAPE && ( invlet == ' ' || inv_chars.valid( invlet ) ) ) {
-                netplay::client_send_inventory_action( node, '=', pkt.header.generation,
-                                                       { invlet } );
+                netplay::client_send_inventory_uid( uid, '=', {}, { invlet } );
             }
             break;
         }
@@ -1951,11 +1820,10 @@ static void mp_run_host_inventory( const std::string &text )
                 return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
             }();
             if( !mp_legacy_throw && mp_try_host_aim && mp_have_origin ) {
-                mp_run_client_throw( it, node, pkt.header.generation,
+                mp_run_client_throw( it, uid,
                                      tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
             } else {
-                mp_throw_node = node;
-                mp_throw_gen = pkt.header.generation;
+                mp_throw_uid = uid;
                 mp_throw_dx = 1;
                 mp_throw_dy = 0;
                 mp_throw_name = it.tname();
@@ -2024,9 +1892,8 @@ static void mp_run_host_inventory( const std::string &text )
             break;
         }
         if( act > 0 ) {
-            netplay::client_send_inventory_action( node, act, pkt.header.generation );
-            mp_inv_log( string_format( "action: node=%d key=%c gen=%d", node,
-                                       static_cast<char>( act ), pkt.header.generation ) );
+            netplay::client_send_inventory_uid( uid, act );
+            mp_inv_log( string_format( "action: uid key=%c", static_cast<char>( act ) ) );
         }
         break;
     }
@@ -2381,7 +2248,7 @@ static void mp_draw_aim_panel()
                        IM_COL32( 0, 0, 0, 255 ) );
     dl->AddText( ImVec2( help_x, hy ), IM_COL32( 230, 230, 230, 255 ), help.c_str() );
 }
-static void mp_run_client_throw( const item &thrown, int node, int generation,
+static void mp_run_client_throw( const item &thrown, const std::string &uid,
                                  const tripoint_abs_ms &origin )
 {
     avatar &cli = get_avatar();
@@ -2397,9 +2264,8 @@ static void mp_run_client_throw( const item &thrown, int node, int generation,
         if( !traj.empty() ) {
             const tripoint_bub_ms tgt = traj.back();
             const tripoint_bub_ms from = cli.pos_bub();
-            netplay::client_send_inventory_action(
-                node, 't', generation,
-                { tgt.x() - from.x(), tgt.y() - from.y() } );
+            netplay::client_send_inventory_uid(
+                uid, 't', {}, { tgt.x() - from.x(), tgt.y() - from.y() } );
             mp_inv_log( string_format( "throw: aim %d,%d", tgt.x() - from.x(),
                                        tgt.y() - from.y() ) );
         } else {
@@ -2426,9 +2292,9 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
     switch( static_cast<action_id>( act ) ) {
         case ACTION_INVENTORY:
         case ACTION_ADVANCEDINV:
-            if( !inv_text.empty() ) {
-                mp_run_host_inventory( inv_text );
-            }
+            // DDA MP v4.1: the inventory comes from the mirror, not from a
+            // streamed listing, so no packet has to be present to open it.
+            mp_run_host_inventory( std::string() );
             break;
         case ACTION_PL_INFO:
             mp_run_character_info( char_json );
@@ -3751,23 +3617,15 @@ void run_view_loop()
                                     }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
-                                                                // The session adaptors are drawn before the
-                                // canvas upstream; repaint them above the map, but
-                                // only when their content changed: a full
-                                // ui_manager::redraw() every frame repaints the
-                                // background over the canvas and makes the client
-                                // flicker.
-                                static std::size_t mp_side_sig = 0;
-                                std::size_t side_sig = mp_side.cells.size() * 7919u;
-                                for( const sidebar_cell &sc : mp_side.cells ) {
-                                    side_sig = side_sig * 131u + sc.text.size() +
-                                               static_cast<std::size_t>( sc.color ) * 7u +
-                                               static_cast<std::size_t>( sc.bg ) * 13u;
-                                }
-                                if( !mp_side.cells.empty() && side_sig != mp_side_sig ) {
-                                    mp_side_sig = side_sig;
-                                    ui_manager::redraw();
-                                }
+                                // The sidebar/message adaptors were already
+                                // redrawn earlier in this same iteration, before
+                                // the canvas was stamped. Re-running a full
+                                // ui_manager::redraw() here (the old signature
+                                // check did that on every sidebar change)
+                                // repainted the window background over the just
+                                // drawn tiles for one frame - the flicker seen
+                                // while input arrives in bursts. Keep the frame
+                                // single-pass: adaptors first, canvas last.
                                 if( mp_throw_active ) {
                                     netplay::overlay_begin();
                                     mp_draw_aim_panel();
@@ -3932,11 +3790,10 @@ void run_view_loop()
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
-                    netplay::client_send_inventory_action(
-                        mp_throw_node, 't', mp_throw_gen,
-                        { mp_throw_dx, mp_throw_dy } );
-                    mp_inv_log( string_format( "action: node=%d key=t target=%d,%d",
-                                               mp_throw_node, mp_throw_dx, mp_throw_dy ) );
+                    netplay::client_send_inventory_uid(
+                        mp_throw_uid, 't', {}, { mp_throw_dx, mp_throw_dy } );
+                    mp_inv_log( string_format( "action: uid key=t target=%d,%d",
+                                               mp_throw_dx, mp_throw_dy ) );
                     mp_throw_active = false;
                     continue;
                 }

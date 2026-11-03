@@ -1893,37 +1893,9 @@ static void av_send_status( int sid )
         netplay::host_send_minimap_to_sid( sid, mm );
     }
 #endif
-    // DDA MP v4.0a-16: inventory rows for the client, built through the shared
-    // source adapter (same fields the client renderer consumes). The parallel
-    // location list lets client actions address rows by index.
-    {
-        mp_tag_avatar_items( *av );
-        const netplay::character_inventory_source inv_src( *av );
-        netplay::inv_packet pkt;
-        pkt.header = inv_src.header();
-        pkt.entries = inv_src.entries();
-        std::vector<item_location> nodes;
-        std::function<void( const item_location &, const item & )> walk =
-        [&]( const item_location & loc, const item & it ) {
-            nodes.push_back( loc );
-            for( const item *child : it.get_contents().all_items_top() ) {
-                if( child != nullptr ) {
-                    walk( item_location( loc, const_cast<item *>( child ) ), *child );
-                }
-            }
-        };
-        for( item *it : av->inv_dump() ) {
-            if( it == nullptr ) {
-                continue;
-            }
-            const item_location loc = av->is_wielding( *it ) ? av->get_wielded_item() :
-                                      item_location( *av, it );
-            walk( loc, *it );
-        }
-        av_inv_nodes[sid] = std::move( nodes );
-        pkt.header.generation = ++av_inv_gen[sid];
-        netplay::host_send_inventory_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
-    }
+    // DDA MP v4.1: no row listing is streamed any more. The client's mirror
+    // names items by mp_uid, so inventory/throw/pocket intents address the
+    // same host item without a synchronized row table.
 #if defined(TILES)
     {
         int mp_cols = 0;
@@ -1941,6 +1913,35 @@ static void av_send_status( int sid )
     }
 }
 
+/* DDA MP v4.1: resolve a stable item id on the session avatar. The id is
+ * carried in the item's own variables, so it survives snapshots and container
+ * moves; no row list has to be kept in sync. */
+static item_location av_find_by_uid( npc &av, const std::string &uid )
+{
+    item_location found;
+    std::function<void( item_location )> walk = [&]( item_location loc ) {
+        if( found || !loc ) {
+            return;
+        }
+        if( loc->get_var( "mp_uid", std::string() ) == uid ) {
+            found = loc;
+            return;
+        }
+        for( item *child : loc->get_contents().all_items_top() ) {
+            if( child != nullptr ) {
+                walk( item_location( loc, child ) );
+            }
+        }
+    };
+    for( item *it : av.inv_dump() ) {
+        if( it == nullptr || found ) {
+            continue;
+        }
+        walk( av.is_wielding( *it ) ? av.get_wielded_item() : item_location( av, it ) );
+    }
+    return found;
+}
+
 void host_pump_inventory_actions()
 {
     if( !host_is_running() ) {
@@ -1955,10 +1956,15 @@ void host_pump_inventory_actions()
         int action = 0;
         int generation = 0;
         std::vector<int> targets;
-        if( !netplay::host_pop_inventory_action( sid, node, action, generation, targets ) ) {
+        netplay::inventory_uid_action ua;
+        const bool have_uid = netplay::host_pop_inventory_uid( ua );
+        if( have_uid ) {
+            sid = ua.sid;
+            action = ua.action;
+        } else if( !netplay::host_pop_inventory_action( sid, node, action, generation, targets ) ) {
             break;
         }
-        if( generation != av_inv_gen[sid] ) {
+        if( !have_uid && generation != av_inv_gen[sid] ) {
             // The row list the client acted on is stale; applying the index
             // could hit a different item.
             netplay::host_send_event_to_sid(
@@ -1983,16 +1989,60 @@ void host_pump_inventory_actions()
         g->mp_anchor_map_on( *av, true );
         mp_anchored = true;
         const auto it = av_inv_nodes.find( sid );
-        if( it == av_inv_nodes.end() || node < 0 ||
-            node >= static_cast<int>( it->second.size() ) ) {
-            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-                std::fprintf( f, "sid=%d node=%d key=%c result=invalid-node\n",
-                              sid, node, static_cast<char>( action ) );
-                std::fclose( f );
+        item_location loc;
+        std::vector<item_location> target_locs;
+        if( have_uid ) {
+            loc = av_find_by_uid( *av, ua.uids.empty() ? std::string() : ua.uids.front() );
+            targets = ua.ints;
+            for( std::size_t k = 1; k < ua.uids.size(); k++ ) {
+                item_location src = av_find_by_uid( *av, ua.uids[k] );
+                if( src ) {
+                    target_locs.push_back( src );
+                }
             }
-            continue;
+            if( !loc ) {
+                netplay::host_send_event_to_sid(
+                    sid, _( "That item moved. Reopen the inventory and try again." ),
+                    static_cast<int>( m_info ) );
+                continue;
+            }
+            if( action == 'v' && !ua.json.empty() ) {
+                try {
+                    JsonValue jv = json_loader::from_string( ua.json );
+                    std::vector<JsonObject> settings;
+                    for( const JsonValue &entry : jv.get_array() ) {
+                        settings.push_back( entry.get_object() );
+                    }
+                    std::size_t idx = 0;
+                    for( item_pocket *pocket : loc->get_pockets( []( const item_pocket & ) {
+                    return true;
+                    } ) ) {
+                        if( idx < settings.size() ) {
+                            pocket->settings.deserialize( settings[idx] );
+                        }
+                        ++idx;
+                    }
+                    av_send_status( sid );
+                } catch( const std::exception &e ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                        std::fprintf( f, "pocket settings error sid=%d: %s\n", sid, e.what() );
+                        std::fclose( f );
+                    }
+                }
+                continue;
+            }
+        } else {
+            if( it == av_inv_nodes.end() || node < 0 ||
+                node >= static_cast<int>( it->second.size() ) ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "sid=%d node=%d key=%c result=invalid-node\n",
+                                  sid, node, static_cast<char>( action ) );
+                    std::fclose( f );
+                }
+                continue;
+            }
+            loc = it->second[node];
         }
-        item_location loc = it->second[node];
         if( !loc ) {
             continue;
         }
@@ -2172,6 +2222,22 @@ void host_pump_inventory_actions()
                     deny( string_format(
                               _( "The %s would spill unless it's on the ground or wielded." ),
                               loc->type_name() ) );
+                    break;
+                }
+                if( !target_locs.empty() ) {
+                    for( item_location src : target_locs ) {
+                        if( !src || src == loc ) {
+                            continue;
+                        }
+                        const item copy = *src.get_item();
+                        const ret_val<void> put = loc->put_in( copy, pocket_type::CONTAINER );
+                        if( !put.success() ) {
+                            deny( put.str() );
+                            continue;
+                        }
+                        src.remove_item();
+                        changed = true;
+                    }
                     break;
                 }
                 for( const int target : targets ) {

@@ -457,6 +457,10 @@ struct netplay_state {
      * ids are demultiplexed into the typed queues above by the reader thread. */
     std::mutex intent_mutex;
     std::deque<intent_request> intents;
+
+    /* DDA MP v4.1: uid-addressed inventory actions (mirror model). */
+    std::mutex inv_uid_mutex;
+    std::deque<inventory_uid_action> inv_uid_q;
 };
 
 void netplay_state::stop_host()
@@ -959,6 +963,40 @@ static void host_session_reader( int sid, socket_t sock )
                                                           std::vector<int>( in.args.begin() + 1,
                                                                   in.args.end() ),
                                                           in.args[0] } );
+                    }
+                } else if( in.action == "inv.uid" && !in.args.empty() ) {
+                    std::lock_guard<std::mutex> lk( state.inv_uid_mutex );
+                    if( state.inv_uid_q.size() < 8 ) {
+                        inventory_uid_action a;
+                        a.sid = sid;
+                        a.action = in.args[0];
+                        a.ints.assign( in.args.begin() + 1, in.args.end() );
+                        std::size_t pos = 0;
+                        while( pos <= in.data.size() ) {
+                            const std::size_t q = in.data.find( '\x1f', pos );
+                            a.uids.push_back( in.data.substr( pos, q == std::string::npos ?
+                                                              std::string::npos : q - pos ) );
+                            if( q == std::string::npos ) {
+                                break;
+                            }
+                            pos = q + 1;
+                        }
+                        if( !a.uids.empty() && !a.uids.front().empty() ) {
+                            state.inv_uid_q.push_back( std::move( a ) );
+                        }
+                    }
+                } else if( in.action == "inv.settings.uid" ) {
+                    const std::size_t q = in.data.find( '\x1f' );
+                    if( q != std::string::npos ) {
+                        std::lock_guard<std::mutex> lk( state.inv_uid_mutex );
+                        if( state.inv_uid_q.size() < 8 ) {
+                            inventory_uid_action a;
+                            a.sid = sid;
+                            a.action = 'v';
+                            a.uids.push_back( in.data.substr( 0, q ) );
+                            a.json = in.data.substr( q + 1 );
+                            state.inv_uid_q.push_back( std::move( a ) );
+                        }
                     }
                 } else if( in.action == "inv.action" && in.args.size() >= 2 ) {
                     std::lock_guard<std::mutex> lk( state.inv_act_mutex );
@@ -1739,6 +1777,43 @@ bool host_pop_intent( intent_request &out )
     out = std::move( state.intents.front() );
     state.intents.pop_front();
     return true;
+}
+
+bool host_pop_inventory_uid( inventory_uid_action &out )
+{
+    std::lock_guard<std::mutex> lk( state.inv_uid_mutex );
+    if( state.inv_uid_q.empty() ) {
+        return false;
+    }
+    out = std::move( state.inv_uid_q.front() );
+    state.inv_uid_q.pop_front();
+    return true;
+}
+
+bool client_send_inventory_uid( const std::string &uid, int action,
+                                const std::vector<std::string> &targets,
+                                const std::vector<int> &ints )
+{
+    if( !state.connected || uid.empty() ) {
+        return false;
+    }
+    std::string data = uid;
+    for( const std::string &t : targets ) {
+        data += '\x1f';
+        data += t;
+    }
+    std::vector<int> args;
+    args.push_back( action );
+    args.insert( args.end(), ints.begin(), ints.end() );
+    return client_send_intent( "inv.uid", 0, args, data );
+}
+
+bool client_send_inventory_settings_uid( const std::string &uid, const std::string &json )
+{
+    if( !state.connected || uid.empty() ) {
+        return false;
+    }
+    return client_send_intent( "inv.settings.uid", 0, {}, uid + '\x1f' + json );
 }
 bool client_send_inventory_settings( int node, int generation, const std::string &json )
 {

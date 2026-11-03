@@ -405,6 +405,25 @@ bool client_send_intent( const std::string &action, int generation,
                          const std::string &data = std::string() );
 /// Host main thread: pop one unhandled intent (unknown action ids).
 bool host_pop_intent( intent_request &out );
+
+/// DDA MP v4.1: inventory action addressed by the item's stable mp_uid.
+/// data = item uid, then US-separated target uids (container inserts).
+bool client_send_inventory_uid( const std::string &uid, int action,
+                                const std::vector<std::string> &targets = {},
+                                const std::vector<int> &ints = {} );
+/// DDA MP v4.1: pocket settings for the item with this uid.
+bool client_send_inventory_settings_uid( const std::string &uid, const std::string &json );
+
+/// One uid-addressed inventory action, queued for the host main thread.
+struct inventory_uid_action {
+    int sid = 0;
+    int action = 0;
+    /// [0] is the target item; the rest are insert targets (may be empty).
+    std::vector<std::string> uids;
+    std::string json;   ///< pocket settings payload for the 'v' action.
+    std::vector<int> ints; ///< extra integer arguments ('=' invlet, 't' dx/dy).
+};
+bool host_pop_inventory_uid( inventory_uid_action &out );
 /// DDA MP v4.0a-43: ask the host for the aiming panel of one target tile.
 bool client_send_aim_info( int node, int generation, int dx, int dy );
 /// Host main thread: pop one aiming-panel request.
