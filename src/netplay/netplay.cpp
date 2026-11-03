@@ -452,6 +452,11 @@ struct netplay_state {
     };
     std::mutex aim_req_mutex;
     std::deque<aim_req> aim_requests;
+
+    /* DDA MP v4.1: intents whose action id has no host handler yet. Known
+     * ids are demultiplexed into the typed queues above by the reader thread. */
+    std::mutex intent_mutex;
+    std::deque<intent_request> intents;
 };
 
 void netplay_state::stop_host()
@@ -919,6 +924,72 @@ static void host_session_reader( int sid, socket_t sock )
                 std::lock_guard<std::mutex> lk( state.pickup_tile_mutex );
                 if( state.pickup_tile_reqs.size() < 8 ) {
                     state.pickup_tile_reqs.push_back( { sid, generation, dx, dy } );
+                }
+            }
+        } else if( op == frame::INTENT ) {
+            // DDA MP v4.1: [str action][i32 gen][u16 n][i32 args[n]][str data].
+            // Known actions are demultiplexed into the typed queues the host
+            // pumps already consume; unknown ids wait for the main thread in
+            // the generic intent queue.
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            intent_request in;
+            in.sid = sid;
+            in.action = r.get_str();
+            in.generation = r.get_i32();
+            const uint16_t nargs = r.get_u16();
+            for( uint16_t i = 0; i < nargs && r.ok; i++ ) {
+                in.args.push_back( r.get_i32() );
+            }
+            if( r.ok && r.off < r.size ) {
+                in.data = r.get_str();
+            }
+            if( r.ok && !in.action.empty() ) {
+                if( in.action == "pickup.tiles" && in.args.size() >= 2 ) {
+                    std::lock_guard<std::mutex> lk( state.pickup_tile_mutex );
+                    if( state.pickup_tile_reqs.size() < 8 ) {
+                        state.pickup_tile_reqs.push_back( { sid, in.generation,
+                                                            in.args[0], in.args[1] } );
+                    }
+                } else if( in.action == "pickup.action" && !in.args.empty() ) {
+                    std::lock_guard<std::mutex> lk( state.pickup_act_mutex );
+                    if( state.pickup_actions.size() < 8 ) {
+                        state.pickup_actions.push_back( { sid, in.generation,
+                                                          std::vector<int>( in.args.begin() + 1,
+                                                                  in.args.end() ),
+                                                          in.args[0] } );
+                    }
+                } else if( in.action == "inv.action" && in.args.size() >= 2 ) {
+                    std::lock_guard<std::mutex> lk( state.inv_act_mutex );
+                    if( state.inv_actions.size() < 8 ) {
+                        state.inv_actions.push_back( { sid, in.args[0], in.args[1],
+                                                       in.generation,
+                                                       std::vector<int>( in.args.begin() + 2,
+                                                               in.args.end() ) } );
+                    }
+                } else if( in.action == "inv.settings" && !in.args.empty() ) {
+                    std::lock_guard<std::mutex> lk( state.inv_set_mutex );
+                    if( state.inv_settings_q.size() < 8 ) {
+                        state.inv_settings_q.push_back( { sid, in.args[0], in.generation,
+                                                          std::move( in.data ) } );
+                    }
+                } else if( in.action == "act.menu" && !in.args.empty() ) {
+                    std::lock_guard<std::mutex> lk( state.client_action_mutex );
+                    if( state.client_actions.size() < 8 ) {
+                        state.client_actions.push_back( { sid, in.args[0] } );
+                    }
+                } else if( in.action == "aim.info" && in.args.size() >= 3 ) {
+                    std::lock_guard<std::mutex> lk( state.aim_req_mutex );
+                    if( state.aim_requests.size() < 8 ) {
+                        state.aim_requests.push_back( { sid, in.args[0], in.generation,
+                                                        in.args[1], in.args[2] } );
+                    }
+                } else {
+                    std::lock_guard<std::mutex> lk( state.intent_mutex );
+                    if( state.intents.size() < 32 ) {
+                        state.intents.push_back( std::move( in ) );
+                    }
                 }
             }
         } else if( op == frame::BYE ) {
@@ -1466,15 +1537,11 @@ bool client_send_inventory_action( int node, int action, int generation,
     if( !state.connected ) {
         return false;
     }
-    std::vector<char> p;
-    put_i32( p, node );
-    put_i32( p, action );
-    put_i32( p, generation );
-    put_u16( p, static_cast<uint16_t>( targets.size() ) );
-    for( const int t : targets ) {
-        put_i32( p, t );
-    }
-    return send_all( state.client_sock, encode_frame( frame::INVENTORY_ACTION, p ) );
+    std::vector<int> args;
+    args.push_back( node );
+    args.push_back( action );
+    args.insert( args.end(), targets.begin(), targets.end() );
+    return client_send_intent( "inv.action", generation, args );
 }
 
 bool host_pop_inventory_action( int &sid, int &node, int &action, int &generation,
@@ -1503,9 +1570,7 @@ bool client_send_client_action( int action )
         std::fprintf( f, "cli action=%d\n", action );
         std::fclose( f );
     }
-    std::vector<char> p;
-    put_i32( p, action );
-    return send_all( state.client_sock, encode_frame( frame::CLIENT_ACTION, p ) );
+    return client_send_intent( "act.menu", 0, { action } );
 }
 
 bool host_pop_client_action( int &sid, int &action )
@@ -1555,14 +1620,10 @@ bool client_send_pickup_action( int generation, const std::vector<int> &nodes, i
     if( !state.connected ) {
         return false;
     }
-    std::vector<char> p;
-    put_i32( p, generation );
-    put_u16( p, static_cast<uint16_t>( nodes.size() ) );
-    for( const int node : nodes ) {
-        put_i32( p, node );
-    }
-    p.push_back( static_cast<char>( equip & 0xFF ) );
-    return send_all( state.client_sock, encode_frame( frame::PICKUP_ACTION, p ) );
+    std::vector<int> args;
+    args.push_back( equip );
+    args.insert( args.end(), nodes.begin(), nodes.end() );
+    return client_send_intent( "pickup.action", generation, args );
 }
 
 bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes, int &equip )
@@ -1614,11 +1675,7 @@ bool client_send_pickup_tile( int generation, int dx, int dy )
     if( !state.connected ) {
         return false;
     }
-    std::vector<char> p;
-    put_i32( p, generation );
-    put_i32( p, dx );
-    put_i32( p, dy );
-    return send_all( state.client_sock, encode_frame( frame::PICKUP_TILE, p ) );
+    return client_send_intent( "pickup.tiles", generation, { dx, dy } );
 }
 
 bool host_pop_pickup_tile( int &sid, int &generation, int &dx, int &dy )
@@ -1651,16 +1708,44 @@ bool host_pop_inventory_settings( int &sid, int &node, int &generation, std::str
     return true;
 }
 
+bool client_send_intent( const std::string &action, int generation,
+                         const std::vector<int> &args, const std::string &data )
+{
+    if( !state.connected ) {
+        return false;
+    }
+    if( std::FILE *f = mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "intent tx %s gen=%d args=%d\n", action.c_str(), generation,
+                      static_cast<int>( args.size() ) );
+        std::fclose( f );
+    }
+    std::vector<char> p;
+    put_str( p, action );
+    put_i32( p, generation );
+    put_u16( p, static_cast<uint16_t>( args.size() ) );
+    for( const int a : args ) {
+        put_i32( p, a );
+    }
+    put_str( p, data );
+    return send_all( state.client_sock, encode_frame( frame::INTENT, p ) );
+}
+
+bool host_pop_intent( intent_request &out )
+{
+    std::lock_guard<std::mutex> lk( state.intent_mutex );
+    if( state.intents.empty() ) {
+        return false;
+    }
+    out = std::move( state.intents.front() );
+    state.intents.pop_front();
+    return true;
+}
 bool client_send_inventory_settings( int node, int generation, const std::string &json )
 {
     if( !state.connected ) {
         return false;
     }
-    std::vector<char> p;
-    put_i32( p, node );
-    put_i32( p, generation );
-    put_str( p, json );
-    return send_all( state.client_sock, encode_frame( frame::INVENTORY_SETTINGS, p ) );
+    return client_send_intent( "inv.settings", generation, { node }, json );
 }
 
 bool host_pop_aim_request( int &sid, int &node, int &generation, int &dx, int &dy )
@@ -1684,12 +1769,7 @@ bool client_send_aim_info( int node, int generation, int dx, int dy )
     if( !state.connected ) {
         return false;
     }
-    std::vector<char> p;
-    put_i32( p, node );
-    put_i32( p, generation );
-    put_i32( p, dx );
-    put_i32( p, dy );
-    return send_all( state.client_sock, encode_frame( frame::AIM_INFO_REQ, p ) );
+    return client_send_intent( "aim.info", generation, { node, dx, dy } );
 }
 
 bool host_send_aim_info_to_sid( int sid, const std::string &text )

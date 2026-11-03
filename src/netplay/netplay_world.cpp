@@ -2667,6 +2667,28 @@ void host_pump_client_actions()
     }
 }
 
+/* DDA MP v4.1: known intent ids are demultiplexed into the typed queues by the
+ * reader thread. Anything left here has no handler yet; report it once instead
+ * of dropping the player's order silently. */
+void host_pump_intents()
+{
+    netplay::intent_request in;
+    for( int budget = 0; budget < 8; budget++ ) {
+        if( !netplay::host_pop_intent( in ) ) {
+            break;
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "intent unhandled sid=%d action=%s args=%d\n",
+                          in.sid, in.action.c_str(), static_cast<int>( in.args.size() ) );
+            std::fclose( f );
+        }
+        netplay::host_send_event_to_sid(
+            in.sid, string_format( _( "The action \"%s\" is not available to netplay clients yet." ),
+                                   in.action ),
+            static_cast<int>( m_info ) );
+    }
+}
+
 /* DDA MP v4.0a-7: called at the end of every host world turn. A fresh round
  * starts: every session may act again, so clear the per-session "acted" marks
  * and lift their waiting hints. */

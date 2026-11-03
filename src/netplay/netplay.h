@@ -100,6 +100,20 @@ enum class frame : int {
     /// tile first (the host's own choose_adjacent_highlight does the same).
     PICKUP_TILES = 43,      ///< host -> client: str text (gen + dx/dy rows)
     PICKUP_TILE = 44,       ///< client -> host: i32 gen, i32 dx, i32 dy
+    /// DDA MP v4.1: a single player intent — what the client wants done.
+    /// Payload: [str action][i32 generation][u16 n][i32 args[n]][str data].
+    /// The host runs it with the session avatar's own engine code; the old
+    /// per-menu frames above are being folded into this channel.
+    INTENT = 50,            ///< client -> host
+};
+
+/// One client intent: an action id plus action-specific integer arguments.
+struct intent_request {
+    int sid = 0;
+    std::string action;
+    int generation = 0;
+    std::vector<int> args;
+    std::string data;
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by
@@ -383,6 +397,14 @@ bool host_pop_pickup_tile( int &sid, int &generation, int &dx, int &dy );
 bool client_send_inventory_settings( int node, int generation, const std::string &json );
 /// Host main thread: pop one queued pocket-settings update.
 bool host_pop_inventory_settings( int &sid, int &node, int &generation, std::string &json );
+/// DDA MP v4.1: send one player intent. The host demultiplexes known action
+/// ids into the same typed queues the old per-menu frames used, so every
+/// existing host handler keeps working while the wire turns into one channel.
+bool client_send_intent( const std::string &action, int generation,
+                         const std::vector<int> &args,
+                         const std::string &data = std::string() );
+/// Host main thread: pop one unhandled intent (unknown action ids).
+bool host_pop_intent( intent_request &out );
 /// DDA MP v4.0a-43: ask the host for the aiming panel of one target tile.
 bool client_send_aim_info( int node, int generation, int dx, int dy );
 /// Host main thread: pop one aiming-panel request.
@@ -437,6 +459,11 @@ void host_pump_inventory_actions();
 
 /// DDA MP v4.0a-72: pump queued client action-menu choices (main thread).
 void host_pump_client_actions();
+
+/// DDA MP v4.1: pump intents that no typed handler claimed. The known ids are
+/// demultiplexed by the reader thread into the pumps above; this one drains
+/// and reports anything else so a client never silently loses an order.
+void host_pump_intents();
 
 /* ---- DDA MP v4.0a-2: per-session input routing ---- */
 

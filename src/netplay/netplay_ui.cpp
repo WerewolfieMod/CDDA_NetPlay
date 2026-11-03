@@ -131,6 +131,7 @@ void show_host_dialog()
             host_pump_avatar_keys();
             host_pump_inventory_actions();
             host_pump_client_actions();
+            host_pump_intents();
         }
         ui_manager::redraw();
 
