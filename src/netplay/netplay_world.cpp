@@ -3473,7 +3473,7 @@ void host_note_world_turn()
                 netplay::host_send_event_to_sid(
                     sid,
                     _( "You have died. Disconnect and join again to create a new character." ),
-                    static_cast<int>( m_bad ) );
+                    netplay::EVENT_DEATH );
             }
         }
         av_waiting_for_turn[sid] = false;

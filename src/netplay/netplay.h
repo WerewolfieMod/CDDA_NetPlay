@@ -386,6 +386,10 @@ bool host_send_character_json_to_sid( int sid, const std::string &json );
 bool client_character_json( std::string &out );
 /// DDA MP v4.0a-9: send the host-rendered sidebar (colour cells) to a session.
 bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
+/// DDA MP v4.0a-134: event type for "your avatar died"; the client logs it and
+/// offers to return to the main menu. Values 0..255 fit the wire byte.
+constexpr int EVENT_DEATH = 200;
+
 /// DDA MP v4.0a-11: send one event line to the client's message log.
 bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 );
 /// DDA MP v4.0a-126: relay a Character message to the client driving that

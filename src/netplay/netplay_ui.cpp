@@ -3329,6 +3329,7 @@ void run_view_loop()
     // Track whether the user left on purpose (ESC) to skip the reconnect
     // offer — sudden disconnects offer to rejoin instead.
     bool voluntary_quit = false;
+    bool mp_dead = false;
 
     // Guard against garbage frames: no sane session needs more than this.
     constexpr int SNAP_MAX = 400;
@@ -3822,7 +3823,16 @@ void run_view_loop()
                 std::string mp_ev_text;
                 int mp_ev_type = 0;
                 while( netplay::client_take_event( mp_ev_text, mp_ev_type ) ) {
+                    if( mp_ev_type == netplay::EVENT_DEATH ) {
+                        mp_dead = true;
+                    }
                     mp_log_add( mp_ev_text, mp_ev_type );
+                }
+                if( mp_dead ) {
+                    popup( _( "You have died. Return to the main menu and join again "
+                              "to create a new character." ) );
+                    voluntary_quit = true;
+                    break;
                 }
             }
 #if defined(TILES)
