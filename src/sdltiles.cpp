@@ -4203,6 +4203,19 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
         RenderSetLogicalSize( renderer, buffer_dims.x, buffer_dims.y );
     }
     WINDOW *const win = w.get<WINDOW>();
+    {
+        static int mp_dbg2 = 0;
+        if( mp_dbg2 < 5 && netplay::client_is_connected() && g ) {
+            ++mp_dbg2;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "drawwin: w=%p g_w=%p use_tiles=%d pos=%d,%d\n",
+                              static_cast<void *>( win ),
+                              static_cast<void *>( g->w_terrain.get() ), use_tiles,
+                              win->pos.x, win->pos.y );
+                std::fclose( f );
+            }
+        }
+    }
     // Stale against the render epoch after a renderer rebuild: redraw in full.
     const bool force_full = win->last_render_epoch != curses_render_epoch;
     bool update = false;

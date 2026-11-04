@@ -294,6 +294,17 @@ struct snapshot {
     bool has_time = false;
     int turn = 0;
     std::string weather;
+    /// DDA MP v4.2: raw creature state for the native renderer. kind 0 =
+    /// monster, 1 = npc; the JSON is the game's own serialization, position is
+    /// absolute so the client can place it without a shared map address.
+    struct creature_frame {
+        uint8_t kind = 0;
+        int ax = 0;
+        int ay = 0;
+        int az = 0;
+        std::string json;
+    };
+    std::vector<creature_frame> creatures;
 };
 
 /// One keyboard pseudo-event from the client.

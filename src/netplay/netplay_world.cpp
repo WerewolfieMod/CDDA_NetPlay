@@ -748,6 +748,53 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.has_time = true;
     out.turn = to_turn<int>( calendar::turn );
     out.weather = get_weather().weather_id.str();
+    // DDA MP v4.2: raw creature state for the native renderer. Only what the
+    // session avatar can see (or everything for a watcher), and only within
+    // the streamed frame + a small margin.
+    auto mp_in_frame = [&]( const tripoint_bub_ms & p ) {
+        const tripoint_rel_ms rel = p - center;
+        return std::abs( rel.x() ) <= FRAMEW / 2 + 2 &&
+               std::abs( rel.y() ) <= FRAMEH / 2 + 2;
+    };
+    for( monster &mon : g->all_monsters() ) {
+        if( mon.is_dead_state() || !here.inbounds( mon.pos_bub() ) ||
+            !mp_in_frame( mon.pos_bub() ) ) {
+            continue;
+        }
+        if( viewer != nullptr && !viewer->sees( here, mon.pos_bub() ) ) {
+            continue;
+        }
+        std::ostringstream os;
+        JsonOut js( os );
+        mon.serialize( js );
+        const tripoint_abs_ms ap = mon.pos_abs();
+        out.creatures.push_back( { 0, ap.x(), ap.y(), ap.z(), os.str() } );
+    }
+    for( npc &guy : g->all_npcs() ) {
+        if( &guy == viewer || !here.inbounds( guy.pos_bub() ) ||
+            !mp_in_frame( guy.pos_bub() ) ) {
+            continue;
+        }
+        if( viewer != nullptr && !viewer->sees( here, guy.pos_bub() ) ) {
+            continue;
+        }
+        std::ostringstream os;
+        JsonOut js( os );
+        guy.serialize( js );
+        const tripoint_abs_ms ap = guy.pos_abs();
+        out.creatures.push_back( { 1, ap.x(), ap.y(), ap.z(), os.str() } );
+    }
+    // DDA MP v4.2: the host player's own avatar is not in the NPC list or the
+    // creature tracker, so ship it separately as kind 2 for the client's
+    // native renderer.
+    if( here.inbounds( u.pos_bub() ) && mp_in_frame( u.pos_bub() ) &&
+        ( viewer == nullptr || viewer->sees( here, u.pos_bub() ) ) ) {
+        std::ostringstream os;
+        JsonOut js( os );
+        u.serialize( js );
+        const tripoint_abs_ms ap = u.pos_abs();
+        out.creatures.push_back( { 2, ap.x(), ap.y(), ap.z(), os.str() } );
+    }
 }
 
 /* DDA MP v4.0a-2: one snapshot per client session, centered on that

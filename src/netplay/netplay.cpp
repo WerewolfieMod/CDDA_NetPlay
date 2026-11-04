@@ -1300,6 +1300,14 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     p.push_back( static_cast<char>( snap.has_time ? 1 : 0 ) );
     put_i32( p, snap.turn );
     put_str( p, snap.weather );
+    put_u16( p, static_cast<uint16_t>( snap.creatures.size() ) );
+    for( const snapshot::creature_frame &cf : snap.creatures ) {
+        p.push_back( static_cast<char>( cf.kind ) );
+        put_i32( p, cf.ax );
+        put_i32( p, cf.ay );
+        put_i32( p, cf.az );
+        put_str( p, cf.json );
+    }
     for( const cell &c : snap.cells ) {
         put_u32( p, static_cast<uint32_t>( c.glyph ) );
         put_i32( p, static_cast<int32_t>( c.color ) );
@@ -2066,6 +2074,16 @@ static void client_run( socket_t sock )
             snap.has_time = r.get_u8() != 0;
             snap.turn = r.get_i32();
             snap.weather = r.get_str();
+            const uint16_t mp_ncre = r.get_u16();
+            for( uint16_t i = 0; i < mp_ncre && r.ok; i++ ) {
+                snapshot::creature_frame cf;
+                cf.kind = static_cast<uint8_t>( r.get_u8() );
+                cf.ax = r.get_i32();
+                cf.ay = r.get_i32();
+                cf.az = r.get_i32();
+                cf.json = r.get_str();
+                snap.creatures.push_back( std::move( cf ) );
+            }
             // DDA MP v4.0a-82: validate dimensions in size_t; the u16 fields
             // could overflow the old int product and let a malformed frame
             // drive the cell reader past the payload.

@@ -49,6 +49,8 @@
 #include "flag.h"
 #include "ranged.h"
 #include "npc.h"
+#include "monster.h"
+#include "creature_tracker.h"
 #include "loading_ui.h"  // loading_ui::done (releases the splash adaptors)
 #include "output.h"
 #include "uilist.h"
@@ -1481,7 +1483,14 @@ static void mp_run_character_info( const std::string &text )
     }
     ( void )text;
     try {
-        npc *mirror = mp_mirror();
+        static const bool mp_look_on = []() {
+        const char *v = std::getenv( "DDA_MP_NATIVE_LOOK" );
+        return !( v != nullptr && v[0] != '\0' && std::string( v ) == "0" );
+    }();
+    if( !mp_look_on ) {
+        return;
+    }
+    npc *mirror = mp_mirror();
         if( mirror == nullptr ) {
             return;
         }
@@ -1692,6 +1701,13 @@ static void mp_run_host_inventory( const std::string &text )
     // rebuilt here any more; if the snapshot has not arrived yet the menu
     // waits for it instead of showing a synthetic copy.
     (void)text;
+    static const bool mp_look_on = []() {
+        const char *v = std::getenv( "DDA_MP_NATIVE_LOOK" );
+        return !( v != nullptr && v[0] != '\0' && std::string( v ) == "0" );
+    }();
+    if( !mp_look_on ) {
+        return;
+    }
     npc *mirror = mp_mirror();
     if( mirror == nullptr ) {
         mp_inv_log( "inventory: no mirror snapshot yet" );
@@ -2720,6 +2736,75 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
                                center_abs.y(), center_abs.z() ) );
 }
 
+static void mp_native_apply_avatar_json()
+{
+    std::string json;
+    if( !netplay::client_character_json( json ) || json.empty() ) {
+        return;
+    }
+    static std::string applied;
+    if( json == applied ) {
+        return;
+    }
+    static const bool mp_look_on = []() {
+        const char *v = std::getenv( "DDA_MP_NATIVE_LOOK" );
+        return !( v != nullptr && v[0] != '\0' && std::string( v ) == "0" );
+    }();
+    if( !mp_look_on ) {
+        return;
+    }
+    npc *mirror = mp_mirror();
+    if( mirror == nullptr ) {
+        return;
+    }
+    // Copy only what the renderer reads for appearance. Deserializing the whole
+    // character into g->u also moves it and replaces its sight/effects, which
+    // breaks the streamed view; position/vision stay with the client avatar.
+    avatar &you = get_avatar();
+    you.male = mirror->male;
+    static const bool mp_worn_on = []() {
+        const char *v = std::getenv( "DDA_MP_NATIVE_WORN" );
+        return !( v != nullptr && v[0] != '\0' && std::string( v ) == "0" );
+    }();
+    if( mp_worn_on ) {
+        you.worn = mirror->worn;
+        if( item_location w = mirror->get_wielded_item() ) {
+            you.set_wielded_item( *w );
+        } else {
+            you.unwield();
+        }
+    }
+    applied = json;
+    mp_inv_log( "native: avatar look applied" );
+}
+static void mp_native_apply_creatures( const std::vector<snapshot::creature_frame> &creatures )
+{
+    creature_tracker &tracker = get_creature_tracker();
+    tracker.clear();
+    tracker.clear_npcs();
+    for( const snapshot::creature_frame &cf : creatures ) {
+        try {
+            JsonValue jv = json_loader::from_string( cf.json );
+            const tripoint_abs_ms ap( cf.ax, cf.ay, cf.az );
+            if( cf.kind == 0 ) {
+                auto mon = std::make_shared<monster>();
+                mon->deserialize( jv.get_object() );
+                mon->setpos( ap, false );
+                tracker.add( mon );
+            } else {
+                auto guy = std::make_shared<npc>();
+                guy->deserialize( jv );
+                guy->setpos( ap, false );
+                tracker.mp_add_npc( guy );
+            }
+        } catch( const std::exception &e ) {
+            mp_inv_log( std::string( "native: creature " ) + e.what() );
+        } catch( ... ) {
+            mp_inv_log( "native: creature unknown error" );
+        }
+    }
+}
+
 static void mp_native_apply_snapshot( const snapshot &snap )
 {
     const tripoint_abs_ms center_abs( snap.origin_x, snap.origin_y, snap.origin_z );
@@ -2741,7 +2826,6 @@ static void mp_native_apply_snapshot( const snapshot &snap )
         g->reset_light_level();
     }
     static const furn_id f_null( "f_null" );
-    static const trap_id tr_null( "tr_null" );
     for( int y = 0; y < snap.height; y++ ) {
         for( int x = 0; x < snap.width; x++ ) {
             const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
@@ -2761,14 +2845,19 @@ static void mp_native_apply_snapshot( const snapshot &snap )
             }
             if( !t.trap.empty() && trap_str_id( t.trap ).is_valid() ) {
                 here.trap_set( p, trap_id( t.trap ) );
-            } else {
-                here.trap_set( p, tr_null );
             }
             here.i_clear( p );
             if( !t.item.empty() && item::type_is_defined( itype_id( t.item ) ) ) {
                 here.add_item_or_charges( p, item( itype_id( t.item ), calendar::turn ), false );
             }
         }
+    }
+    static const bool mp_creatures_on = []() {
+        const char *v = std::getenv( "DDA_MP_NATIVE_CREATURES" );
+        return !( v != nullptr && v[0] != '\0' && std::string( v ) == "0" );
+    }();
+    if( mp_creatures_on ) {
+        mp_native_apply_creatures( snap.creatures );
     }
     here.build_map_cache_for( center.z(), /*skip_lightmap=*/false, get_avatar() );
     here.update_visibility_cache( center.z() );
@@ -3397,8 +3486,18 @@ void run_view_loop()
             // two bind/unbind cycles per iteration left the presented buffer on
             // a frame boundary, which flickered for a frame and stuck on the
             // wrong buffer once mouse motion changed the timing.
-            std::optional<display_buffer_draw_scope> mp_frame_scope;
-            mp_frame_scope.emplace();
+            // DDA MP v4.2: apply the avatar/creature mirrors before the UI
+            // redraw. Their deserialization touches UI caches; doing it between
+            // the window draw and the present cleared the whole frame.
+            if( mp_native_render_enabled() ) {
+                static const bool mp_avatar_on = []() {
+                    const char *v = std::getenv( "DDA_MP_NATIVE_AVATAR" );
+                    return v != nullptr && v[0] != '\0' && std::string( v ) != "0";
+                }();
+                if( mp_avatar_on ) {
+                    mp_native_apply_avatar_json();
+                }
+            }
             ui_manager::redraw();
 
             bool mp_canvas_ok = false;
@@ -3985,9 +4084,6 @@ void run_view_loop()
             // refresh_display() every iteration; here input pumping alone is
             // not a reliable present trigger, so the first frame would sit
             // in the buffer until the first keypress without this.
-            // Close the frame scope before presenting: the window target must
-            // be bound again when refresh_display() copies the buffer out.
-            mp_frame_scope.reset();
             refresh_display();
 
             // DDA MP v3.9 probe: first iterations with ticks/snap facts, so a

@@ -97,6 +97,10 @@ class creature_tracker
         void clear_npcs() {
             active_npc.clear();
         }
+        /// DDA MP: add a mirrored NPC for rendering (client-side; no AI).
+        void mp_add_npc( const shared_ptr_fast<npc> &who ) {
+            active_npc.push_back( who );
+        }
         /** Swaps the positions of two monsters */
         void swap_positions( monster &first, monster &second );
         /** Kills 0 hp monsters. Returns if it killed any. */
