@@ -28,6 +28,8 @@
 #include "creature_tracker.h"
 #include "craft_reservation.h"
 #include "effect.h"
+#include "field.h"
+#include "field_type.h"
 #include "game.h"
 #include "item.h"
 #include "itype.h"
@@ -198,6 +200,16 @@ static map_memory &av_mem_for( const npc &n )
 
 static void mp_render_memory( const memorized_tile &mt, tile_cell &t )
 {
+    // DDA MP v4.0a-114: ship the memory itself as well. The native renderer
+    // reads map memory (not the live tile) for anything outside the viewer's
+    // sight, so the client rebuilds it in its own avatar's memory.
+    t.mem_ter = mt.get_ter_id();
+    t.mem_dec = mt.get_dec_id();
+    t.mem_ter_sub = static_cast<uint8_t>( mt.get_ter_subtile() );
+    t.mem_ter_rot = static_cast<uint8_t>( mt.get_ter_rotation() );
+    t.mem_dec_sub = static_cast<uint8_t>( mt.get_dec_subtile() );
+    t.mem_dec_rot = static_cast<uint8_t>( mt.get_dec_rotation() );
+    t.mem_sym = static_cast<uint32_t>( mt.symbol );
     if( !mt.get_ter_id().empty() ) {
         t.ter = mt.get_ter_id();
         t.ter_sub = static_cast<uint8_t>( mt.get_ter_subtile() );
@@ -346,6 +358,19 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                     const trap &tr = here.tr_at( p );
                     if( !tr.is_null() && tr.can_see( p, self ) ) {
                         t.trap = tr.loadid.id().str();
+                    }
+                    // DDA MP v4.0a-114: the field the host's renderer draws
+                    // here (displayed_field_type is the same choice the ascii
+                    // draw makes; intensity selects its sprite).
+                    const field &fld = here.field_at( p );
+                    if( fld.field_count() > 0 ) {
+                        const field_type_id &ft = fld.displayed_field_type();
+                        const field_entry *fe = ft ? fld.find_field( ft, false ) : nullptr;
+                        if( fe != nullptr ) {
+                            t.field = ft.id().str();
+                            t.field_intensity = static_cast<uint8_t>(
+                                                    std::min( fe->get_field_intensity(), 255 ) );
+                        }
                     }
                     monster *m = get_creature_tracker().creature_at<monster>( p );
                     if( m != nullptr && m->type != nullptr && m->type->id.is_valid() ) {

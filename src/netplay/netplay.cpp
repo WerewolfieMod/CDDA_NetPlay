@@ -1365,6 +1365,20 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             // ("footstep" / "footstep_above" / "footstep_below" overlay id
             // on the client; the ascii cells carry the same glyph anyway).
             p.push_back( static_cast<char>( t.marker ) );
+            // v4.0a-114: raw field (sprite + intensity) and the viewer's map
+            // memory for this cell. Fields were previously folded into the
+            // ascii cells only, so the native renderer never drew fire/smoke;
+            // memory content was streamed as live terrain, which the native
+            // path ignores for out-of-sight cells (it reads map memory).
+            put_str8( p, t.field );
+            p.push_back( static_cast<char>( t.field_intensity ) );
+            put_str8( p, t.mem_ter );
+            put_str8( p, t.mem_dec );
+            p.push_back( static_cast<char>( t.mem_ter_sub ) );
+            p.push_back( static_cast<char>( t.mem_ter_rot ) );
+            p.push_back( static_cast<char>( t.mem_dec_sub ) );
+            p.push_back( static_cast<char>( t.mem_dec_rot ) );
+            put_u32( p, t.mem_sym );
         }
         // DDA MP v4.0a-4: absolute world origin of the frame's pivot cell,
         // written after the cell loop. The reader's exact-fit ladder decodes
@@ -2180,6 +2194,17 @@ static void client_run( socket_t sock )
                                     if( extras >= 16 ) {
                                         t.marker = rr.get_u8();
                                     }
+                                    if( extras >= 17 ) {
+                                        t.field = rr.get_str8();
+                                        t.field_intensity = rr.get_u8();
+                                        t.mem_ter = rr.get_str8();
+                                        t.mem_dec = rr.get_str8();
+                                        t.mem_ter_sub = rr.get_u8();
+                                        t.mem_ter_rot = rr.get_u8();
+                                        t.mem_dec_sub = rr.get_u8();
+                                        t.mem_dec_rot = rr.get_u8();
+                                        t.mem_sym = rr.get_u32();
+                                    }
                                     out.push_back( std::move( t ) );
                                 }
                                 if( with_origin && rr.ok ) {
@@ -2197,9 +2222,12 @@ static void client_run( socket_t sock )
                                 }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 16, true );
+                            std::vector<tile_cell> parsed = try_decode( 17, true );
                             if( parsed.empty() ) {
-                                parsed = try_decode( 16, false );
+                                parsed = try_decode( 17, false );
+                            }
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 16, true );
                             }
                             if( parsed.empty() ) {
                                 parsed = try_decode( 15, false );

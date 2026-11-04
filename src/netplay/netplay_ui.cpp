@@ -23,6 +23,8 @@
 #include "cursesdef.h"
 #include "cursesport.h"
 #include "avatar.h"      // get_avatar (native character creation)
+#include "field.h"       // fields mirrored into the native map
+#include "field_type.h"  // field_type_str_id
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
 #include "debug.h"       // debug_suppress_prompts (fat client load)
 #include "init.h"        // DynamicDataLoader (fat client finalize guard)
@@ -2826,6 +2828,13 @@ static void mp_native_apply_snapshot( const snapshot &snap )
         g->reset_light_level();
     }
     static const furn_id f_null( "f_null" );
+    // DDA MP v4.0a-114: allocate this frame's memory region once; per-cell
+    // writes below go to the client avatar's own map memory (the native
+    // renderer reads it for everything outside the current sight).
+    avatar &you = get_avatar();
+    you.prepare_map_memory_region(
+        here.get_abs( center + tripoint_rel_ms( -snap.width / 2, -snap.height / 2, 0 ) ),
+        here.get_abs( center + tripoint_rel_ms( snap.width / 2, snap.height / 2, 0 ) ) );
     for( int y = 0; y < snap.height; y++ ) {
         for( int x = 0; x < snap.width; x++ ) {
             const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
@@ -2846,9 +2855,36 @@ static void mp_native_apply_snapshot( const snapshot &snap )
             if( !t.trap.empty() && trap_str_id( t.trap ).is_valid() ) {
                 here.trap_set( p, trap_id( t.trap ) );
             }
+            // DDA MP v4.0a-114: mirror the raw field, so the native renderer
+            // draws fire/smoke/blood the same way the host does.
+            field &fld = here.field_at( p );
+            if( fld.field_count() > 0 ) {
+                fld.clear();
+            }
+            if( !t.field.empty() ) {
+                const field_type_str_id ft( t.field );
+                if( ft.is_valid() ) {
+                    fld.add_field( ft.id(), t.field_intensity > 0 ? t.field_intensity : 1 );
+                }
+            }
+            // The viewer's map memory for cells outside its sight.
+            const tripoint_abs_ms ap = here.get_abs( p );
+            if( !t.mem_ter.empty() ) {
+                you.memorize_terrain( ap, t.mem_ter, t.mem_ter_sub, t.mem_ter_rot );
+            }
+            if( !t.mem_dec.empty() ) {
+                you.memorize_decoration( ap, t.mem_dec, t.mem_dec_sub, t.mem_dec_rot );
+            }
+            if( t.mem_sym != 0 ) {
+                you.memorize_symbol( ap, t.mem_sym );
+            }
             here.i_clear( p );
             if( !t.item.empty() && item::type_is_defined( itype_id( t.item ) ) ) {
-                here.add_item_or_charges( p, item( itype_id( t.item ), calendar::turn ), false );
+                item itm( itype_id( t.item ), calendar::turn );
+                if( !t.item_variant.empty() ) {
+                    itm.set_itype_variant( t.item_variant );
+                }
+                here.add_item_or_charges( p, itm, false );
             }
         }
     }

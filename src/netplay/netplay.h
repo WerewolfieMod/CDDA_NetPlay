@@ -254,6 +254,21 @@ struct tile_cell {
     /// host skips the plain item draw (draw_field_or_item's drawtop=false).
     /// Streamed as flags bit 6.
     bool item_skip_top = false;
+    /// DDA MP v4.0a-114: raw field state (fire, smoke, blood, gas...) so the
+    /// native renderer draws the same field sprite and intensity as the host.
+    /// Empty field id = no field on the cell.
+    std::string field;
+    uint8_t field_intensity = 0;
+    /// DDA MP v4.0a-114: the viewer's map memory for this cell. The client
+    /// rebuilds it in its own avatar's map memory, so remembered but unseen
+    /// tiles render the same memory sprites as on the host.
+    std::string mem_ter;
+    std::string mem_dec;
+    uint8_t mem_ter_sub = 0;
+    uint8_t mem_ter_rot = 0;
+    uint8_t mem_dec_sub = 0;
+    uint8_t mem_dec_rot = 0;
+    uint32_t mem_sym = 0;
 };
 
 /// DDA MP v4.0a-9: one rendered sidebar cell — the text as the curses layer
