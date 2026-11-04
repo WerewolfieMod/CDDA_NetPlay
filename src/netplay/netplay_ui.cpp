@@ -735,8 +735,10 @@ static long key_to_remote( const std::string &action )
     if( action == "RIGHT" ) { return 2; }
     if( action == "UP" )    { return 3; }
     if( action == "DOWN" )  { return 4; }
-    if( action == "CONFIRM" ) { return 10; }
-    if( action == "MENU" )  { return 11; }
+    // DDA MP v4.0a-117: ENTER is the action-menu key (ACTION_ACTIONMENU). It
+    // used to be forwarded as a raw CONFIRM key, which the host swallows, so
+    // the action menu could not be opened at all. Leave it to the default
+    // context mapping below.
     if( action == "RIGHTUP" )   { return 12; }
     if( action == "RIGHTDOWN" ) { return 13; }
     if( action == "LEFTUP" )    { return 14; }
@@ -2325,6 +2327,15 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_PL_INFO:
             mp_run_character_info( char_json );
             break;
+        case ACTION_LOOK: {
+            // DDA MP v4.0a-117: looking around is free and local. The client's
+            // map mirror holds exactly the frame the host streams, so the
+            // game's own look UI can run on the client avatar.
+            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
+            g->look_around();
+            break;
+        }
+
         case ACTION_HELP: {
             ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
             help_window hw;
@@ -2738,6 +2749,8 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
                                center_abs.y(), center_abs.z() ) );
 }
 
+static bool mp_native_avatar_ready = false;
+
 static void mp_native_apply_avatar_json()
 {
     std::string json;
@@ -2754,6 +2767,34 @@ static void mp_native_apply_avatar_json()
     }();
     if( !mp_look_on ) {
         return;
+    }
+    // DDA MP v4.0a-117: the panels (and several local UIs) evaluate math
+    // conditions against the global avatar, not the passed Character. A stub
+    // g->u with no body parts made 'u_val(bmi_permil)' and friends crash the
+    // client. Mirror the whole character into g->u and keep only the facts
+    // that belong to the client's own view (position, view offset).
+    static const bool mp_full_on = []() {
+        const char *v = std::getenv( "DDA_MP_FULL_AVATAR" );
+        return v == nullptr || v[0] == '\0' || std::string( v ) != "0";
+    }();
+    if( mp_full_on ) {
+        avatar &you = get_avatar();
+        const tripoint_abs_ms keep_pos = you.pos_abs();
+        const tripoint_rel_ms keep_off = you.view_offset;
+        try {
+            JsonValue jv = json_loader::from_string( json );
+            you.deserialize( jv.get_object() );
+            you.setpos( keep_pos, false );
+            you.view_offset = keep_off;
+            applied = json;
+            mp_native_avatar_ready = true;
+            mp_inv_log( "native: avatar mirror applied" );
+            return;
+        } catch( const std::exception &e ) {
+            mp_inv_log( std::string( "native: avatar mirror error " ) + e.what() );
+        } catch( ... ) {
+            mp_inv_log( "native: avatar mirror error unknown" );
+        }
     }
     npc *mirror = mp_mirror();
     if( mirror == nullptr ) {
@@ -3017,18 +3058,27 @@ static std::vector<mp_sidebar_panel> mp_native_sidebar_panels()
         if( p.get_height() == -2 ) {
             continue;
         }
+        // Widget-less panels (the message-log placeholder) span the whole
+        // terminal and would black out the map if drawn as a sidebar block.
+        if( p.get_widget().is_null() ) {
+            continue;
+        }
         const std::string wid = p.get_widget().str();
         if( wid.find( "monster" ) != std::string::npos ||
             wid.find( "creature" ) != std::string::npos ||
             wid.find( "critter" ) != std::string::npos ||
-            wid.find( "npc" ) != std::string::npos ) {
+            wid.find( "npc" ) != std::string::npos ||
+            // DDA MP v4.0a-117: the compass walks the creature tracker and
+            // crashes on the render-only creature mirror; the client keeps
+            // its own minimap beacons instead for now.
+            wid.find( "compass" ) != std::string::npos ) {
             continue;
         }
         const int h = std::min( p.get_height(), TERMY - y );
         if( h <= 0 ) {
             break;
         }
-        if( p.toggle ) {
+        if( p.toggle && y + h <= TERMY - 14 ) {
             out.push_back( { &p, y, h } );
         }
         y += h;
@@ -3056,10 +3106,22 @@ static int mp_native_sidebar_width()
 
 static void mp_draw_native_sidebar()
 {
-    npc *mirror = mp_mirror();
-    if( mirror == nullptr ) {
+    static const bool enabled = []() {
+        const char *v = std::getenv( "DDA_MP_NATIVE_SIDEBAR" );
+        return v == nullptr || v[0] == '\0' || std::string( v ) != "0";
+    }();
+    if( !enabled ) {
         return;
     }
+    // Panels evaluate math conditions against the global avatar; draw them
+    // only after the character mirror has been applied to g->u, otherwise a
+    // stub avatar (no body parts) crashes widgets like the needs block.
+    if( !mp_native_avatar_ready ) {
+        return;
+    }
+    // The avatar mirror is applied to g->u, so the panels read the same
+    // character the widgets' global math conditions see.
+    avatar &you = get_avatar();
     const bool right = get_option<std::string>( "SIDEBAR_POSITION" ) == "right";
     const std::vector<mp_sidebar_panel> panels = mp_native_sidebar_panels();
     int full_w = 0;
@@ -3082,7 +3144,7 @@ static void mp_draw_native_sidebar()
         catacurses::window win = catacurses::newwin( e.h, w,
                                  point( right ? TERMX - w : 0, e.y ) );
         werase( win );
-        e.panel->draw( { *mirror, win, e.panel->get_widget() } );
+        e.panel->draw( { you, win, e.panel->get_widget() } );
         wnoutrefresh( win );
     }
 }
@@ -3299,7 +3361,11 @@ void run_view_loop()
             }
             }
             // DDA MP v4.0a-11: the client's own message log, under the panels.
-            float ly = draw_y * ch;
+            // Native panels live on the curses grid (TERMY rows over the whole
+            // window), so convert their row count to pixels with the grid's
+            // own row height instead of the ImGui line height.
+            const float mp_row_h = io.DisplaySize.y / static_cast<float>( std::max( 1, TERMY ) );
+            float ly = mp_panels_native ? draw_y * mp_row_h : draw_y * ch;
             // DDA MP v4.0a-13: creatures this character can see (own list).
             // DDA MP v4.0a-77: the host's compass legend is now computed from
             // this character, so the sidebar already carries the list. The old
@@ -3477,6 +3543,16 @@ void run_view_loop()
                     mp_cols = dc;
                     mp_rows = dr;
                 }
+                // DDA MP v4.0a-117: the sidebar is drawn natively beside the
+                // map, so the host must render only the map columns. Without
+                // this the frame covers the sidebar's column and the panels
+                // overlap the right edge of the map.
+                if( mp_native_render_enabled() ) {
+                    const int sb_cols = mp_native_sidebar_width();
+                    if( sb_cols > 0 && mp_cols > sb_cols + 16 ) {
+                        mp_cols -= sb_cols;
+                    }
+                }
                 if( mp_cols != mp_last_cols || mp_rows != mp_last_rows ) {
                     mp_last_cols = mp_cols;
                     mp_last_rows = mp_rows;
@@ -3637,7 +3713,7 @@ void run_view_loop()
             if( mp_native_render_enabled() ) {
                 static const bool mp_avatar_on = []() {
                     const char *v = std::getenv( "DDA_MP_NATIVE_AVATAR" );
-                    return v != nullptr && v[0] != '\0' && std::string( v ) != "0";
+                    return v == nullptr || v[0] == '\0' || std::string( v ) != "0";
                 }();
                 if( mp_avatar_on ) {
                     mp_native_apply_avatar_json();
@@ -3787,17 +3863,34 @@ void run_view_loop()
                             const int center_px_y = ( win_y + cur_h / 2 + 1 ) * font_px_h;
                             const int canvas_w = snap.width * tw;
                             const int canvas_h = snap.height * th;
-                            // Shift the picture left by half the sidebar width: the
-                            // host keeps the map and its sidebar side by side, and the
-                            // streamed sidebar must not sit under the sprites.
-                            const int dest_x = center_px_x - canvas_w / 2 -
-                                               static_cast<int>( mp_sb_overlay_w / 2.0f );
-                            const int dest_y = center_px_y - canvas_h / 2;
-                            // Throw crosshair anchor: the avatar sits at the
-                            // centre of the streamed canvas.
-                            mp_canvas_cx = static_cast<float>( center_px_x ) -
-                                           mp_sb_overlay_w / 2.0f;
-                            mp_canvas_cy = static_cast<float>( center_px_y );
+                            // DDA MP v4.0a-117: the map occupies the area left
+                            // of the native sidebar; center it there instead of
+                            // centering over the whole screen.
+                            int dest_x = 0;
+                            int dest_y = 0;
+                            if( mp_native_render_enabled() ) {
+                                const int sb_cells = mp_native_sidebar_width();
+                                const int area_w = std::max( 0, TERMX * font_px_w -
+                                                             sb_cells * font_px_w );
+                                dest_x = std::max( 0, ( area_w - canvas_w ) / 2 );
+                                dest_y = std::max( 0, ( TERMY * font_px_h - canvas_h ) / 2 );
+                                mp_canvas_cx = static_cast<float>( dest_x ) + canvas_w / 2.0f;
+                                mp_canvas_cy = static_cast<float>( dest_y ) + canvas_h / 2.0f;
+                            } else {
+                                // Center the sprite canvas on the window's
+                                // interior and shift it left by half the
+                                // sidebar width for the streamed layout.
+                                const int win_x = std::max( 0, ( TERMX - ( cur_w + 2 ) ) / 2 );
+                                const int win_y = std::max( 0, ( TERMY - ( cur_h + 2 ) ) / 2 );
+                                const int center_px_x = ( win_x + cur_w / 2 + 1 ) * font_px_w;
+                                const int center_px_y = ( win_y + cur_h / 2 + 1 ) * font_px_h;
+                                dest_x = center_px_x - canvas_w / 2 -
+                                         static_cast<int>( mp_sb_overlay_w / 2.0f );
+                                dest_y = center_px_y - canvas_h / 2;
+                                mp_canvas_cx = static_cast<float>( center_px_x ) -
+                                               mp_sb_overlay_w / 2.0f;
+                                mp_canvas_cy = static_cast<float>( center_px_y );
+                            }
                             mp_canvas_tw = static_cast<float>( tw );
                             mp_canvas_th = static_cast<float>( th );
                             constexpr int PIVOT = 32; // inside the 48-tile bubble
@@ -4450,6 +4543,12 @@ void run_view_loop()
                         case ACTION_PL_INFO:
                             mp_run_character_info( mp_char_json );
                             continue;
+                        case ACTION_LOOK: {
+                            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
+                            g->look_around();
+                            continue;
+                        }
+
                         case ACTION_HELP: {
                             ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
                             help_window hw;
