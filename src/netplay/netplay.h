@@ -410,6 +410,11 @@ bool host_relay_character_message( const Character *who, const std::string &text
 void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,
                               int msg_type );
 void host_relay_sees_message( const Creature &target, const std::string &text, int msg_type );
+/// DDA MP v4.0a-139 (multi-region foundation): preserve live monsters when the
+/// reality bubble switches away from their area, and bring them back when it
+/// returns. Without this, walking far despawns everything left behind.
+void host_capture_region_monsters();
+void host_restore_region_monsters();
 /// DDA MP v4.0a-11: broadcast one event line to every connected session.
 void host_broadcast_event( const std::string &text, int msg_type );
 /// DDA MP v4.0a-12: send the overmap minimap block to a session.

@@ -10400,19 +10400,30 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
 
     point_rel_sm shift;
 
-    while( x < HALF_MAPSIZE_X ) {
+    // DDA MP v4.0a-139: session avatars may roam the whole loaded map instead
+    // of the vanilla 12-tile center band. This is what lets two players be far
+    // apart (tens of tiles) inside one simulation bubble; the frame builder
+    // already accepts any center with enough room for its 49x32 window.
+    const bool mp_wide = anchor.is_npc();
+    const int mp_margin = 30;
+    const int mp_left = mp_wide ? mp_margin : HALF_MAPSIZE_X;
+    const int mp_right = mp_wide ? MAPSIZE_X - mp_margin : HALF_MAPSIZE_X + SEEX;
+    const int mp_top = mp_wide ? mp_margin : HALF_MAPSIZE_Y;
+    const int mp_bottom = mp_wide ? MAPSIZE_Y - mp_margin : HALF_MAPSIZE_Y + SEEY;
+
+    while( x < mp_left ) {
         x += SEEX;
         shift.x()--;
     }
-    while( x >= HALF_MAPSIZE_X + SEEX ) {
+    while( x >= mp_right ) {
         x -= SEEX;
         shift.x()++;
     }
-    while( y < HALF_MAPSIZE_Y ) {
+    while( y < mp_top ) {
         y += SEEY;
         shift.y()--;
     }
-    while( y >= HALF_MAPSIZE_Y + SEEY ) {
+    while( y >= mp_bottom ) {
         y -= SEEY;
         shift.y()++;
     }
