@@ -2454,6 +2454,18 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_FIRE:
             mp_run_client_fire();
             break;
+        // DDA MP v4.0a-133: the item-action hotkeys open the inventory; the
+        // row menu exposes drop/eat/wear/read/wield/use for the chosen item.
+        case ACTION_DROP:
+        case ACTION_EAT:
+        case ACTION_WEAR:
+        case ACTION_TAKE_OFF:
+        case ACTION_READ:
+        case ACTION_WIELD:
+        case ACTION_USE:
+        case ACTION_COMPARE:
+            mp_run_host_inventory( inv_text );
+            break;
 
         case ACTION_HELP: {
             ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
@@ -4706,6 +4718,16 @@ void run_view_loop()
                             continue;
                         case ACTION_FIRE:
                             mp_run_client_fire();
+                            continue;
+                        case ACTION_DROP:
+                        case ACTION_EAT:
+                        case ACTION_WEAR:
+                        case ACTION_TAKE_OFF:
+                        case ACTION_READ:
+                        case ACTION_WIELD:
+                        case ACTION_USE:
+                        case ACTION_COMPARE:
+                            mp_run_host_inventory( mp_inv_text );
                             continue;
 
                         case ACTION_HELP: {
