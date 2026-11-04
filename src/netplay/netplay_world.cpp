@@ -1347,6 +1347,19 @@ static std::map<int, bool> av_waiting_for_turn;
 
 static bool av_all_acted()
 {
+    // Drop avatars whose session is gone: a client that disconnected between
+    // turns must not block the parity gate for the remaining players.
+    const std::vector<int> sessions = netplay::host_session_ids();
+    for( auto it = av_sid_to_npc.begin(); it != av_sid_to_npc.end(); ) {
+        if( std::find( sessions.begin(), sessions.end(), it->first ) == sessions.end() ) {
+            av_acted_since_tick.erase( it->first );
+            av_waiting_for_turn.erase( it->first );
+            av_move_pool.erase( it->first );
+            it = av_sid_to_npc.erase( it );
+        } else {
+            ++it;
+        }
+    }
     for( const auto &entry : av_sid_to_npc ) {
         // DDA MP v4.0a-88: an AFK (long wait) session must not block the
         // others; it does not take part in the turn round at all.
@@ -1464,6 +1477,10 @@ void host_pump_avatar_keys()
                     av_waiting_for_turn[sk.sid] = true;
                     netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                 }
+                // No action point left for this order: the player is done for
+                // this round. Do not block the host's turn on an exhausted
+                // pool (that deadlocked both sides until a manual wait).
+                av_acted_since_tick[sk.sid] = true;
                 break;
             }
         }
@@ -1509,8 +1526,13 @@ void host_pump_avatar_keys()
             }
             // parity: this bind acted since the last world turn
             av_acted_since_tick[sk.sid] = true;
-            // The step went through: the client is not waiting any more.
-            netplay::host_send_hover_to_sid( sk.sid, "" );
+            // The step went through; tell the client whether its round is over.
+            if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
+                av_waiting_for_turn[sk.sid] = true;
+                netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
+            } else {
+                netplay::host_send_hover_to_sid( sk.sid, "" );
+            }
             // DDA MP v4.0a-7: the shared world turn is NOT synthesized here
             // any more. The client's step spends its move pool, and the world
             // advances only when the host takes a turn — so a client can never
@@ -2679,6 +2701,11 @@ void host_pump_client_actions()
                 break;
         }
         if( changed ) {
+            if( action == ACTION_OPEN || action == ACTION_CLOSE ) {
+                // These spend a turn on the host side; count the session as
+                // acted so the host's parity gate is not blocked by a door.
+                av_acted_since_tick[sid] = true;
+            }
             av_send_status( sid );
         }
     }
@@ -2811,6 +2838,8 @@ void host_pump_client_actions()
                 std::fclose( f );
             }
         }
+        // Picking items up takes a turn; count the session as acted.
+        av_acted_since_tick[psid] = true;
         av_send_status( psid );
     }
     if( mp_anchored && !netplay::host_avatar_keys_pending() ) {
