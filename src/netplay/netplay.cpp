@@ -1425,6 +1425,8 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             p.push_back( static_cast<char>( t.mem_dec_sub ) );
             p.push_back( static_cast<char>( t.mem_dec_rot ) );
             put_u32( p, t.mem_sym );
+            // v4.0a-135: graffiti text.
+            put_str( p, t.graffiti );
         }
         // DDA MP v4.0a-4: absolute world origin of the frame's pivot cell,
         // written after the cell loop. The reader's exact-fit ladder decodes
@@ -2251,6 +2253,9 @@ static void client_run( socket_t sock )
                                         t.mem_dec_rot = rr.get_u8();
                                         t.mem_sym = rr.get_u32();
                                     }
+                                    if( extras >= 18 ) {
+                                        t.graffiti = rr.get_str();
+                                    }
                                     out.push_back( std::move( t ) );
                                 }
                                 if( with_origin && rr.ok ) {
@@ -2268,7 +2273,13 @@ static void client_run( socket_t sock )
                                 }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 17, true );
+                            std::vector<tile_cell> parsed = try_decode( 18, true );
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 18, false );
+                            }
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 17, true );
+                            }
                             if( parsed.empty() ) {
                                 parsed = try_decode( 17, false );
                             }

@@ -3043,6 +3043,13 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                     fld.add_field( ft.id(), t.field_intensity > 0 ? t.field_intensity : 1 );
                 }
             }
+            // DDA MP v4.0a-135: graffiti.
+            if( here.has_graffiti_at( p ) ) {
+                here.delete_graffiti( p );
+            }
+            if( !t.graffiti.empty() ) {
+                here.set_graffiti( p, t.graffiti );
+            }
             // The viewer's map memory for cells outside its sight.
             const tripoint_abs_ms ap = here.get_abs( p );
             if( !t.mem_ter.empty() ) {
@@ -3055,7 +3062,16 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                 you.memorize_symbol( ap, t.mem_sym );
             }
             here.i_clear( p );
-            if( !t.item.empty() && item::type_is_defined( itype_id( t.item ) ) ) {
+            if( string_starts_with( t.item, "corpse_" ) ) {
+                // The host names monster corpses "corpse_<mtype>"; the real
+                // itype is always "corpse" with the mtype attached, so build
+                // it the same way the engine does.
+                const mtype_id mt( t.item.substr( 7 ) );
+                if( mt.is_valid() ) {
+                    here.add_item_or_charges( p, item::make_corpse( mt, calendar::turn, "" ),
+                                              false );
+                }
+            } else if( !t.item.empty() && item::type_is_defined( itype_id( t.item ) ) ) {
                 item itm( itype_id( t.item ), calendar::turn );
                 if( !t.item_variant.empty() ) {
                     itm.set_itype_variant( t.item_variant );

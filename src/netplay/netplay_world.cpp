@@ -357,6 +357,10 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                             mm.set_tile_decoration( here.get_abs( p ), t.trap, 0, 0 );
                         }
                     }
+                    // DDA MP v4.0a-135: graffiti sprayed on the tile.
+                    if( here.has_graffiti_at( p ) ) {
+                        t.graffiti = here.graffiti_at( p );
+                    }
                     const trap &tr = here.tr_at( p );
                     if( !tr.is_null() && tr.can_see( p, self ) ) {
                         t.trap = tr.loadid.id().str();

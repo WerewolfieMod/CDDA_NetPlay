@@ -271,6 +271,9 @@ struct tile_cell {
     uint8_t mem_dec_sub = 0;
     uint8_t mem_dec_rot = 0;
     uint32_t mem_sym = 0;
+    /// DDA MP v4.0a-135: graffiti sprayed on this tile (the native renderer
+    /// draws it as the stock draw_graffiti pass does).
+    std::string graffiti;
 };
 
 /// DDA MP v4.0a-9: one rendered sidebar cell — the text as the curses layer
