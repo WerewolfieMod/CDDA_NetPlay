@@ -323,6 +323,8 @@ struct netplay_state {
     std::string client_last_host_world;
     /* DDA MP v4.0a-122: host world mod ids from WELCOME. */
     std::vector<std::string> client_last_host_mods;
+    /* DDA MP v4.0a-123: host world options from WELCOME. */
+    std::vector<std::pair<std::string, std::string>> client_last_host_world_options;
     /* DDA MP v4.0: our session id from WELCOME (avatar binding identity). */
     int client_sid = -1;
     /* DDA MP v4.0 avatar flow, guarded by avatar_mutex; the ready flag is a
@@ -546,6 +548,12 @@ std::vector<std::string> client_host_mods()
 {
     std::lock_guard<std::mutex> lk( state_mutex );
     return state.client_last_host_mods;
+}
+
+std::vector<std::pair<std::string, std::string>> client_host_world_options()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_world_options;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1122,6 +1130,24 @@ static void host_accept_loop()
                      std::min<std::size_t>( wmods.size(), 0xffff ) ) );
         for( std::size_t i = 0; i < wmods.size() && i < 0xffff; ++i ) {
             put_str( w, wmods[i] );
+        }
+        // DDA MP v4.0a-123: world_default options (season length, city size,
+        // spawn rates...) so a virtual client world matches the host.
+        std::vector<std::pair<std::string, std::string>> wopts;
+#ifdef _WIN32
+        if( world_generator != nullptr && world_generator->active_world != nullptr ) {
+            for( const auto &entry : world_generator->active_world->WORLD_OPTIONS ) {
+                if( entry.second.getPage() == "world_default" ) {
+                    wopts.emplace_back( entry.first, entry.second.getValue() );
+                }
+            }
+        }
+#endif
+        put_u16( w, static_cast<uint16_t>(
+                     std::min<std::size_t>( wopts.size(), 0xffff ) ) );
+        for( std::size_t i = 0; i < wopts.size() && i < 0xffff; ++i ) {
+            put_str( w, wopts[i].first );
+            put_str( w, wopts[i].second );
         }
         send_all( peer, encode_frame( frame::WELCOME, w ) );
 
@@ -2323,6 +2349,17 @@ static void client_run( socket_t sock )
                     const uint16_t nmods = r.get_u16();
                     for( uint16_t i = 0; i < nmods && r.ok; ++i ) {
                         state.client_last_host_mods.push_back( r.get_str() );
+                    }
+                }
+                state.client_last_host_world_options.clear();
+                if( r.ok && r.off < r.size ) {
+                    const uint16_t nopts = r.get_u16();
+                    for( uint16_t i = 0; i < nopts && r.ok; ++i ) {
+                        const std::string name = r.get_str();
+                        const std::string value = r.get_str();
+                        if( r.ok ) {
+                            state.client_last_host_world_options.emplace_back( name, value );
+                        }
                     }
                 }
             }

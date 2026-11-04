@@ -665,6 +665,9 @@ std::string client_host_world_name();
 /// The client loads the same mod data even when it has no local copy of the
 /// world, so joining needs no save transfer.
 std::vector<std::string> client_host_mods();
+/// DDA MP v4.0a-123: the host world's options (world_default page), so the
+/// virtual client world matches the host's season length and similar rules.
+std::vector<std::pair<std::string, std::string>> client_host_world_options();
 
 /* ---- game-side glass ---- */
 void show_host_dialog();

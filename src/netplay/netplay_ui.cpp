@@ -287,6 +287,14 @@ static void fat_client_load_data()
                 }
             }
             if( w != nullptr && g != nullptr ) {
+                // DDA MP v4.0a-123: adopt the host's world options so the
+                // client's season length, spawn rates and map rules match.
+                for( const auto &kv : netplay::client_host_world_options() ) {
+                    if( get_options().has_option( kv.first ) &&
+                        get_options().get_option( kv.first ).getPage() == "world_default" ) {
+                        w->WORLD_OPTIONS[kv.first].setValue( kv.second );
+                    }
+                }
                 world_generator->set_active_world( w );
                 debug_suppress_prompts( true );
                 // Mirror game::setup(): core JSON first, then the world's mod

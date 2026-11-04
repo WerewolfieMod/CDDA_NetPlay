@@ -2737,6 +2737,55 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_MOVE_UP:
+            case ACTION_MOVE_DOWN: {
+                // DDA MP v4.0a-124: stairs for a session avatar. The map's
+                // z slices around the bubble are already loaded, and the
+                // client rebuilds its native bubble around the streamed
+                // origin, so changing the avatar's absolute z is enough.
+                map &here = get_map();
+                const int dz = action == ACTION_MOVE_UP ? 1 : -1;
+                const tripoint_bub_ms pos = av->pos_bub();
+                const bool has_stairs = dz > 0
+                                        ? here.has_flag( ter_furn_flag::TFLAG_GOES_UP, pos )
+                                        : here.has_flag( ter_furn_flag::TFLAG_GOES_DOWN, pos );
+                if( !has_stairs ) {
+                    netplay::host_send_event_to_sid(
+                        sid, dz > 0 ? _( "You can't go up here!" )
+                        : _( "You can't go down here!" ),
+                        static_cast<int>( m_info ) );
+                    break;
+                }
+                const tripoint_bub_ms dest = pos + tripoint_rel_ms( 0, 0, dz );
+                if( !here.inbounds( dest ) || !here.passable( dest ) ) {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "The way is blocked." ), static_cast<int>( m_info ) );
+                    break;
+                }
+                tripoint_abs_ms new_abs = av->pos_abs();
+                new_abs.z() += dz;
+                av->setpos( new_abs, false );
+                const int stair_cost = to_moves<int>( 1_seconds );
+                auto pool_it = av_move_pool.find( sid );
+                if( pool_it == av_move_pool.end() ) {
+                    pool_it = av_move_pool.insert( { sid, av->get_speed() } ).first;
+                }
+                pool_it->second = std::max( 0, pool_it->second - stair_cost );
+                av->set_moves( pool_it->second );
+                av_acted_since_tick[sid] = true;
+                netplay::host_send_event_to_sid(
+                    sid, dz > 0 ? _( "You go up the stairs." ) : _( "You go down the stairs." ),
+                    static_cast<int>( m_info ) );
+                if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                    av_waiting_for_turn[sid] = true;
+                    netplay::host_send_hover_to_sid( sid, _( "Waiting for other players…" ) );
+                } else {
+                    netplay::host_send_hover_to_sid( sid, "" );
+                }
+                av_send_session_picture( sid, av->pos_bub(), npc_ptr.get() );
+                changed = true;
+                break;
+            }
             case ACTION_PICKUP:
             case ACTION_PICKUP_ALL: {
                 // The host's own 'g' asks which adjacent tile to pick from
