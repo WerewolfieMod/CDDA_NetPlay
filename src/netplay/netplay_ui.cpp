@@ -3015,6 +3015,11 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     }
     here.build_map_cache_for( center.z(), /*skip_lightmap=*/false, get_avatar() );
     here.update_visibility_cache( center.z() );
+    // DDA MP v4.0a-127: refresh the avatar's visible-creature cache. The
+    // creature mirror is rebuilt on every snapshot, so a cache from an older
+    // frame holds dangling npc/mtype pointers; the compass and the creature
+    // panel read exactly this cache.
+    g->mon_info_update();
     static int mp_light_logs = 0;
     if( mp_light_logs < 3 ) {
         ++mp_light_logs;
@@ -3144,11 +3149,7 @@ static std::vector<mp_sidebar_panel> mp_native_sidebar_panels()
         if( wid.find( "monster" ) != std::string::npos ||
             wid.find( "creature" ) != std::string::npos ||
             wid.find( "critter" ) != std::string::npos ||
-            wid.find( "npc" ) != std::string::npos ||
-            // DDA MP v4.0a-117: the compass walks the creature tracker and
-            // crashes on the render-only creature mirror; the client keeps
-            // its own minimap beacons instead for now.
-            wid.find( "compass" ) != std::string::npos ) {
+            wid.find( "npc" ) != std::string::npos ) {
             continue;
         }
         const int h = std::min( p.get_height(), TERMY - y );
