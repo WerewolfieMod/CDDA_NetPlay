@@ -872,6 +872,40 @@ static npc *av_session_npc( int sid )
     return nullptr;
 }
 
+void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,
+                              int msg_type )
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    const map &here = get_map();
+    if( !here.inbounds( target ) ) {
+        return;
+    }
+    for( int sid : host_session_ids() ) {
+        npc *av = av_session_npc( sid );
+        if( av != nullptr && here.inbounds( av->pos_bub() ) &&
+            av->sees( here, target ) ) {
+            host_send_event_to_sid( sid, text, msg_type );
+        }
+    }
+}
+
+void host_relay_sees_message( const Creature &target, const std::string &text, int msg_type )
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    const map &here = get_map();
+    for( int sid : host_session_ids() ) {
+        npc *av = av_session_npc( sid );
+        if( av != nullptr && here.inbounds( av->pos_bub() ) &&
+            av->sees( here, target ) ) {
+            host_send_event_to_sid( sid, text, msg_type );
+        }
+    }
+}
+
 static tripoint_bub_ms av_session_center( int sid )
 {
     if( npc *n = av_session_npc( sid ) ) {

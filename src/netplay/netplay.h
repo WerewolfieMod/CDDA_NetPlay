@@ -19,7 +19,10 @@
 #include <string>
 #include <vector>
 
+#include "coords_fwd.h"
+
 class Character;
+class Creature;
 
 namespace netplay
 {
@@ -400,6 +403,11 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 
 /// session and the text was forwarded instead of going to the host log.
 bool host_relay_character_message( const Character *who, const std::string &text,
                                    int msg_type );
+/// DDA MP v4.0a-136: relay a third-person "player sees X" message to every
+/// session whose avatar can see X (gunshots, NPC actions, world events).
+void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,
+                              int msg_type );
+void host_relay_sees_message( const Creature &target, const std::string &text, int msg_type );
 /// DDA MP v4.0a-11: broadcast one event line to every connected session.
 void host_broadcast_event( const std::string &text, int msg_type );
 /// DDA MP v4.0a-12: send the overmap minimap block to a session.

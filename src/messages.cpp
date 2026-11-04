@@ -23,6 +23,7 @@
 #include "input_context.h"
 #include "json.h"
 #include "map.h"
+#include "netplay/netplay.h"  // host_relay_sees_message (world events to sessions)
 #include "options.h"
 #include "output.h"
 #include "panels.h"
@@ -1040,6 +1041,7 @@ void add_msg( const game_message_params &params, std::string msg )
 void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg )
 {
     const map &here = get_map();
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ) );
 
     if( get_player_view().sees( here, target ) ) {
         Messages::add_msg( std::move( msg ) );
@@ -1049,6 +1051,7 @@ void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg )
 void add_msg_if_player_sees( const Creature &target, std::string msg )
 {
     const map &here = get_map();
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ) );
 
     if( get_player_view().sees( here, target ) ) {
         Messages::add_msg( std::move( msg ) );
@@ -1059,6 +1062,7 @@ void add_msg_if_player_sees( const tripoint_bub_ms &target, const game_message_p
                              std::string msg )
 {
     const map &here = get_map();
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ) );
 
     if( get_player_view().sees( here, target ) ) {
         Messages::add_msg( params, std::move( msg ) );
@@ -1069,6 +1073,7 @@ void add_msg_if_player_sees( const Creature &target, const game_message_params &
                              std::string msg )
 {
     const map &here = get_map();
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ) );
 
     if( get_player_view().sees( here, target ) ) {
         Messages::add_msg( params, std::move( msg ) );
