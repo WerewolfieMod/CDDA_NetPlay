@@ -10433,6 +10433,10 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
         return;
     }
 
+    // DDA MP v4.0a-141: keep live monsters across the bubble move; the engine
+    // would otherwise despawn everything left behind.
+    netplay::host_capture_region_monsters();
+
     // this handles loading/unloading submaps that have scrolled on or off the viewport
     // NOLINTNEXTLINE(cata-use-named-point-constants)
     inclusive_rectangle<point_rel_sm> size_1( { -1, -1 }, { 1, 1 } );
@@ -10445,6 +10449,9 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
 
     // Shift monsters
     shift_monsters( { shift, 0 } );
+    // DDA MP v4.0a-141: bring back the monsters stored for the area the bubble
+    // just moved to.
+    netplay::host_restore_region_monsters();
 
     // Shift NPCs
     for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {

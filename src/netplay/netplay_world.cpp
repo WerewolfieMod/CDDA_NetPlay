@@ -14,6 +14,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -914,6 +915,89 @@ static tripoint_bub_ms av_session_center( int sid )
     return get_avatar().pos_bub();
 }
 
+/* DDA MP v4.0a-141 (bubble split, step 2): live monster preservation across
+ * reality-bubble moves. The engine drops monsters that leave the bubble; for
+ * multiple regions (or two players far apart inside one map) they must survive
+ * the move and come back when their area is loaded again. The store is keyed
+ * by the monster's stable id and keeps its absolute position and serialized
+ * state; only monsters inside the new bubble are re-added, so the tracker
+ * never holds off-region creatures. */
+namespace
+{
+struct mp_saved_monster {
+    int ax = 0;
+    int ay = 0;
+    int az = 0;
+    std::string json;
+};
+std::vector<mp_saved_monster> mp_region_monster_store;
+} // namespace
+
+void host_capture_region_monsters()
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    for( const shared_ptr_fast<monster> &m : get_creature_tracker().get_monsters_list() ) {
+        if( !m || m->is_dead_state() ) {
+            continue;
+        }
+        const tripoint_abs_ms ap = m->pos_abs();
+        std::ostringstream os;
+        try {
+            JsonOut js( os );
+            m->serialize( js );
+        } catch( ... ) {
+            continue;
+        }
+        mp_saved_monster sm;
+        sm.ax = ap.x();
+        sm.ay = ap.y();
+        sm.az = ap.z();
+        sm.json = os.str();
+        mp_region_monster_store.push_back( std::move( sm ) );
+    }
+}
+
+void host_restore_region_monsters()
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    map &here = get_map();
+    creature_tracker &tracker = get_creature_tracker();
+    std::vector<mp_saved_monster> keep;
+    keep.reserve( mp_region_monster_store.size() );
+    for( const mp_saved_monster &sm : mp_region_monster_store ) {
+        const tripoint_abs_ms ap( sm.ax, sm.ay, sm.az );
+        const tripoint_bub_ms bub = here.get_bub( ap );
+        if( !here.inbounds( bub ) ) {
+            keep.push_back( sm );
+            continue;
+        }
+        // Still live (the shift did not unload it): do not duplicate it.
+        bool live = false;
+        for( const shared_ptr_fast<monster> &m : tracker.get_monsters_list() ) {
+            if( m && m->pos_abs() == ap ) {
+                live = true;
+                break;
+            }
+        }
+        if( live ) {
+            continue;
+        }
+        try {
+            JsonValue jv = json_loader::from_string( sm.json );
+            auto mon = std::make_shared<monster>();
+            mon->deserialize( jv.get_object() );
+            mon->setpos( ap, false );
+            tracker.add( mon );
+        } catch( ... ) {
+            // Broken saved state: drop it rather than blocking the bubble.
+        }
+    }
+    mp_region_monster_store = std::move( keep );
+}
 bool host_relay_character_message( const Character *who, const std::string &text,
                                    int msg_type )
 {
