@@ -1411,8 +1411,11 @@ static bool av_all_acted()
         // DDA MP v4.0a-128: a sleeping or busy avatar (activity in progress)
         // does not block the round either; the world turns while it rests.
         const npc *npc_ptr = av_session_npc( entry.first );
-        if( npc_ptr != nullptr &&
-            ( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) ) {
+        if( npc_ptr == nullptr ) {
+            // Dead or unbound avatar: it cannot act, do not block the others.
+            continue;
+        }
+        if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
             continue;
         }
         const auto it = av_acted_since_tick.find( entry.first );
@@ -3315,9 +3318,24 @@ void host_note_world_turn()
                     act_id == mp_act_mend || act_id == mp_act_pickup ) {
                     av->process_activity();
                 }
+                static const activity_id mp_act_try_sleep( "ACT_TRY_SLEEP" );
+                if( act_id == mp_act_try_sleep ) {
+                    av->process_activity();
+                }
             }
             // DDA MP v4.0a-8/9: refresh the client's status payloads.
             av_send_status( sid );
+        } else if( npc_ptr && npc_ptr->is_dead_state() ) {
+            // DDA MP v4.0a-130: tell the session once; its avatar cannot act
+            // any more and the round gate already skips it.
+            static std::map<int, bool> mp_death_notified;
+            if( !mp_death_notified[sid] ) {
+                mp_death_notified[sid] = true;
+                netplay::host_send_event_to_sid(
+                    sid,
+                    _( "You have died. Disconnect and join again to create a new character." ),
+                    static_cast<int>( m_bad ) );
+            }
         }
         av_waiting_for_turn[sid] = false;
         netplay::host_send_hover_to_sid( sid, "" );
