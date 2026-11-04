@@ -1536,6 +1536,34 @@ void host_pump_avatar_keys()
                 break;
             }
         }
+        // DDA MP v4.0a-118: bumping a closed door opens it, exactly like the
+        // host player's walk. Without this the client's move was swallowed by
+        // can_move_to() and doors could not be used at all.
+        {
+            const bool inside = !here.is_outside( npc_ptr->pos_bub() );
+            if( here.open_door( *npc_ptr, dst, inside, /*check_only=*/true ) ) {
+                if( here.open_door( *npc_ptr, dst, inside, /*check_only=*/false ) ) {
+                    const int mp_open_cost = to_moves<int>( 1_seconds );
+                    auto pool_it = av_move_pool.find( sk.sid );
+                    if( pool_it == av_move_pool.end() ) {
+                        pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
+                    }
+                    pool_it->second = std::max( 0, pool_it->second - mp_open_cost );
+                    npc_ptr->set_moves( pool_it->second );
+                    av_acted_since_tick[sk.sid] = true;
+                    netplay::host_send_event_to_sid(
+                        sk.sid, _( "You open the door." ), static_cast<int>( m_info ) );
+                    if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                        av_waiting_for_turn[sk.sid] = true;
+                        netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
+                    } else {
+                        netplay::host_send_hover_to_sid( sk.sid, "" );
+                    }
+                    av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+                }
+                break;
+            }
+        }
         // DDA MP v4.0a-2: a step pays the price the engine charges an NPC's
         // own walk move, out of the avatar's move pool (refilled every world
         // turn). Speed, terrain and obstacles all cost real move points, so
