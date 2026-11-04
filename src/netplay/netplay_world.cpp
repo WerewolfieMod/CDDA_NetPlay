@@ -1510,6 +1510,31 @@ void host_pump_avatar_keys()
         const long long mp_anchor_ms = mp_ms_since( mp_t0 );
         const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
         const tripoint_bub_ms dst = mp_from + dir_it->second;
+        // DDA MP v4.0a-132: driving. The movement keys steer/thrust the
+        // vehicle instead of moving the avatar on foot.
+        if( npc_ptr->controlling_vehicle ) {
+            if( const optional_vpart_position vp = here.veh_at( npc_ptr->pos_bub() ) ) {
+                vp->vehicle().pldrive( here, *npc_ptr, dir_it->second.x(),
+                                       dir_it->second.y(), 0 );
+            }
+            av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
+            npc_ptr->set_moves( av_move_pool[sk.sid] );
+            av_acted_since_tick[sk.sid] = true;
+            if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
+                av_waiting_for_turn[sk.sid] = true;
+                netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
+            } else {
+                netplay::host_send_hover_to_sid( sk.sid, "" );
+            }
+            av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+            break;
+        }
+        if( npc_ptr->in_vehicle ) {
+            netplay::host_send_event_to_sid(
+                sk.sid, _( "You are in a vehicle. Use the vehicle controls to get out." ),
+                static_cast<int>( m_info ) );
+            break;
+        }
         // DDA MP v4.0a-116: walking into a creature is a melee attack, the
         // same rule game::plmove applies (a blocked step would silently drop
         // the key). The attack spends the avatar's own attack cost; the
@@ -2823,6 +2848,63 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_CONTROL_VEHICLE: {
+                // DDA MP v4.0a-132: board, drive and leave a vehicle with the
+                // session avatar. The engine's board/unboard and vehicle
+                // pldrive all take a Character, so the same calls the host
+                // player uses work for the npc avatar.
+                map &here = get_map();
+                const tripoint_bub_ms pos = av->pos_bub();
+                const optional_vpart_position vp = here.veh_at( pos );
+                if( !vp ) {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "You can't drive here." ), static_cast<int>( m_info ) );
+                    break;
+                }
+                if( av->controlling_vehicle ) {
+                    av->controlling_vehicle = false;
+                    netplay::host_send_event_to_sid(
+                        sid, _( "You stop controlling the vehicle." ),
+                        static_cast<int>( m_info ) );
+                    changed = true;
+                    break;
+                }
+                if( av->in_vehicle ) {
+                    here.unboard_vehicle( pos, false );
+                    static const point leave_offsets[] = {
+                        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+                        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+                    };
+                    for( const point &off : leave_offsets ) {
+                        const tripoint_bub_ms p( pos + tripoint_rel_ms( off.x, off.y, 0 ) );
+                        if( here.inbounds( p ) && !here.veh_at( p ) && here.passable( p ) ) {
+                            av->setpos( here, p, false );
+                            break;
+                        }
+                    }
+                    netplay::host_send_event_to_sid(
+                        sid, _( "You get out of the vehicle." ), static_cast<int>( m_info ) );
+                    changed = true;
+                    break;
+                }
+                const int controls = vp->vehicle().avail_part_with_feature(
+                                         vp->mount_pos(), "CONTROLS" );
+                if( controls < 0 ) {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "This vehicle has no working controls." ),
+                        static_cast<int>( m_info ) );
+                    break;
+                }
+                here.board_vehicle( pos, av );
+                av->controlling_vehicle = true;
+                netplay::host_send_event_to_sid(
+                    sid, string_format( _( "You take control of the %s." ),
+                                        vp->vehicle().name ),
+                    static_cast<int>( m_info ) );
+                changed = true;
+                break;
+            }
+
             case ACTION_SLEEP: {
                 // DDA MP v4.0a-128: the NPC avatar can run the engine's sleep
                 // activity; the host keeps turning and the client is skipped
