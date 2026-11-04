@@ -3124,18 +3124,6 @@ static void mp_draw_native_sidebar()
     avatar &you = get_avatar();
     const bool right = get_option<std::string>( "SIDEBAR_POSITION" ) == "right";
     const std::vector<mp_sidebar_panel> panels = mp_native_sidebar_panels();
-    int full_w = 0;
-    for( const mp_sidebar_panel &e : panels ) {
-        full_w = std::max( full_w, e.panel->get_width() );
-    }
-    // Black column behind the panels: the pixel layer no longer paints it, so
-    // stale map pixels must not show through the gaps between widgets.
-    if( full_w > 0 && full_w <= TERMX ) {
-        catacurses::window bg = catacurses::newwin( TERMY, full_w,
-                                point( right ? TERMX - full_w : 0, 0 ) );
-        werase( bg );
-        wnoutrefresh( bg );
-    }
     for( const mp_sidebar_panel &e : panels ) {
         const int w = e.panel->get_width();
         if( w <= 0 || w > TERMX ) {
@@ -3147,6 +3135,25 @@ static void mp_draw_native_sidebar()
         e.panel->draw( { you, win, e.panel->get_widget() } );
         wnoutrefresh( win );
     }
+}
+
+/* Black column behind the native panels. It is painted before the UI redraw,
+ * not with the panels at the end of the frame: the pixel layer (message log,
+ * minimap) is rendered during the redraw and must stay above it. */
+static void mp_draw_native_sidebar_bg()
+{
+    if( !mp_native_render_enabled() || !mp_native_avatar_ready ) {
+        return;
+    }
+    const int full_w = mp_native_sidebar_width();
+    if( full_w <= 0 || full_w > TERMX ) {
+        return;
+    }
+    const bool right = get_option<std::string>( "SIDEBAR_POSITION" ) == "right";
+    catacurses::window bg = catacurses::newwin( TERMY, full_w,
+                            point( right ? TERMX - full_w : 0, 0 ) );
+    werase( bg );
+    wnoutrefresh( bg );
 }
 
 void run_view_loop()
@@ -3273,8 +3280,11 @@ void run_view_loop()
     // DDA MP v4.0a-18: a permanent disable_uis_below made the client redraw
     // the whole frame every iteration (visible flicker), so the main menu is
     // hidden only while a popup is open (see mp_client_item_menu).
-    ui_adaptor mp_sb_adaptor;
-    mp_sb_adaptor.on_redraw( [&]( const ui_adaptor & ) {
+    // DDA MP v4.0a-120: the client loop only renders ImGui's draw data inside
+    // an overlay pass (see netplay::overlay_begin/end). The sidebar pixel layer
+    // is therefore a plain lambda invoked after the native panels, not a
+    // ui_adaptor (whose commands were recorded but never painted).
+    auto mp_draw_sidebar_overlay = [&]() {
         const ImGuiIO &io = ImGui::GetIO();
         ImDrawList *dl = ImGui::GetForegroundDrawList();
         const float fs = ImGui::GetFontSize();
@@ -3365,7 +3375,7 @@ void run_view_loop()
             // window), so convert their row count to pixels with the grid's
             // own row height instead of the ImGui line height.
             const float mp_row_h = io.DisplaySize.y / static_cast<float>( std::max( 1, TERMY ) );
-            float ly = mp_panels_native ? draw_y * mp_row_h : draw_y * ch;
+            float ly = mp_panels_native ? ( draw_y + 2 ) * mp_row_h : draw_y * ch;
             // DDA MP v4.0a-13: creatures this character can see (own list).
             // DDA MP v4.0a-77: the host's compass legend is now computed from
             // this character, so the sidebar already carries the list. The old
@@ -3408,8 +3418,9 @@ void run_view_loop()
                                       io.DisplaySize.y - mp_mini_map.height * 2.0f - 2.0f :
                                       io.DisplaySize.y;
             const int mp_fit = static_cast<int>( ( mp_mini_top - ch - ly ) / ch );
-            if( mp_fit > 0 && !mp_log.empty() ) {
-                const int first = std::max( 0, static_cast<int>( mp_log.size() ) - mp_fit );
+            if( !mp_log.empty() ) {
+                const int mp_shown_lines = std::max( 1, mp_fit );
+                const int first = std::max( 0, static_cast<int>( mp_log.size() ) - mp_shown_lines );
                 for( int i = first; i < static_cast<int>( mp_log.size() ); i++ ) {
                     const mp_log_line &ml = mp_log[static_cast<size_t>( i )];
                     // Same ageing as the host's message log (game turns):
@@ -3502,7 +3513,7 @@ void run_view_loop()
             dl->AddText( ImVec2( x0 + pad, y ), IM_COL32( 220, 220, 220, 255 ), l.c_str() );
             y += ImGui::GetTextLineHeight();
         }
-    } );
+    };
 
     auto ensure_window = [&]( int width, int height ) {
         if( cur_w == width && cur_h == height ) {
@@ -3718,6 +3729,9 @@ void run_view_loop()
                 if( mp_avatar_on ) {
                     mp_native_apply_avatar_json();
                 }
+            }
+            if( mp_native_render_enabled() ) {
+                mp_draw_native_sidebar_bg();
             }
             ui_manager::redraw();
 
@@ -4320,6 +4334,11 @@ void run_view_loop()
             if( mp_native_render_enabled() ) {
                 mp_draw_native_sidebar();
             }
+            // ImGui pass on top of the map and the native panels: message log,
+            // minimap and the character-sheet fallback.
+            netplay::overlay_begin();
+            mp_draw_sidebar_overlay();
+            netplay::overlay_end();
 
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
             mp_overlay_inventory( mp_inv_text, mp_inv_open, mp_inv_sel, mp_inv_scroll );
