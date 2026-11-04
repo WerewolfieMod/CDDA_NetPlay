@@ -1408,6 +1408,13 @@ static bool av_all_acted()
         if( netplay::host_session_afk( entry.first ) ) {
             continue;
         }
+        // DDA MP v4.0a-128: a sleeping or busy avatar (activity in progress)
+        // does not block the round either; the world turns while it rests.
+        const npc *npc_ptr = av_session_npc( entry.first );
+        if( npc_ptr != nullptr &&
+            ( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) ) {
+            continue;
+        }
         const auto it = av_acted_since_tick.find( entry.first );
         if( it == av_acted_since_tick.end() || !it->second ) {
             return false;
@@ -1447,6 +1454,18 @@ void host_pump_avatar_keys()
             continue;
         }
         const std::string act = mp_key_action( sk.code );
+        // DDA MP v4.0a-128: any key wakes a sleeping avatar / cancels its
+        // current activity, like the stock game's "get up" handling.
+        if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
+            npc_ptr->cancel_activity();
+            if( npc_ptr->has_effect( effect_sleep ) ) {
+                npc_ptr->remove_effect( effect_sleep );
+            }
+            netplay::host_send_event_to_sid(
+                sk.sid, _( "You wake up." ), static_cast<int>( m_info ) );
+            av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+            continue;
+        }
         if( act == "WAIT" ) {
             // Pass the turn: spend the pool, mark the order, refresh the picture.
             av_acted_since_tick[sk.sid] = true;
@@ -2801,6 +2820,19 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_SLEEP: {
+                // DDA MP v4.0a-128: the NPC avatar can run the engine's sleep
+                // activity; the host keeps turning and the client is skipped
+                // by the round gate while it sleeps.
+                av->get_comfort_at( av->pos_bub() ).add_try_msgs( *av );
+                av->assign_activity( try_sleep_activity_actor( 24_hours ) );
+                av_acted_since_tick[sid] = true;
+                netplay::host_send_hover_to_sid( sid, "" );
+                av_send_session_picture( sid, av->pos_bub(), npc_ptr.get() );
+                changed = true;
+                break;
+            }
+
             case ACTION_SELECT_FIRE_MODE: {
                 item_location gun = av->get_wielded_item();
                 if( gun && gun->is_gun() && gun->gun_all_modes().size() > 1 ) {
