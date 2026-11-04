@@ -2786,6 +2786,63 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_SMASH: {
+                // DDA MP v4.0a-124: smash the nearest adjacent bashable tile
+                // with the avatar's own smash_ability(); the engine resolves
+                // damage, sounds, drops and the "you smash" messages, which
+                // are relayed to the acting session.
+                map &here = get_map();
+                const tripoint_bub_ms pos = av->pos_bub();
+                static const point smash_offsets[] = {
+                    { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+                    { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+                };
+                std::optional<tripoint_bub_ms> target;
+                for( const point &off : smash_offsets ) {
+                    const tripoint_bub_ms p( pos + tripoint_rel_ms( off.x, off.y, 0 ) );
+                    if( here.inbounds( p ) && here.is_bashable( p ) ) {
+                        target = p;
+                        break;
+                    }
+                }
+                if( !target ) {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "There's nothing to smash here." ), static_cast<int>( m_info ) );
+                    break;
+                }
+                const std::size_t msg_before = Messages::size();
+                const int move_cost = !av->is_armed() ? 80 :
+                                      static_cast<int>( av->get_wielded_item()->attack_time( *av ) * 0.8 );
+                const bash_params br = here.bash( *target, av->smash_ability(), false, false, false );
+                av->mod_moves( -move_cost );
+                auto pool_it = av_move_pool.find( sid );
+                if( pool_it == av_move_pool.end() ) {
+                    pool_it = av_move_pool.insert( { sid, av->get_speed() } ).first;
+                }
+                pool_it->second = std::max( 0, av->get_moves() );
+                av_acted_since_tick[sid] = true;
+                if( br.did_bash && br.success ) {
+                    netplay::host_send_event_to_sid(
+                        sid, string_format( _( "You smash the %s!" ), here.name( *target ) ),
+                        static_cast<int>( m_good ) );
+                } else if( br.did_bash ) {
+                    netplay::host_send_event_to_sid(
+                        sid, string_format( _( "You hit the %s, but it holds." ),
+                                            here.name( *target ) ),
+                        static_cast<int>( m_info ) );
+                }
+                if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                    av_waiting_for_turn[sid] = true;
+                    netplay::host_send_hover_to_sid( sid, _( "Waiting for other players…" ) );
+                } else {
+                    netplay::host_send_hover_to_sid( sid, "" );
+                }
+                mp_forward_new_messages( sid, msg_before );
+                av_send_session_picture( sid, av->pos_bub(), npc_ptr.get() );
+                changed = true;
+                break;
+            }
+
             case ACTION_PICKUP:
             case ACTION_PICKUP_ALL: {
                 // The host's own 'g' asks which adjacent tile to pick from
