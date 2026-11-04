@@ -1762,14 +1762,13 @@ void host_pump_avatar_keys()
             break;
         }
     }
-    // DDA MP v4.0a-2: when the burst is over (no more client steps queued),
-    // hand the bubble back to the host player so its own turn machinery
-    // (input, rendering, do_turn) always runs vanilla. While a client keeps
-    // stepping, the bubble stays on the avatar: a host restore per step is
-    // what made far-roaming feel like 2 steps a second.
-    if( !netplay::host_avatar_keys_pending() ) {
-        g->mp_anchor_map_on( get_avatar() );
-    }
+    // DDA MP v4.0a-2: when the burst is over, hand the bubble back to the
+    // host player so its own turn machinery (input, rendering, do_turn) always
+    // runs vanilla. DDA MP v4.0a-138: always restore it — leaving the bubble
+    // on a client while more keys were queued made the host render its own
+    // screen from the client's POV, so the host player could fall outside the
+    // bubble and disappear for a frame.
+    g->mp_anchor_map_on( get_avatar() );
 }
 
 /* DDA MP v4.0a-8: raw key=value character data for the client's own sidebar.
@@ -2666,9 +2665,9 @@ void host_pump_inventory_actions()
             netplay::host_send_aim_panel_to_sid( sid, sb );
         }
     }
-    // DDA MP v4.0a-80: return the bubble to the host player only if this pump
-    // moved it, so a pending movement burst keeps its anchor.
-    if( mp_anchored && !netplay::host_avatar_keys_pending() ) {
+    // Return the bubble to the host player after this pump (see the movement
+    // pump: the host must never render from a client's POV).
+    if( mp_anchored ) {
         g->mp_anchor_map_on( get_avatar() );
     }
 }
@@ -3323,7 +3322,7 @@ void host_pump_client_actions()
         av_acted_since_tick[psid] = true;
         av_send_status( psid );
     }
-    if( mp_anchored && !netplay::host_avatar_keys_pending() ) {
+    if( mp_anchored ) {
         g->mp_anchor_map_on( get_avatar() );
     }
 }
@@ -3361,9 +3360,7 @@ void host_pump_intents()
                 av_send_status( in.sid );
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 mp_forward_new_messages( in.sid, msg_before );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
+                g->mp_anchor_map_on( get_avatar() );
             }
             continue;
         }
@@ -3425,9 +3422,7 @@ void host_pump_intents()
                         in.sid, _( "You are not wielding a gun." ),
                         static_cast<int>( m_info ) );
                 }
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
+                g->mp_anchor_map_on( get_avatar() );
             }
             continue;
         }
