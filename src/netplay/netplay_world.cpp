@@ -3218,6 +3218,58 @@ void host_pump_intents()
         if( !netplay::host_pop_intent( in ) ) {
             break;
         }
+        // DDA MP v4.0a-131: crafting recipe chosen in the client's own UI.
+        if( ( in.action == "craft" || in.action == "craft.all" ) && !in.data.empty() ) {
+            npc *av = av_session_npc( in.sid );
+            const recipe_id rid( in.data );
+            if( av == nullptr ) {
+                continue;
+            }
+            if( !rid.is_valid() ) {
+                netplay::host_send_event_to_sid(
+                    in.sid, _( "Unknown recipe." ), static_cast<int>( m_info ) );
+            } else {
+                const int batch = in.args.empty() ? 1 : std::max( 1, in.args[0] );
+                g->mp_anchor_map_on( *av, true );
+                const std::size_t msg_before = Messages::size();
+                if( in.action == "craft.all" ) {
+                    av->make_all_craft( rid, batch, std::nullopt );
+                } else {
+                    av->make_craft( rid, batch );
+                }
+                av_acted_since_tick[in.sid] = true;
+                av_send_status( in.sid );
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+                mp_forward_new_messages( in.sid, msg_before );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-131: repeat the last craft (RECRAFT).
+        if( in.action == "recraft" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                if( av->lastrecipe.is_null() ) {
+                    netplay::host_send_event_to_sid(
+                        in.sid, _( "Craft something first." ), static_cast<int>( m_info ) );
+                } else {
+                    const int batch = std::max( 1, av->last_batch );
+                    g->mp_anchor_map_on( *av, true );
+                    const std::size_t msg_before = Messages::size();
+                    av->make_craft( av->lastrecipe, batch );
+                    av_acted_since_tick[in.sid] = true;
+                    av_send_status( in.sid );
+                    av_send_session_picture( in.sid, av->pos_bub(), av );
+                    mp_forward_new_messages( in.sid, msg_before );
+                    if( !netplay::host_avatar_keys_pending() ) {
+                        g->mp_anchor_map_on( get_avatar() );
+                    }
+                }
+            }
+            continue;
+        }
         // DDA MP v4.0a-121: ranged fire. The client picked the target with the
         // stock cursor; the host resolves the shot on the session avatar.
         if( in.action == "fire" && in.args.size() >= 3 ) {
@@ -3320,6 +3372,11 @@ void host_note_world_turn()
                 }
                 static const activity_id mp_act_try_sleep( "ACT_TRY_SLEEP" );
                 if( act_id == mp_act_try_sleep ) {
+                    av->process_activity();
+                }
+                static const activity_id mp_act_craft( "ACT_CRAFT" );
+                static const activity_id mp_act_craft_wait( "ACT_CRAFT_WAIT" );
+                if( act_id == mp_act_craft || act_id == mp_act_craft_wait ) {
                     av->process_activity();
                 }
             }

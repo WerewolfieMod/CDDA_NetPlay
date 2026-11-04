@@ -23,6 +23,8 @@
 #include "cursesdef.h"
 #include "cursesport.h"
 #include "avatar.h"      // get_avatar (native character creation)
+#include "crafting_gui.h" // select_crafter_and_crafting_recipe (client craft)
+#include "recipe.h"       // recipe::ident (craft intent)
 #include "field.h"       // fields mirrored into the native map
 #include "field_type.h"  // field_type_str_id
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
@@ -2344,6 +2346,42 @@ static void mp_run_client_fire()
                                tgt.y() - from.y() ) );
 }
 
+/* DDA MP v4.0a-131: crafting. The client runs the stock crafting UI on its
+ * mirrored avatar (recipe list, availability, batch size), then sends the
+ * chosen recipe to the host, which starts the real craft activity on the
+ * session avatar. Workbench variants use the host's map at the avatar. */
+static void mp_run_client_craft( bool all )
+{
+    if( !mp_native_avatar_ready ) {
+        return;
+    }
+    avatar &you = get_avatar();
+    int batch_size = 0;
+    std::pair<Character *, const recipe *> chosen;
+    try {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        chosen = select_crafter_and_crafting_recipe( batch_size, recipe_id(), &you );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "craft error: " ) + e.what() );
+        return;
+    } catch( ... ) {
+        mp_inv_log( "craft error: unknown" );
+        return;
+    }
+    if( chosen.second == nullptr ) {
+        mp_inv_log( "craft: cancelled" );
+        return;
+    }
+    if( batch_size < 1 ) {
+        batch_size = 1;
+    }
+    netplay::client_send_intent( all ? "craft.all" : "craft", batch_size, {},
+                                 chosen.second->ident().str() );
+    mp_inv_log( string_format( "craft: %s batch=%d all=%d",
+                               chosen.second->ident().str().c_str(), batch_size,
+                               all ? 1 : 0 ) );
+}
+
 static void mp_run_client_throw( const item &thrown, const std::string &uid,
                                  const tripoint_abs_ms &origin )
 {
@@ -2404,6 +2442,15 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             break;
         }
 
+        case ACTION_CRAFT:
+            mp_run_client_craft( false );
+            break;
+        case ACTION_LONGCRAFT:
+            mp_run_client_craft( true );
+            break;
+        case ACTION_RECRAFT:
+            netplay::client_send_intent( "recraft", 0, {}, std::string() );
+            break;
         case ACTION_FIRE:
             mp_run_client_fire();
             break;
@@ -4648,6 +4695,15 @@ void run_view_loop()
                             continue;
                         }
 
+                        case ACTION_CRAFT:
+                            mp_run_client_craft( false );
+                            continue;
+                        case ACTION_LONGCRAFT:
+                            mp_run_client_craft( true );
+                            continue;
+                        case ACTION_RECRAFT:
+                            netplay::client_send_intent( "recraft", 0, {}, std::string() );
+                            continue;
                         case ACTION_FIRE:
                             mp_run_client_fire();
                             continue;
