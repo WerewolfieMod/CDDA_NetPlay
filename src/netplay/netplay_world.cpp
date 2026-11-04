@@ -1469,7 +1469,73 @@ void host_pump_avatar_keys()
         // client steps must not pay the full anchor price on every step.
         g->mp_anchor_map_on( *npc_ptr, true );
         const long long mp_anchor_ms = mp_ms_since( mp_t0 );
-        const tripoint_bub_ms dst = npc_ptr->pos_bub() + dir_it->second;
+        const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
+        const tripoint_bub_ms dst = mp_from + dir_it->second;
+        // DDA MP v4.0a-116: walking into a creature is a melee attack, the
+        // same rule game::plmove applies (a blocked step would silently drop
+        // the key). The attack spends the avatar's own attack cost; the
+        // netplay pool follows the engine's move points after the swing.
+        {
+            Creature *cr = get_creature_tracker().creature_at( dst );
+            if( cr != nullptr && cr != npc_ptr.get() ) {
+                auto pool_it = av_move_pool.find( sk.sid );
+                if( pool_it == av_move_pool.end() ) {
+                    pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
+                }
+                if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                    if( !av_waiting_for_turn[sk.sid] ) {
+                        av_waiting_for_turn[sk.sid] = true;
+                        netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
+                    }
+                    av_acted_since_tick[sk.sid] = true;
+                    break;
+                }
+                const std::string target_name = cr->disp_name();
+                const int hp_before = cr->get_hp();
+                bool attacked = false;
+                if( monster *mon = dynamic_cast<monster *>( cr ) ) {
+                    attacked = npc_ptr->melee_attack( *mon, true );
+                } else if( npc *other = dynamic_cast<npc *>( cr ) ) {
+                    if( other->is_enemy() ) {
+                        attacked = npc_ptr->melee_attack( *other, true );
+                        other->make_angry();
+                    }
+                }
+                if( attacked ) {
+                    const int hp_after = cr->is_dead_state() ? 0 : cr->get_hp();
+                    if( cr->is_dead_state() ) {
+                        netplay::host_send_event_to_sid(
+                            sk.sid, string_format( _( "You kill the %s!" ), target_name ),
+                            static_cast<int>( m_good ) );
+                    } else if( hp_after < hp_before ) {
+                        netplay::host_send_event_to_sid(
+                            sk.sid,
+                            string_format( _( "You hit the %s for %d damage." ),
+                                           target_name, hp_before - hp_after ),
+                            static_cast<int>( m_good ) );
+                    } else {
+                        netplay::host_send_event_to_sid(
+                            sk.sid, string_format( _( "You miss the %s." ), target_name ),
+                            static_cast<int>( m_info ) );
+                    }
+                    av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
+                    npc_ptr->set_moves( av_move_pool[sk.sid] );
+                    av_acted_since_tick[sk.sid] = true;
+                    if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
+                        av_waiting_for_turn[sk.sid] = true;
+                        netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
+                    } else {
+                        netplay::host_send_hover_to_sid( sk.sid, "" );
+                    }
+                    av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+                } else {
+                    netplay::host_send_event_to_sid(
+                        sk.sid, string_format( _( "You bump into %s." ), target_name ),
+                        static_cast<int>( m_info ) );
+                }
+                break;
+            }
+        }
         // DDA MP v4.0a-2: a step pays the price the engine charges an NPC's
         // own walk move, out of the avatar's move pool (refilled every world
         // turn). Speed, terrain and obstacles all cost real move points, so
