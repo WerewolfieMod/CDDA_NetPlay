@@ -2633,6 +2633,25 @@ static void mp_send_pickup_listing( int sid, npc &av,
  * is applied to the session's avatar NPC on the main thread, so the client can
  * do what the host can. Actions that need map-bound or avatar-only UIs are
  * answered with a message until their own bridge lands. */
+/* DDA MP v4.0a-119: relay the messages an engine action just produced to the
+ * acting session. The host log keeps them too, so a client's action remains
+ * visible on the host screen. */
+static void mp_send_pickup_listing( int sid, npc &av,
+                                    const std::vector<tripoint_bub_ms> &tiles );
+
+static void mp_forward_new_messages( int sid, std::size_t before )
+{
+    const std::size_t after = Messages::size();
+    if( after <= before ) {
+        return;
+    }
+    const std::vector<std::pair<std::string, int>> recent =
+        Messages::recent_messages_typed( after - before );
+    for( const auto &m : recent ) {
+        netplay::host_send_event_to_sid( sid, m.first, m.second );
+    }
+}
+
 void host_pump_client_actions()
 {
     if( !host_is_running() ) {
@@ -2753,6 +2772,62 @@ void host_pump_client_actions()
                     break;
                 }
                 mp_send_pickup_listing( sid, *av, tiles );
+                break;
+            }
+
+            case ACTION_EXAMINE:
+            case ACTION_EXAMINE_AND_PICKUP: {
+                // DDA MP v4.0a-119: the client cannot run game::examine (it
+                // acts on the host player), so examine the nearest adjacent
+                // tile the engine itself marks examinable, with the avatar as
+                // the examining character. The engine's messages are relayed.
+                map &here = get_map();
+                const tripoint_bub_ms pos = av->pos_bub();
+                static const point examine_offsets[] = {
+                    { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+                    { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+                };
+                std::optional<tripoint_bub_ms> target;
+                for( const point &off : examine_offsets ) {
+                    const tripoint_bub_ms p( pos + tripoint_rel_ms( off.x, off.y, 0 ) );
+                    if( !here.inbounds( p ) ) {
+                        continue;
+                    }
+                    if( here.has_furn( p ) && here.furn( p ).obj().can_examine( p ) ) {
+                        target = p;
+                        break;
+                    }
+                    if( here.ter( p ).obj().can_examine( p ) ) {
+                        target = p;
+                        break;
+                    }
+                    if( !here.tr_at( p ).is_null() ) {
+                        target = p;
+                        break;
+                    }
+                }
+                if( !target ) {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "There is nothing that can be examined nearby." ),
+                        static_cast<int>( m_info ) );
+                    break;
+                }
+                const std::size_t msg_before = Messages::size();
+                const tripoint_bub_ms p = *target;
+                if( here.has_furn( p ) && here.furn( p ).obj().can_examine( p ) ) {
+                    here.furn( p ).obj().examine( *av, p );
+                } else if( here.ter( p ).obj().can_examine( p ) ) {
+                    here.ter( p ).obj().examine( *av, p );
+                }
+                if( !here.tr_at( p ).is_null() ) {
+                    here.tr_at( p ).examine( p );
+                }
+                if( action == ACTION_EXAMINE_AND_PICKUP && !here.i_at( p ).empty() ) {
+                    std::vector<tripoint_bub_ms> one{ p };
+                    mp_send_pickup_listing( sid, *av, one );
+                }
+                mp_forward_new_messages( sid, msg_before );
+                changed = true;
                 break;
             }
 

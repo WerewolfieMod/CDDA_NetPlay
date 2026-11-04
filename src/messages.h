@@ -26,6 +26,9 @@ namespace Messages
 {
 
 std::vector<std::pair<std::string, std::string>> recent_messages( size_t count );
+/// DDA MP v4.0a-119: recent messages with their game_message_type, so a host
+/// action's text can be relayed to the acting client with the right color.
+std::vector<std::pair<std::string, int>> recent_messages_typed( size_t count );
 bool has_debug_filter( debugmode::debug_filter type );
 void add_msg( std::string msg );
 void add_msg( const game_message_params &params, std::string msg );
