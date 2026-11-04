@@ -661,6 +661,10 @@ void host_draw_long_wait_hint( int row );
  */
 void host_set_world_name( const std::string &name );
 std::string client_host_world_name();
+/// DDA MP v4.0a-122: the host world's active mod ids, announced in WELCOME.
+/// The client loads the same mod data even when it has no local copy of the
+/// world, so joining needs no save transfer.
+std::vector<std::string> client_host_mods();
 
 /* ---- game-side glass ---- */
 void show_host_dialog();

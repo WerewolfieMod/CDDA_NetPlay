@@ -321,6 +321,8 @@ struct netplay_state {
     /* world the host announced in WELCOME (fat client) */
     std::string host_world_name;
     std::string client_last_host_world;
+    /* DDA MP v4.0a-122: host world mod ids from WELCOME. */
+    std::vector<std::string> client_last_host_mods;
     /* DDA MP v4.0: our session id from WELCOME (avatar binding identity). */
     int client_sid = -1;
     /* DDA MP v4.0 avatar flow, guarded by avatar_mutex; the ready flag is a
@@ -538,6 +540,12 @@ std::string client_host_world_name()
 {
     std::lock_guard<std::mutex> lk( state_mutex );
     return state.client_last_host_world;
+}
+
+std::vector<std::string> client_host_mods()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_mods;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1097,12 +1105,24 @@ static void host_accept_loop()
         // DDA MP fat client: announce the host's active world so the client
         // can load the same mod data before rendering snapshots.
         std::string wname;
+        std::vector<std::string> wmods;
 #ifdef _WIN32
         if( world_generator != nullptr && world_generator->active_world != nullptr ) {
             wname = world_generator->active_world->world_name;
+            for( const mod_id &m : world_generator->active_world->active_mod_order ) {
+                wmods.push_back( m.str() );
+            }
         }
 #endif
         put_str( w, wname );
+        // DDA MP v4.0a-122: the world's mod ids. A client without a local
+        // copy of the world loads exactly these packs, so joining no longer
+        // requires transferring (or manually copying) the save.
+        put_u16( w, static_cast<uint16_t>(
+                     std::min<std::size_t>( wmods.size(), 0xffff ) ) );
+        for( std::size_t i = 0; i < wmods.size() && i < 0xffff; ++i ) {
+            put_str( w, wmods[i] );
+        }
         send_all( peer, encode_frame( frame::WELCOME, w ) );
 
         // Every accepted session now has a dedicated reader thread that
@@ -2297,6 +2317,14 @@ static void client_run( socket_t sock )
             if( r.ok ) {
                 state.client_last_host_world = r.get_str();
                 state.client_sid = static_cast<int>( sid );
+                state.client_last_host_mods.clear();
+                // v4.0a-122: optional trailing mod list; older hosts end here.
+                if( r.ok && r.off < r.size ) {
+                    const uint16_t nmods = r.get_u16();
+                    for( uint16_t i = 0; i < nmods && r.ok; ++i ) {
+                        state.client_last_host_mods.push_back( r.get_str() );
+                    }
+                }
             }
         } else if( op == frame::AVATAR_LIST ) {
             // DDA MP v4.0: [u16 n][str name + u8 alive + u8 in_session]*

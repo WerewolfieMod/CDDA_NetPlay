@@ -269,6 +269,23 @@ static void fat_client_load_data()
             mp_fat_log( "tiles: fat client skipped, static data already finalized" );
         } else {
             WORLD *w = mp_find_local_world( wname );
+            // DDA MP v4.0a-122: no local world? Build a virtual one from the
+            // host's WELCOME mod list. Only the mod packs matter for loading
+            // the game data; map/world state arrives in snapshots.
+            static std::unique_ptr<WORLD> mp_virtual_world;
+            if( w == nullptr ) {
+                const std::vector<std::string> host_mods = netplay::client_host_mods();
+                if( !host_mods.empty() ) {
+                    mp_virtual_world = std::make_unique<WORLD>( wname );
+                    mp_virtual_world->active_mod_order.clear();
+                    for( const std::string &id : host_mods ) {
+                        mp_virtual_world->active_mod_order.emplace_back( mod_id( id ) );
+                    }
+                    w = mp_virtual_world.get();
+                    mp_fat_log( string_format( "tiles: virtual world from host mods (%d)",
+                                               static_cast<int>( host_mods.size() ) ) );
+                }
+            }
             if( w != nullptr && g != nullptr ) {
                 world_generator->set_active_world( w );
                 debug_suppress_prompts( true );
@@ -281,6 +298,12 @@ static void fat_client_load_data()
                 }
                 world_generator->get_mod_manager().check_mods_list( w );
                 g->load_world_modfiles();
+                // DDA MP v4.0a-122: the map object was constructed before the
+                // world's packs were registered, so its trap table is too
+                // small; writing a trap terrain (e.g. t_gutter_downspout)
+                // would index past traplocs. Rebuild the map after loading,
+                // exactly like game::load does.
+                get_map() = map();
                 panel_manager::get_manager().init();
                 debug_suppress_prompts( false );
                 // Same as game_io's own world load flow: release the
@@ -2783,6 +2806,12 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
 
     mp_inv_log( "native: bubble loaded, placing avatar" );
     get_avatar().setpos( center_abs, false );
+    // The streamed terrain writes go through map::ter_set(), which calls
+    // avatar::sees() and therefore indexes the visibility cache. A session
+    // without a local world has never built one, so create it here (from the
+    // empty bubble) before the first snapshot is applied.
+    here.build_map_cache_for( center_abs.z(), /*skip_lightmap=*/false, get_avatar() );
+    here.update_visibility_cache( center_abs.z() );
     ready = true;
     bubble_center = center_abs;
     mp_inv_log( string_format( "native: bubble at %d,%d z%d", center_abs.x(),

@@ -80,9 +80,11 @@ namespace netplay
 /* ------------------------------------------------------------------ */
 
 /// Frame geometry. Must fit inside the 2x2 submap bubble (48x48 tiles) so
-/// that lookups around the center stay in-bounds.
+/// that lookups around the center stay in-bounds. DDA MP v4.0a-122: one extra
+/// row keeps the client's native canvas taller than the display buffer, so the
+/// map reaches the bottom edge instead of leaving a black strip below it.
 static constexpr int FRAMEW = 45 + 4; // +2 tiles left / right of the game view
-static constexpr int FRAMEH = 25 + 6; // +3 tiles above / below the game view
+static constexpr int FRAMEH = 25 + 7; // +3 tiles above / below, +1 to fill the screen
 
 /// File-local corpse marker, same pattern as cata_tiles.cpp / item.cpp.
 static const itype_id itype_corpse( "corpse" );
