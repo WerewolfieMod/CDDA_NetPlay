@@ -371,6 +371,8 @@ std::string host_listen_address();
 int host_session_count();
 /// Display names of the currently connected sessions (copy, stable order).
 std::vector<std::string> host_session_names();
+/// Display name of one session (empty when the session is gone).
+std::string host_session_name( int sid );
 /// Per-turn maintenance (accept/expire, flush queues). Safe to call often.
 void host_pump();
 

@@ -3431,6 +3431,17 @@ void host_pump_intents()
             }
             continue;
         }
+        // DDA MP v4.0a-137: player chat, broadcast to every session.
+        if( in.action == "chat" && !in.data.empty() ) {
+            std::string nick = host_session_name( in.sid );
+            if( nick.empty() ) {
+                nick = "player";
+            }
+            const std::string line = string_format( "%s: %s", nick, in.data );
+            host_broadcast_event( line, static_cast<int>( m_info ) );
+            add_msg( "%s", line );
+            continue;
+        }
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
             std::fprintf( f, "intent unhandled sid=%d action=%s args=%d\n",
                           in.sid, in.action.c_str(), static_cast<int>( in.args.size() ) );

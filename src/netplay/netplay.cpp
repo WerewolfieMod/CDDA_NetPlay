@@ -1247,6 +1247,13 @@ std::vector<std::string> host_session_names()
     return names;
 }
 
+std::string host_session_name( int sid )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2name.find( sid );
+    return it != state.id2name.end() ? it->second : std::string();
+}
+
 std::string host_listen_address()
 {
     if( !state.running ) {

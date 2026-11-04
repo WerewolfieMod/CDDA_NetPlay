@@ -4677,6 +4677,22 @@ void run_view_loop()
                     mp_run_character_info( mp_char_json );
                     continue;
                 }
+                if( mp_ch == 'T' ) {
+                    // DDA MP v4.0a-137: text chat to every player.
+                    string_input_popup pop;
+                    pop.title( _( "Chat message" ) );
+                    pop.max_length( 200 );
+                    pop.width( 60 );
+                    std::string msg;
+                    {
+                        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+                        msg = pop.query_string();
+                    }
+                    if( !msg.empty() ) {
+                        netplay::client_send_intent( "chat", 0, {}, msg );
+                    }
+                    continue;
+                }
             }
             // DDA MP v4.0a-14: '.' / '5' passes the turn (WAIT action).
             {
