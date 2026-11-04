@@ -73,6 +73,7 @@
 #include "math_parser_diag_value.h"
 #include "memorial_logger.h"
 #include "messages.h"
+#include "netplay/netplay.h"  // host_relay_character_message (session avatar log)
 #include "monster.h"
 #include "morale.h"
 #include "move_mode.h"
@@ -815,17 +816,30 @@ std::string Character::skin_name() const
 //message related stuff
 void Character::add_msg_if_player( const std::string &msg ) const
 {
+    // DDA MP v4.0a-126: a session avatar's own messages belong to the client
+    // driving it, not to the host's log.
+    if( netplay::host_relay_character_message( this, msg, static_cast<int>( m_info ) ) ) {
+        return;
+    }
     Messages::add_msg( msg );
 }
 
 void Character::add_msg_player_or_npc( const std::string &player_msg,
                                        const std::string &/*npc_msg*/ ) const
 {
+    if( netplay::host_relay_character_message( this, player_msg,
+            static_cast<int>( m_info ) ) ) {
+        return;
+    }
     Messages::add_msg( player_msg );
 }
 
 void Character::add_msg_if_player( const game_message_params &params, const std::string &msg ) const
 {
+    if( netplay::host_relay_character_message( this, msg,
+            static_cast<int>( params.type ) ) ) {
+        return;
+    }
     Messages::add_msg( params, msg );
 }
 
@@ -833,12 +847,20 @@ void Character::add_msg_player_or_npc( const game_message_params &params,
                                        const std::string &player_msg,
                                        const std::string &/*npc_msg*/ ) const
 {
+    if( netplay::host_relay_character_message( this, player_msg,
+            static_cast<int>( params.type ) ) ) {
+        return;
+    }
     Messages::add_msg( params, player_msg );
 }
 
 void Character::add_msg_player_or_say( const std::string &player_msg,
                                        const std::string &/*npc_speech*/ ) const
 {
+    if( netplay::host_relay_character_message( this, player_msg,
+            static_cast<int>( m_info ) ) ) {
+        return;
+    }
     Messages::add_msg( player_msg );
 }
 
@@ -846,6 +868,10 @@ void Character::add_msg_player_or_say( const game_message_params &params,
                                        const std::string &player_msg,
                                        const std::string &/*npc_speech*/ ) const
 {
+    if( netplay::host_relay_character_message( this, player_msg,
+            static_cast<int>( params.type ) ) ) {
+        return;
+    }
     Messages::add_msg( params, player_msg );
 }
 

@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+class Character;
+
 namespace netplay
 {
 
@@ -386,6 +388,11 @@ bool client_character_json( std::string &out );
 bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
 /// DDA MP v4.0a-11: send one event line to the client's message log.
 bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 );
+/// DDA MP v4.0a-126: relay a Character message to the client driving that
+/// character (session avatar). Returns true when the character belongs to a
+/// session and the text was forwarded instead of going to the host log.
+bool host_relay_character_message( const Character *who, const std::string &text,
+                                   int msg_type );
 /// DDA MP v4.0a-11: broadcast one event line to every connected session.
 void host_broadcast_event( const std::string &text, int msg_type );
 /// DDA MP v4.0a-12: send the overmap minimap block to a session.

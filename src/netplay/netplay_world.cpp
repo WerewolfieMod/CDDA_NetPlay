@@ -876,6 +876,21 @@ static tripoint_bub_ms av_session_center( int sid )
     return get_avatar().pos_bub();
 }
 
+bool host_relay_character_message( const Character *who, const std::string &text,
+                                   int msg_type )
+{
+    if( who == nullptr || !who->is_npc() || !host_is_running() ) {
+        return false;
+    }
+    for( const auto &entry : av_sid_to_npc ) {
+        if( av_session_npc( entry.first ) == who ) {
+            host_send_event_to_sid( entry.first, text, msg_type );
+            return true;
+        }
+    }
+    return false;
+}
+
 static void av_send_session_picture( int sid, const tripoint_bub_ms &center,
                                      npc *viewer = nullptr )
 {
