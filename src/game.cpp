@@ -83,6 +83,7 @@
 #include "creature_tracker.h"
 #include "cuboid_rectangle.h"
 #include "current_map.h"
+#include "bubble_context.h"  // DDA MP: current region map/viewer context
 #include "cursesport.h" // IWYU pragma: keep
 #include "damage.h"
 #include "debug.h"
@@ -11730,11 +11731,19 @@ achievements_tracker &get_achievements()
 
 Character &get_player_character()
 {
+    bubble_context &ctx = current_bubble_context();
+    if( ctx.viewer != nullptr ) {
+        return *ctx.viewer;
+    }
     return g->u;
 }
 
 viewer &get_player_view()
 {
+    bubble_context &ctx = current_bubble_context();
+    if( ctx.viewer != nullptr ) {
+        return *ctx.viewer;
+    }
     return g->u;
 }
 
@@ -11750,6 +11759,10 @@ map &get_map()
 
 map &reality_bubble()
 {
+    bubble_context &ctx = current_bubble_context();
+    if( ctx.here != nullptr ) {
+        return *ctx.here;
+    }
     return g->m;
 }
 
