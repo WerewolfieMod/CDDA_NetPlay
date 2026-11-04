@@ -2786,6 +2786,23 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_SELECT_FIRE_MODE: {
+                item_location gun = av->get_wielded_item();
+                if( gun && gun->is_gun() && gun->gun_all_modes().size() > 1 ) {
+                    gun->gun_cycle_mode();
+                    netplay::host_send_event_to_sid(
+                        sid, string_format( _( "Firing mode: %s" ),
+                                            gun->gun_current_mode()->tname() ),
+                        static_cast<int>( m_info ) );
+                    changed = true;
+                } else {
+                    netplay::host_send_event_to_sid(
+                        sid, _( "You are not wielding a multi-mode gun." ),
+                        static_cast<int>( m_info ) );
+                }
+                break;
+            }
+
             case ACTION_SMASH: {
                 // DDA MP v4.0a-124: smash the nearest adjacent bashable tile
                 // with the avatar's own smash_ability(); the engine resolves
@@ -2844,7 +2861,8 @@ void host_pump_client_actions()
             }
 
             case ACTION_PICKUP:
-            case ACTION_PICKUP_ALL: {
+            case ACTION_PICKUP_ALL:
+            case ACTION_LOOT: {
                 // The host's own 'g' asks which adjacent tile to pick from
                 // when several have items (choose_adjacent_highlight); only the
                 // pickup-all key takes everything around. Mirror that: one tile
