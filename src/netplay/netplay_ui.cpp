@@ -2994,6 +2994,99 @@ static void mp_native_setup_terrain_window( const snapshot &snap, int dest_x, in
     wnoutrefresh( mp_native_terrain_win );
 }
 
+/* DDA MP v4.0a-115: the sidebar itself, drawn by the game's own panel code
+ * for the client's character mirror. The host's build_sidebar_snapshot skips
+ * exactly the same panels (message log and creature widgets), so both sides
+ * show the same widget set; the client keeps its own log below them. */
+struct mp_sidebar_panel {
+    const window_panel *panel = nullptr;
+    int y = 0;
+    int h = 0;
+};
+
+static std::vector<mp_sidebar_panel> mp_native_sidebar_panels()
+{
+    std::vector<mp_sidebar_panel> out;
+    panel_manager &mgr = panel_manager::get_manager();
+    int y = 0;
+    for( const window_panel &p : mgr.get_current_layout().panels() ) {
+        if( !p.render() ) {
+            continue;
+        }
+        // Height -2 is the message log; it belongs to the client's own log.
+        if( p.get_height() == -2 ) {
+            continue;
+        }
+        const std::string wid = p.get_widget().str();
+        if( wid.find( "monster" ) != std::string::npos ||
+            wid.find( "creature" ) != std::string::npos ||
+            wid.find( "critter" ) != std::string::npos ||
+            wid.find( "npc" ) != std::string::npos ) {
+            continue;
+        }
+        const int h = std::min( p.get_height(), TERMY - y );
+        if( h <= 0 ) {
+            break;
+        }
+        if( p.toggle ) {
+            out.push_back( { &p, y, h } );
+        }
+        y += h;
+    }
+    return out;
+}
+
+static int mp_native_sidebar_rows()
+{
+    int rows = 0;
+    for( const mp_sidebar_panel &e : mp_native_sidebar_panels() ) {
+        rows = std::max( rows, e.y + e.h );
+    }
+    return rows;
+}
+
+static int mp_native_sidebar_width()
+{
+    int width = 0;
+    for( const mp_sidebar_panel &e : mp_native_sidebar_panels() ) {
+        width = std::max( width, e.panel->get_width() );
+    }
+    return width;
+}
+
+static void mp_draw_native_sidebar()
+{
+    npc *mirror = mp_mirror();
+    if( mirror == nullptr ) {
+        return;
+    }
+    const bool right = get_option<std::string>( "SIDEBAR_POSITION" ) == "right";
+    const std::vector<mp_sidebar_panel> panels = mp_native_sidebar_panels();
+    int full_w = 0;
+    for( const mp_sidebar_panel &e : panels ) {
+        full_w = std::max( full_w, e.panel->get_width() );
+    }
+    // Black column behind the panels: the pixel layer no longer paints it, so
+    // stale map pixels must not show through the gaps between widgets.
+    if( full_w > 0 && full_w <= TERMX ) {
+        catacurses::window bg = catacurses::newwin( TERMY, full_w,
+                                point( right ? TERMX - full_w : 0, 0 ) );
+        werase( bg );
+        wnoutrefresh( bg );
+    }
+    for( const mp_sidebar_panel &e : panels ) {
+        const int w = e.panel->get_width();
+        if( w <= 0 || w > TERMX ) {
+            continue;
+        }
+        catacurses::window win = catacurses::newwin( e.h, w,
+                                 point( right ? TERMX - w : 0, e.y ) );
+        werase( win );
+        e.panel->draw( { *mirror, win, e.panel->get_widget() } );
+        wnoutrefresh( win );
+    }
+}
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -3126,10 +3219,26 @@ void run_view_loop()
         const float pad = fs * 0.6f;
         // (throw reticle is drawn by the tileset pass, see line_trail/cursor)
         // DDA MP v4.0a-14: inventory panel (read-only, toggled with 'i').
-        if( !mp_side.cells.empty() ) {
+        {
+            const bool mp_panels_native = mp_native_render_enabled();
+            const int mp_sb_cells = mp_panels_native
+                                    ? mp_native_sidebar_width()
+                                    : ( mp_side.width > 0 ? mp_side.width : 0 );
+            if( mp_sb_cells <= 0 ) {
+                return;
+            }
             const float cw = ImGui::CalcTextSize( "M" ).x;
             const float ch = ImGui::GetTextLineHeight();
-            const float x0 = std::max( 0.0f, io.DisplaySize.x - mp_side.width * cw - cw );
+            const float x0 = std::max( 0.0f,
+                                       io.DisplaySize.x - mp_sb_cells * cw - cw );
+            // DDA MP v4.0a-115: the panels themselves are painted by the
+            // game's own panel renderer into curses windows; only the
+            // client-only log and minimap stay in the pixel layer, below the
+            // rows the panels occupy.
+            int draw_y = 0;
+            if( mp_panels_native ) {
+                draw_y = mp_native_sidebar_rows();
+            } else {
             dl->AddRectFilled( ImVec2( x0 - cw, 0.0f ), io.DisplaySize, IM_COL32( 0, 0, 0, 210 ) );
             // Real used height: the frame is TERMY rows tall, most of them empty.
             int used_rows = 0;
@@ -3143,7 +3252,6 @@ void run_view_loop()
                     }
                 }
             }
-            int draw_y = 0;
             for( int row = 0; row < used_rows; row++ ) {
                 // Skip blank rows: the host's panels leave empty lines between
                 // blocks, the client shows a tight list.
@@ -3188,6 +3296,7 @@ void run_view_loop()
                     col = c;
                 }
                 ++draw_y;
+            }
             }
             // DDA MP v4.0a-11: the client's own message log, under the panels.
             float ly = draw_y * ch;
@@ -3261,7 +3370,7 @@ void run_view_loop()
                 const float mw = mp_mini_map.width * dot;
                 const float mh = mp_mini_map.height * dot;
                 // Center the block inside the sidebar column (like the host's panel).
-                const float mp_panel_w = mp_side.width > 0 ? mp_side.width * cw : ( io.DisplaySize.x - x0 );
+                const float mp_panel_w = mp_sb_cells * cw;
                 const float mx = x0 + std::max( 0.0f, ( mp_panel_w - mw ) / 2.0f );
                 if( mp_mini_top + mh <= io.DisplaySize.y + 1.0f ) {
                     const float mini_y = mp_mini_top;
@@ -3420,8 +3529,8 @@ void run_view_loop()
                         mp_prev = d;
                     }
                 }
-                // Host-rendered panels (preferred: identical look).
-                netplay::client_sidebar( mp_side );
+                // Host-rendered panels are no longer streamed: the client
+                // draws the same panels itself from its character mirror.
                 netplay::client_minimap( mp_mini_map );
                 mp_aim_minimap = mp_mini_map;
                 netplay::client_aim_targets( mp_aim_targets );
@@ -4111,6 +4220,12 @@ void run_view_loop()
                 mvwprintz( mp_hint_win, point( 0, 0 ),
                            netplay::long_wait_active() ? c_light_green : c_yellow, s );
                 wnoutrefresh( mp_hint_win );
+            }
+
+            // DDA MP v4.0a-115: draw the mirrored sidebar with the game's own
+            // panel renderer, after the map so it always sits on top.
+            if( mp_native_render_enabled() ) {
+                mp_draw_native_sidebar();
             }
 
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).

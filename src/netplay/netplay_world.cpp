@@ -1995,18 +1995,9 @@ static void av_send_status( int sid )
     // DDA MP v4.1: no row listing is streamed any more. The client's mirror
     // names items by mp_uid, so inventory/throw/pocket intents address the
     // same host item without a synchronized row table.
-#if defined(TILES)
-    {
-        int mp_cols = 0;
-        int mp_rows = 0;
-        netplay::host_client_view( sid, mp_cols, mp_rows );
-        sidebar_frame sb;
-        build_sidebar_snapshot( sb, *av, mp_cols, mp_rows );
-        if( !sb.cells.empty() ) {
-            netplay::host_send_sidebar_to_sid( sid, sb );
-        }
-    }
-#endif
+    // DDA MP v4.0a-115: the rendered sidebar is not streamed either; the
+    // client draws the same panels from its character mirror, so only raw
+    // state crosses the wire.
     if( mp_re_anchor ) {
         g->mp_anchor_map_on( get_avatar() );
     }
