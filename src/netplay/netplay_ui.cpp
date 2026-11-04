@@ -2276,6 +2276,42 @@ static void mp_draw_aim_panel()
                        IM_COL32( 0, 0, 0, 255 ) );
     dl->AddText( ImVec2( help_x, hy ), IM_COL32( 230, 230, 230, 255 ), help.c_str() );
 }
+/* DDA MP v4.0a-121: ranged fire. The client picks a target with the stock
+ * select-only cursor on its own map mirror; the host fires the avatar's
+ * wielded gun at that offset with Character::fire_gun, so ballistics,
+ * ammo, recoil and messages stay on the authoritative side. */
+static void mp_run_client_fire()
+{
+    avatar &cli = get_avatar();
+    const item_location weapon = cli.get_wielded_item();
+    if( !weapon || !weapon->is_gun() ) {
+        mp_inv_log( "fire: no gun wielded" );
+        return;
+    }
+    const int range = weapon->gun_range( &cli );
+    target_handler::trajectory traj;
+    try {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        traj = target_handler::mode_select_only( cli, range );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "fire error: " ) + e.what() );
+        return;
+    } catch( ... ) {
+        mp_inv_log( "fire error: unknown" );
+        return;
+    }
+    if( traj.empty() ) {
+        mp_inv_log( "fire: cancelled" );
+        return;
+    }
+    const tripoint_bub_ms tgt = traj.back();
+    const tripoint_bub_ms from = cli.pos_bub();
+    netplay::client_send_intent( "fire", 0,
+                                 { tgt.x() - from.x(), tgt.y() - from.y(), 1 } );
+    mp_inv_log( string_format( "fire: target %d,%d", tgt.x() - from.x(),
+                               tgt.y() - from.y() ) );
+}
+
 static void mp_run_client_throw( const item &thrown, const std::string &uid,
                                  const tripoint_abs_ms &origin )
 {
@@ -2335,6 +2371,10 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             g->look_around();
             break;
         }
+
+        case ACTION_FIRE:
+            mp_run_client_fire();
+            break;
 
         case ACTION_HELP: {
             ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
@@ -4567,6 +4607,10 @@ void run_view_loop()
                             g->look_around();
                             continue;
                         }
+
+                        case ACTION_FIRE:
+                            mp_run_client_fire();
+                            continue;
 
                         case ACTION_HELP: {
                             ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );

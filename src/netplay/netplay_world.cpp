@@ -3042,6 +3042,47 @@ void host_pump_intents()
         if( !netplay::host_pop_intent( in ) ) {
             break;
         }
+        // DDA MP v4.0a-121: ranged fire. The client picked the target with the
+        // stock cursor; the host resolves the shot on the session avatar.
+        if( in.action == "fire" && in.args.size() >= 3 ) {
+            shared_ptr_fast<npc> npc_ptr;
+            const auto sid_it = av_sid_to_npc.find( in.sid );
+            if( sid_it != av_sid_to_npc.end() ) {
+                npc_ptr = av_find_npc( sid_it->second );
+            }
+            if( npc_ptr && av_npc_alive( npc_ptr ) ) {
+                npc *av = npc_ptr.get();
+                g->mp_anchor_map_on( *av, true );
+                const tripoint_bub_ms from = av->pos_bub();
+                const tripoint_bub_ms tgt = from + tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                const int shots = std::max( 1, in.args[2] );
+                const item_location gun = av->get_wielded_item();
+                if( gun && gun->is_gun() ) {
+                    const std::size_t msg_before = Messages::size();
+                    av->fire_gun( tgt, shots );
+                    av_move_pool[in.sid] = std::max( 0, av->get_moves() );
+                    av->set_moves( av_move_pool[in.sid] );
+                    av_acted_since_tick[in.sid] = true;
+                    if( av_move_pool[in.sid] <= 0 && !netplay::long_wait_active() ) {
+                        av_waiting_for_turn[in.sid] = true;
+                        netplay::host_send_hover_to_sid( in.sid,
+                                                         _( "Waiting for other players…" ) );
+                    } else {
+                        netplay::host_send_hover_to_sid( in.sid, "" );
+                    }
+                    av_send_session_picture( in.sid, av->pos_bub(), av );
+                    mp_forward_new_messages( in.sid, msg_before );
+                } else {
+                    netplay::host_send_event_to_sid(
+                        in.sid, _( "You are not wielding a gun." ),
+                        static_cast<int>( m_info ) );
+                }
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
             std::fprintf( f, "intent unhandled sid=%d action=%s args=%d\n",
                           in.sid, in.action.c_str(), static_cast<int>( in.args.size() ) );
