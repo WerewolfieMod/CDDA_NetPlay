@@ -113,6 +113,9 @@ void host_draw_long_wait_hint( int row )
 /* chunk helpers                                                       */
 /* ------------------------------------------------------------------ */
 
+/// DDA MP v4.0a-129: true once the character JSON has been applied to g->u.
+static bool mp_native_avatar_ready = false;
+
 std::string describe_endpoint()
 {
     if( host_is_running() ) {
@@ -1525,15 +1528,14 @@ static void mp_run_character_info( const std::string &text )
     if( !mp_look_on ) {
         return;
     }
-    npc *mirror = mp_mirror();
-        if( mirror == nullptr ) {
+        if( !mp_native_avatar_ready ) {
             return;
         }
-        mp_inv_log( "info: opening @ menu on the mirror" );
+        mp_inv_log( "info: opening @ menu on the avatar mirror" );
         // Same layering rule as the inventory: hide the pre-session main menu,
         // keep the @ menu and its own submenus above the blocker.
         ui_adaptor mp_info_blocker( ui_adaptor::disable_uis_below{} );
-        mirror->disp_info( false );
+        get_avatar().disp_info( false );
         mp_inv_log( "info: closed" );
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "info error: " ) + e.what() );
@@ -1743,12 +1745,11 @@ static void mp_run_host_inventory( const std::string &text )
     if( !mp_look_on ) {
         return;
     }
-    npc *mirror = mp_mirror();
-    if( mirror == nullptr ) {
-        mp_inv_log( "inventory: no mirror snapshot yet" );
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "inventory: no character mirror yet" );
         return;
     }
-    npc &viewer = *mirror;
+    avatar &viewer = get_avatar();
     // Same preset/state as game_menus::inv::common, so the client's category
     // view/sort mode matches the host's inventory instead of a fresh default.
     inventory_selector_preset inv_preset = default_preset;
@@ -2826,8 +2827,6 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
                                center_abs.y(), center_abs.z() ) );
 }
 
-static bool mp_native_avatar_ready = false;
-
 static void mp_native_apply_avatar_json()
 {
     std::string json;
@@ -3799,7 +3798,10 @@ void run_view_loop()
             // DDA MP v4.2: apply the avatar/creature mirrors before the UI
             // redraw. Their deserialization touches UI caches; doing it between
             // the window draw and the present cleared the whole frame.
-            if( mp_native_render_enabled() ) {
+            {
+                // The character mirror is state, not rendering: keep g->u in
+                // sync even on the legacy ascii path so the inventory and the
+                // @ menu run on the same character as the native sidebar.
                 static const bool mp_avatar_on = []() {
                     const char *v = std::getenv( "DDA_MP_NATIVE_AVATAR" );
                     return v == nullptr || v[0] == '\0' || std::string( v ) != "0";
