@@ -970,6 +970,19 @@ void host_game_tick()
     // DDA MP v4.0a-142: create/follow split regions before the frames are
     // built, so a player that walked away already has its own map.
     host_region_sync();
+    // DDA MP v4.0a-143 test hook: let an automated run exercise the region
+    // tick without driving the host player. It calls exactly the same path the
+    // world turn uses.
+    if( const char *test_tick = std::getenv( "DDA_MP_TEST_TICK" );
+        test_tick != nullptr && test_tick[0] != '\0' ) {
+        static auto mp_last_test_tick = std::chrono::steady_clock::now() -
+                                        std::chrono::seconds( 5 );
+        const auto mp_now = std::chrono::steady_clock::now();
+        if( mp_now - mp_last_test_tick > std::chrono::seconds( 1 ) ) {
+            mp_last_test_tick = mp_now;
+            g->mp_tick_split_regions();
+        }
+    }
     for( int sid : netplay::host_session_ids() ) {
         // Each frame is built in its own region: get_map(), the viewer and
         // the creature tracker then describe the player's bubble, not the

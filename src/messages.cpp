@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <unordered_set>
 
+#include "bubble_context.h"
 #include "cached_options.h"
 #include "calendar.h"
 #include "catacharset.h"
@@ -1038,12 +1039,22 @@ void add_msg( const game_message_params &params, std::string msg )
 }
 
 // msg argument will not expand name place holders
+/* DDA MP v4.0a-143: a message produced while a split region is ticking is
+ * for that region's player only. It is already relayed to the session above;
+ * adding it to Messages as well would paint another player's events into the
+ * host's log. */
+static bool mp_in_host_bubble()
+{
+    map *here = current_bubble_context().here;
+    return here == nullptr || here == &g->mp_host_map();
+}
+
 void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg )
 {
     const map &here = get_map();
     netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ) );
 
-    if( get_player_view().sees( here, target ) ) {
+    if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( std::move( msg ) );
     }
 }
@@ -1053,7 +1064,7 @@ void add_msg_if_player_sees( const Creature &target, std::string msg )
     const map &here = get_map();
     netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ) );
 
-    if( get_player_view().sees( here, target ) ) {
+    if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( std::move( msg ) );
     }
 }
@@ -1064,7 +1075,7 @@ void add_msg_if_player_sees( const tripoint_bub_ms &target, const game_message_p
     const map &here = get_map();
     netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ) );
 
-    if( get_player_view().sees( here, target ) ) {
+    if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( params, std::move( msg ) );
     }
 }
@@ -1075,7 +1086,7 @@ void add_msg_if_player_sees( const Creature &target, const game_message_params &
     const map &here = get_map();
     netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ) );
 
-    if( get_player_view().sees( here, target ) ) {
+    if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( params, std::move( msg ) );
     }
 }

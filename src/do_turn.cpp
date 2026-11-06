@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <thread>
 #include <map>
 #include <memory>
@@ -27,6 +28,7 @@
 #include "cata_imgui.h"
 #endif
 #include "netplay/netplay.h"
+#include "netplay/netplay_region.h"
 #include "cata_variant.h"
 #include "craft_reservation.h"
 #include "clzones.h"
@@ -441,6 +443,26 @@ void monmove()
     g->cleanup_dead();
 }
 
+/* DDA MP v4.0a-143 (bubble split, step 4): the world turn the host just ran
+ * for its own bubble, repeated for one split region. Called with the region's
+ * map/viewer/creature tracker active, so every map-bound pass below describes
+ * that player's surroundings. The calendar, weather and overmap are global and
+ * stay once per turn; only the local simulation is repeated. */
+void tick_split_region( Character &viewer )
+{
+    map &m = get_map();
+    const int levz = m.get_abs_sub().z();
+    m.build_floor_caches();
+    m.process_falling();
+    m.vehmove();
+    m.process_fields();
+    m.process_items();
+    m.creature_in_field( viewer );
+    m.build_map_cache( levz, true );
+    monmove();
+    m.furniture_terrain_emit_fields();
+}
+
 void overmap_npc_move()
 {
     avatar &u = get_avatar();
@@ -548,13 +570,27 @@ void game::handle_progress_ui()
     }
 }
 
+void game::mp_tick_split_regions()
+{
+    netplay::host_tick_split_regions( []( Character & viewer ) {
+        tick_split_region( viewer );
+    } );
+}
+
 bool game::do_turn()
 {
     if( is_game_over() ) {
         return turn_handler::cleanup_at_end();
     }
 
-    // DDA MP v4.0a-7: strict turn parity — do not advance the world until
+    if( netplay::host_is_running() && netplay::mp_diag_enabled() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "world turn begin\n" );
+            std::fclose( f );
+        }
+    }
+
+    // DDA MP v4.0a-7: strict turn parity - do not advance the world until
     // every connected client gave its order this round. The earlier gate in
     // handle_action() ran AFTER the world had already ticked, which refilled
     // the clients' move pools (they kept walking while the host stood still).
@@ -830,6 +866,10 @@ bool game::do_turn()
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
     mon_info_update();
+
+    // DDA MP v4.0a-143: every other region ticks in the same world turn, one
+    // after another. The host context is restored before the code below.
+    mp_tick_split_regions();
 
     // replenish avatar moves
     u.process_turn();

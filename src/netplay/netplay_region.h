@@ -2,6 +2,7 @@
 #ifndef CATA_SRC_NETPLAY_NETPLAY_REGION_H
 #define CATA_SRC_NETPLAY_NETPLAY_REGION_H
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -54,6 +55,13 @@ struct bubble_region {
 /// (Re)compute session -> region clustering and create/destroy split regions.
 /// Call on the main thread before processing per-session work.
 void host_region_sync();
+
+/// Run one world tick for every split region, in that region's context. The
+/// callback receives the region's primary player character and runs all the
+/// map-bound simulation the host turn just ran for its own bubble; the engine
+/// remains single-threaded, so the regions are processed one after another in
+/// the same turn. No-op when not hosting or when no region is split.
+void host_tick_split_regions( const std::function<void( Character & )> &tick );
 
 /// Drop all split regions (host shutdown). Safe to call when not hosting.
 void host_region_shutdown();

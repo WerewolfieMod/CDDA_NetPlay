@@ -388,6 +388,41 @@ int host_session_region( int sid )
     return it == mp_session_region.end() ? -1 : it->second;
 }
 
+void host_tick_split_regions( const std::function<void( Character & )> &tick )
+{
+    if( !host_is_running() || mp_regions.empty() ) {
+        return;
+    }
+    host_region_sync();
+    // Snapshot the jobs: region_scope may create/destroy regions through
+    // mapgen or an activity, and iterating the live map would be unsafe.
+    std::vector<std::pair<int, int>> jobs;
+    jobs.reserve( mp_regions.size() );
+    for( const auto &entry : mp_regions ) {
+        if( !entry.second.sessions.empty() ) {
+            jobs.emplace_back( entry.second.sessions.front(), entry.first );
+        }
+    }
+    for( const auto &job : jobs ) {
+        npc *viewer = host_session_avatar_npc( job.first );
+        if( viewer == nullptr ) {
+            continue;
+        }
+        region_scope scope( job.first );
+        if( !scope.split() ) {
+            continue;
+        }
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "region tick id=%d sid=%d at=%d,%d\n",
+                              job.second, job.first, viewer->pos_abs().x(), viewer->pos_abs().y() );
+                std::fclose( f );
+            }
+        }
+        tick( *viewer );
+    }
+}
+
 /* Called by game::mp_anchor_map_on (through netplay.h) before a region's map
  * shifts: park the live monsters with their absolute positions. */
 void host_capture_region_monsters()

@@ -863,6 +863,10 @@ class game
         map &mp_host_map() {
             return m;
         }
+        /// DDA MP v4.0a-143: run one world tick for every split region. The
+        /// normal turn calls this after the host's own simulation; the
+        /// DDA_MP_TEST_TICK hook calls the same path without host input.
+        void mp_tick_split_regions();
 
         /** Get all living player allies */
         std::vector<npc *> allies();
