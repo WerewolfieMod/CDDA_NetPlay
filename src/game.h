@@ -858,6 +858,11 @@ class game
          * The overmap which contains the center submap of the reality bubble.
          */
         overmap &get_cur_om() const;
+        /// DDA MP v4.0a-142: the host's own map, independent of the current
+        /// bubble context (a split region's map is not the host's).
+        map &mp_host_map() {
+            return m;
+        }
 
         /** Get all living player allies */
         std::vector<npc *> allies();

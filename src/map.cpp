@@ -9012,7 +9012,9 @@ void map::load( const tripoint_abs_sm &w, const bool update_vehicle,
     }
 
     // tinymap derives from map, and a remote load would otherwise wipe the bubble's locks.
-    reconcile_loaded_items( this == &get_map()
+    // DDA MP v4.0a-142: a split region's map is a second reality bubble, not
+    // the main map; its load must be additive so the host's item locks survive.
+    reconcile_loaded_items( this == &g->mp_host_map()
                             ? reconcile_scope::full_rebuild
                             : reconcile_scope::additive );
 }

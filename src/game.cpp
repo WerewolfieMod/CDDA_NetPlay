@@ -10384,6 +10384,14 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
 {
     map &here = get_map();
 
+    // DDA MP v4.0a-142: inside a split region the host avatar is not on this
+    // map at all. The old "hand the bubble back to the host" calls must not
+    // drag a region map to the host's position; the scope that switched the
+    // map restores the host context instead.
+    if( &anchor == &get_avatar() && &here != &g->m ) {
+        return;
+    }
+
     // Active anchors use their bubble slot; an anchor outside of the current
     // bubble (the bubble was re-anchored away e.g. by the host player's own
     // move) targets its real world position instead of the stale slot.
@@ -10470,16 +10478,19 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
     }
 
     const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
-    u.shift_destination( -shift_ms );
+    // DDA MP v4.0a-142: the anchor may belong to a split region; move that
+    // region's character, never the host avatar.
+    Character &mp_pc = anchor;
+    mp_pc.shift_destination( -shift_ms );
     // DDA MP v4.0a-2: pending sound events and drawn "?" markers live in bub
     // coordinates too; correct them against the shift, or the player's own
     // (still queued) sounds get attributed to tiles they were never made on.
     sounds::mp_shift_bubble_positions( shift_ms );
     // Positions are absolute in this codebase, so the map shift already
     // recomputed every creature's bubble slot around the same world spot.
-    // Re-assert the host player's bubble slot (no world movement), like
+    // Re-assert the anchor's bubble slot (no world movement), like
     // update_map's closing setpos does for the anchor.
-    u.setpos( here, tripoint_bub_ms( u.pos_bub().xy(), u.pos_bub().z() ) );
+    mp_pc.setpos( here, tripoint_bub_ms( mp_pc.pos_bub().xy(), mp_pc.pos_bub().z() ) );
 
     // DDA MP v4.0a-2: light mode stops after the cheap bookkeeping; the
     // snapshot pipeline rebuilds whatever caches it needs on its own.
@@ -10495,7 +10506,11 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
         return;
     }
 
-    scent.shift( shift_ms );
+    // Scent is a host-world map; shifting it for a split region would move
+    // the host's scent field under an unrelated map move.
+    if( &here == &g->m ) {
+        scent.shift( shift_ms );
+    }
 
     // Wake any npc now covered by the bubble (possibly the anchor itself, if
     // another anchor had pushed it out before).
@@ -11738,10 +11753,11 @@ achievements_tracker &get_achievements()
 
 Character &get_player_character()
 {
-    bubble_context &ctx = current_bubble_context();
-    if( ctx.viewer != nullptr ) {
-        return *ctx.viewer;
-    }
+    // DDA MP v4.0a-142: deliberately always the host avatar. A split region's
+    // viewer is an npc, and several engine paths (npc::attitude_to,
+    // is_enemy(), faction checks) recurse when that npc is treated as "the
+    // player" as well as the creature being tested. Region-bound simulation
+    // uses get_player_view()/reality_bubble(); only those follow the context.
     return g->u;
 }
 

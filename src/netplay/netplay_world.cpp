@@ -10,6 +10,7 @@
 
 #include "netplay/netplay.h"
 #include "netplay/inventory_source.h"
+#include "netplay/netplay_region.h"
 
 #include <array>
 #include <cstdio>
@@ -873,6 +874,13 @@ static npc *av_session_npc( int sid )
     return nullptr;
 }
 
+/* DDA MP v4.0a-142: the region manager needs the same binding without
+ * reaching into the static table; main thread only. */
+npc *host_session_avatar_npc( int sid )
+{
+    return av_session_npc( sid );
+}
+
 void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,
                               int msg_type )
 {
@@ -915,89 +923,6 @@ static tripoint_bub_ms av_session_center( int sid )
     return get_avatar().pos_bub();
 }
 
-/* DDA MP v4.0a-141 (bubble split, step 2): live monster preservation across
- * reality-bubble moves. The engine drops monsters that leave the bubble; for
- * multiple regions (or two players far apart inside one map) they must survive
- * the move and come back when their area is loaded again. The store is keyed
- * by the monster's stable id and keeps its absolute position and serialized
- * state; only monsters inside the new bubble are re-added, so the tracker
- * never holds off-region creatures. */
-namespace
-{
-struct mp_saved_monster {
-    int ax = 0;
-    int ay = 0;
-    int az = 0;
-    std::string json;
-};
-std::vector<mp_saved_monster> mp_region_monster_store;
-} // namespace
-
-void host_capture_region_monsters()
-{
-    if( !host_is_running() ) {
-        return;
-    }
-    for( const shared_ptr_fast<monster> &m : get_creature_tracker().get_monsters_list() ) {
-        if( !m || m->is_dead_state() ) {
-            continue;
-        }
-        const tripoint_abs_ms ap = m->pos_abs();
-        std::ostringstream os;
-        try {
-            JsonOut js( os );
-            m->serialize( js );
-        } catch( ... ) {
-            continue;
-        }
-        mp_saved_monster sm;
-        sm.ax = ap.x();
-        sm.ay = ap.y();
-        sm.az = ap.z();
-        sm.json = os.str();
-        mp_region_monster_store.push_back( std::move( sm ) );
-    }
-}
-
-void host_restore_region_monsters()
-{
-    if( !host_is_running() ) {
-        return;
-    }
-    map &here = get_map();
-    creature_tracker &tracker = get_creature_tracker();
-    std::vector<mp_saved_monster> keep;
-    keep.reserve( mp_region_monster_store.size() );
-    for( const mp_saved_monster &sm : mp_region_monster_store ) {
-        const tripoint_abs_ms ap( sm.ax, sm.ay, sm.az );
-        const tripoint_bub_ms bub = here.get_bub( ap );
-        if( !here.inbounds( bub ) ) {
-            keep.push_back( sm );
-            continue;
-        }
-        // Still live (the shift did not unload it): do not duplicate it.
-        bool live = false;
-        for( const shared_ptr_fast<monster> &m : tracker.get_monsters_list() ) {
-            if( m && m->pos_abs() == ap ) {
-                live = true;
-                break;
-            }
-        }
-        if( live ) {
-            continue;
-        }
-        try {
-            JsonValue jv = json_loader::from_string( sm.json );
-            auto mon = std::make_shared<monster>();
-            mon->deserialize( jv.get_object() );
-            mon->setpos( ap, false );
-            tracker.add( mon );
-        } catch( ... ) {
-            // Broken saved state: drop it rather than blocking the bubble.
-        }
-    }
-    mp_region_monster_store = std::move( keep );
-}
 bool host_relay_character_message( const Character *who, const std::string &text,
                                    int msg_type )
 {
@@ -1042,43 +967,39 @@ void host_game_tick()
     if( !get_map().inbounds( get_avatar().pos_bub() ) ) {
         return; // no world yet
     }
+    // DDA MP v4.0a-142: create/follow split regions before the frames are
+    // built, so a player that walked away already has its own map.
+    host_region_sync();
     for( int sid : netplay::host_session_ids() ) {
+        // Each frame is built in its own region: get_map(), the viewer and
+        // the creature tracker then describe the player's bubble, not the
+        // host's. The scope restores the host context on exit.
+        region_scope scope( sid );
         npc *viewer = av_session_npc( sid );
         if( viewer != nullptr && !get_map().inbounds( viewer->pos_bub() ) ) {
-            // DDA MP v4.0a-2: the avatar is outside the reality bubble right
-            // now (the bubble lives with the host player between steps; the
-            // avatar holds it only during its own step). There is no valid
-            // map around it, so keep the client's last painted frame instead
-            // of painting darkness over it.
-            continue;
+            if( scope.split() ) {
+                g->mp_anchor_map_on( *viewer, true );
+            } else {
+                // Host-region avatar outside the host map: keep the last
+                // painted frame instead of painting darkness over it.
+                continue;
+            }
         }
         tripoint_bub_ms center = av_session_center( sid );
-        bool mp_re_anchored = false;
-        if( viewer != nullptr ) {
-            // DDA MP v4.0a-6: the streamed frame must fit inside the map.
-            // Between the avatar's own steps the bubble lives with the host
-            // player, and a roaming avatar ends near the bubble edge — the
-            // frame's outer cells then mine outside of the map and arrive
-            // empty: the black edge-ring that only cleared after the client
-            // stepped onto the dark area. Before building, re-anchor the
-            // reality bubble on the avatar with the same light anchor the
-            // step pump uses, then hand it back so the host player keeps its
-            // own vanilla anchor between snapshots.
+        if( viewer != nullptr && !scope.split() ) {
+            // DDA MP v4.0a-6: the streamed frame must fit inside the host map.
+            // Re-anchor on the avatar, then hand the bubble back to the host.
             if( center.x() < FRAMEW / 2 || center.y() < FRAMEH / 2 ||
                 center.x() + FRAMEW / 2 >= MAPSIZE_X ||
                 center.y() + FRAMEH / 2 >= MAPSIZE_Y ) {
                 g->mp_anchor_map_on( *viewer, true );
                 center = viewer->pos_bub();
-                mp_re_anchored = true;
+                g->mp_anchor_map_on( get_avatar() );
             }
         }
         av_send_session_picture( sid, center, viewer );
-        if( mp_re_anchored ) {
-            g->mp_anchor_map_on( get_avatar() );
-        }
     }
 }
-
 /* DDA MP v3.9: the host streams snapshots only on its own turn, so an idle
  * host would leave a freshly-loaded client staring at its menu until somebody
  * pressed a key. The client polls with SNAP_REQ instead; the reader threads
@@ -1479,6 +1400,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
 
 void host_pump_avatar_ops()
 {
+    host_region_sync();
     avatar_op op;
     int budget = 16;
     while( budget-- > 0 && host_pop_avatar_op( op ) ) {
@@ -1486,6 +1408,9 @@ void host_pump_avatar_ops()
             std::fprintf( f, "avatar op sid=%d kind=%d nick=%s\n", op.sid, op.kind, op.nick.c_str() );
             std::fclose( f );
         }
+        // DDA MP v4.0a-142: resume/rebind of an avatar that already lives in a
+        // split region must see that region's map.
+        region_scope scope( op.sid );
         host_handle_one_avatar_op( op );
     }
 }
@@ -1553,6 +1478,7 @@ static bool av_all_acted()
 
 void host_pump_avatar_keys()
 {
+    host_region_sync();
     netplay::sid_key sk;
     int mp_steps = 0;
     while( netplay::host_pop_sid_key( sk ) ) {
@@ -1578,6 +1504,10 @@ void host_pump_avatar_keys()
             av_acted_since_tick.erase( sk.sid );
             continue;
         }
+        // DDA MP v4.0a-142: run the whole key in the avatar's own region, so
+        // get_map(), pos_bub() and the snapshot builder all describe the
+        // player's bubble. The scope restores the host on every exit path.
+        region_scope scope( sk.sid );
         const std::string act = mp_key_action( sk.code );
         // DDA MP v4.0a-128: any key wakes a sleeping avatar / cancels its
         // current activity, like the stock game's "get up" handling.
@@ -2055,6 +1985,11 @@ static void av_send_status( int sid )
         return;
     }
     npc *av = npc_ptr.get();
+    // DDA MP v4.0a-142: every payload below reads the map around the avatar
+    // (sidebar widgets, compass, minimap, aim targets), so run them in the
+    // avatar's region. Split regions have their own persistent map; the host
+    // region still needs the anchor/hand-back below.
+    region_scope scope( sid );
     // DDA MP v4.0a-80: every payload below reads the map around the avatar
     // (sidebar widgets, compass, minimap, aim targets). Between the avatar's
     // own steps the bubble lives with the host player, so anchor it here,
@@ -2277,7 +2212,7 @@ static void av_send_status( int sid )
     // DDA MP v4.0a-115: the rendered sidebar is not streamed either; the
     // client draws the same panels from its character mirror, so only raw
     // state crosses the wire.
-    if( mp_re_anchor ) {
+    if( mp_re_anchor && !scope.split() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
 }
@@ -2316,6 +2251,7 @@ void host_pump_inventory_actions()
     if( !host_is_running() ) {
         return;
     }
+    host_region_sync();
     // DDA MP v4.0a-80: map-bound work below anchors the bubble on the session
     // avatar; hand it back to the host player when the pump is done.
     bool mp_anchored = false;
@@ -2352,6 +2288,8 @@ void host_pump_inventory_actions()
             continue;
         }
         npc *av = npc_ptr.get();
+        // DDA MP v4.0a-142: the whole action runs in the avatar's region.
+        region_scope scope( sid );
         // Map-bound actions (drop, spill checks) must see the avatar's own
         // reality bubble, exactly like a movement key does. Keep the shared
         // pointer alive: anchoring can unload/reload tracker entries.
@@ -2842,6 +2780,7 @@ void host_pump_client_actions()
     if( !host_is_running() ) {
         return;
     }
+    host_region_sync();
     // DDA MP v4.0a-80: return the reality bubble to the host player after this
     // pump moved it onto a session avatar (a pending movement burst keeps its
     // own anchor because this flag stays clear).
@@ -2861,6 +2800,8 @@ void host_pump_client_actions()
             continue;
         }
         npc *av = npc_ptr.get();
+        // DDA MP v4.0a-142: run the action in the avatar's own region.
+        region_scope scope( sid );
         g->mp_anchor_map_on( *av, true );
         mp_anchored = true;
         bool changed = false;
@@ -3416,11 +3357,15 @@ void host_pump_client_actions()
  * of dropping the player's order silently. */
 void host_pump_intents()
 {
+    host_region_sync();
     netplay::intent_request in;
     for( int budget = 0; budget < 8; budget++ ) {
         if( !netplay::host_pop_intent( in ) ) {
             break;
         }
+        // DDA MP v4.0a-142: intents are handled in the requesting session's
+        // region (the map-bound ones would otherwise run against the host).
+        region_scope scope( in.sid );
         // DDA MP v4.0a-131: crafting recipe chosen in the client's own UI.
         if( ( in.action == "craft" || in.action == "craft.all" ) && !in.data.empty() ) {
             npc *av = av_session_npc( in.sid );
@@ -3541,6 +3486,7 @@ void host_note_world_turn()
     if( !host_is_running() || host_session_count() == 0 ) {
         return;
     }
+    host_region_sync();
     av_acted_since_tick.clear();
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
@@ -3556,6 +3502,9 @@ void host_note_world_turn()
         }
         if( npc_ptr && av_npc_alive( npc_ptr ) && !npc_ptr->is_dead_state() ) {
             npc *av = npc_ptr.get();
+            // DDA MP v4.0a-142: the turn pass and the status push run in the
+            // avatar's region (a split region has its own map and creatures).
+            region_scope scope( sid );
             // Per-turn state (body temperature, effects, activity, needs) is
             // normally advanced by the NPC turn pass; an out-of-bubble session
             // avatar never gets it, so do the base Character pass here with the

@@ -178,7 +178,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\netplay\netplay.h" />
+    <ClInclude Include="..\src\netplay\netplay_region.h" />
     <ClCompile Include="..\src\netplay\netplay.cpp" />
+    <ClCompile Include="..\src\netplay\netplay_region.cpp" />
     <ClCompile Include="..\src\netplay\netplay_ui.cpp" />
     <ClCompile Include="..\src\netplay\netplay_world.cpp" />
   </ItemGroup>

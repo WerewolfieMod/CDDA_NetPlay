@@ -3,6 +3,7 @@
 // Public API in "netplay/netplay.h".
 
 #include "netplay.h"
+#include "netplay_region.h"
 #ifdef _WIN32
 #include "worldfactory.h" // world_generator (WELCOME world name)
 #endif
@@ -755,6 +756,7 @@ bool init()
 }
 void shutdown()
 {
+    host_region_shutdown();
     std::lock_guard<std::mutex> lk( state_mutex );
     state.stop_client();
     state.stop_host();
@@ -1217,6 +1219,9 @@ bool host_start( int port )
 void host_stop()
 {
     set_long_wait( false );
+    // DDA MP v4.0a-142: split regions own extra maps and creature stores.
+    // Fold them back into the host world before the transport goes away.
+    host_region_shutdown();
     state.stop_host();
 }
 
