@@ -240,10 +240,10 @@ bool cleanup_at_end()
 
 } // namespace turn_handler
 
-void handle_key_blocking_activity()
+bool handle_key_blocking_activity()
 {
     if( test_mode ) {
-        return;
+        return false;
     }
     avatar &u = get_avatar();
     const bool has_unfinished_activity = u.activity && (
@@ -252,6 +252,7 @@ void handle_key_blocking_activity()
     if( has_unfinished_activity || u.has_destination() ) {
         input_context ctxt = get_default_mode_input_context();
         const std::string action = ctxt.handle_input( 0 );
+        const bool got_key = !action.empty() && action != "TIMEOUT";
         bool refresh = true;
         if( action == "pause" ) {
             if( u.activity.is_interruptible_with_kb() ) {
@@ -277,9 +278,16 @@ void handle_key_blocking_activity()
             ui_manager::redraw();
             refresh_display();
         }
+        return got_key;
     } else {
+        // A host with no action points (prone/lying) still has to give input
+        // for the round; any key counts as that input.
+        input_context ctxt = get_default_mode_input_context();
+        const std::string action = ctxt.handle_input( 0 );
+        const bool got_key = !action.empty() && action != "TIMEOUT";
         refresh_display();
         inp_mngr.pump_events();
+        return got_key;
     }
 }
 
@@ -716,6 +724,7 @@ bool game::do_turn()
                 if( handle_action() ) {
                     ++moves_since_last_save;
                     u.action_taken();
+                    netplay::host_mark_input_done();
                 }
 
                 if( is_game_over() ) {
@@ -739,7 +748,9 @@ bool game::do_turn()
             const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() );
             if( ( now - start ).count() > 100 ) {
-                handle_key_blocking_activity();
+                if( handle_key_blocking_activity() ) {
+                    netplay::host_mark_input_done();
+                }
                 start = now;
             }
 

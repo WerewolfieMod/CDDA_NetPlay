@@ -848,6 +848,9 @@ static std::map<int, int> av_sid_to_npc;
  * idle player can never freeze the host forever. */
 static std::chrono::steady_clock::time_point mp_round_start =
     std::chrono::steady_clock::now();
+/* DDA MP v4.0a-157: the host gave input (acted or pressed a key) in this
+ * round. Reset after every world turn. */
+static bool mp_host_input_done = false;
 /* DDA MP v4.0a-18: per-session item locations matching the last INVENTORY
  * payload row order. Client actions reference a row index; only the host
  * main thread rebuilds/consumes this map. */
@@ -3627,6 +3630,7 @@ void host_note_world_turn()
     host_region_sync();
     host_clear_auto_turn();
     mp_round_start = std::chrono::steady_clock::now();
+    mp_host_input_done = false;
     if( mp_diag_enabled() ) {
         if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
             std::fprintf( f, "round complete sessions=%d\n",
@@ -3721,13 +3725,27 @@ bool host_turn_blocked()
     return !av_all_acted();
 }
 
+void host_mark_input_done()
+{
+    mp_host_input_done = true;
+}
+
 bool host_round_done()
 {
     if( !host_is_running() || host_session_count() == 0 ) {
         return true;
     }
-    // The host itself must be done first: do_turn calls this only after the
-    // host input pass, i.e. after its move pool is spent.
+    // DDA MP v4.0a-157: the host must give input in this round too. Without
+    // this, a host with no action points (prone/lying) was treated as done and
+    // a moving client closed a world turn on every step, making time race.
+    // Long wait and long activities are explicit exceptions.
+    if( !mp_host_input_done && !netplay::long_wait_active() ) {
+        avatar &host_u = get_avatar();
+        if( !host_u.has_effect( effect_sleep ) && host_u.activity.is_null() ) {
+            return false;
+        }
+    }
+    // The host input pass has finished (or it is excluded above).
     for( const auto &entry : av_sid_to_npc ) {
         const int sid = entry.first;
         if( host_session_afk( sid ) ) {

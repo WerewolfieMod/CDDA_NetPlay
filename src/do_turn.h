@@ -5,7 +5,7 @@
 class map;
 class npc;
 
-void handle_key_blocking_activity();
+bool handle_key_blocking_activity();
 
 struct npc_turn_result {
     // spent no moves for the whole retry budget and was rebooted ("faints")
