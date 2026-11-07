@@ -621,6 +621,13 @@ static void WinCreate()
 {
     // Common flags used for windowed mode (fullscreen applied after creation)
     Uint32 window_flags = CATA_WINDOW_RESIZABLE | CATA_WINDOW_HIGH_DPI;
+    // DDA MP test hook: keep the automated host/client windows out of the
+    // desktop focus so a test run never interrupts the user. Normal play does
+    // not set this env and keeps the ordinary focusable window.
+    if( const char *test_no_focus = std::getenv( "DDA_MP_TEST_NO_FOCUS" );
+        test_no_focus != nullptr && test_no_focus[0] != '\0' ) {
+        window_flags |= SDL_WINDOW_NOT_FOCUSABLE;
+    }
     WindowWidth = TERMINAL_WIDTH * fontwidth * scaling_factor;
     WindowHeight = TERMINAL_HEIGHT * fontheight * scaling_factor;
 

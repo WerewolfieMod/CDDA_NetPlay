@@ -1101,6 +1101,13 @@ bool main_menu::load_game( std::string const &worldname, save_t const &savegame 
 
     if( g->load( savegame ) ) {
         cleanup.cancel();
+        // DDA MP test hook: start the listener as soon as the world/character
+        // is loaded, so automated runs never have to click through the host
+        // dialog (and never have to steal the desktop focus).
+        if( const char *test_host = std::getenv( "DDA_MP_TEST_HOST" );
+            test_host != nullptr && test_host[0] != '\0' ) {
+            netplay::host_start( netplay::DEFAULT_PORT );
+        }
         return true;
     }
 

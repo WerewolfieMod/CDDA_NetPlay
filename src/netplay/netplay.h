@@ -609,7 +609,15 @@ void host_game_tick();
 void host_note_world_turn();
 /// DDA MP v4.0a-7: true while the host must wait for clients to give their
 /// orders (strict turn parity, with a short grace for idle clients).
-bool host_turn_blocked();/// Service one pending client snapshot request by building and broadcasting
+bool host_turn_blocked();
+/// DDA MP v4.0a-144: a client finished its order while the host idled. The
+/// host turn loop consumes this as an automatic wait, so time advances even
+/// when the host player does not press a key. False while the round is still
+/// waiting for another client.
+bool host_consume_auto_turn();
+/// Clear the pending auto-wait at the start of a fresh round.
+void host_clear_auto_turn();
+/// Service one pending client snapshot request by building and broadcasting
 /// the current picture (host_game_tick). Call from a main-thread loop that
 /// also runs while the host is idle; no-op without a pending request.
 void host_pump_snapshot_requests();

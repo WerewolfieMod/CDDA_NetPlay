@@ -4529,6 +4529,26 @@ void run_view_loop()
                 }
             }
 
+            // DDA MP test hook: walk right N times without touching the OS
+            // window. It uses the same client_send_keys path as a real key, so
+            // the desktop focus never has to be stolen for automated runs.
+            if( const char *test_move = std::getenv( "DDA_MP_TEST_CLIENT_MOVE" );
+                test_move != nullptr && test_move[0] != '\0' ) {
+                static int mp_test_moves_left = std::atoi( test_move );
+                static auto mp_test_last_move =
+                    std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+                ctxt.set_timeout( 100 );
+                const auto mp_test_now = std::chrono::steady_clock::now();
+                if( mp_test_moves_left > 0 &&
+                    mp_test_now - mp_test_last_move > std::chrono::seconds( 2 ) ) {
+                    mp_test_last_move = mp_test_now;
+                    --mp_test_moves_left;
+                    key_event test_ke;
+                    test_ke.code = 2; // RIGHT
+                    client_send_keys( { test_ke } );
+                    mp_tlog( "test: synthetic right" );
+                }
+            }
             const std::string action = ctxt.handle_input();
             // DDA MP v4.0a-97: choose the tile to pick from (several tiles
             // with items): arrows cycle the candidates, ENTER confirms.

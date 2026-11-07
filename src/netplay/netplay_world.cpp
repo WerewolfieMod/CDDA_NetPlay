@@ -1438,6 +1438,16 @@ void host_pump_avatar_ops()
  * does not fast-forward the world under the others; the host player keeps
  * its own do_turn ticks whenever it acts. Flag map is main-thread only. */
 static std::map<int, bool> av_acted_since_tick;
+/* DDA MP v4.0a-144: a client finished its order while the host was idle.
+ * The next safe point (the host's input wait or the top of the turn) turns
+ * that into an automatic host wait, so time keeps flowing without a host
+ * keypress. */
+static bool mp_client_finished_order = false;
+static void av_mark_acted( int sid )
+{
+    av_acted_since_tick[sid] = true;
+    mp_client_finished_order = true;
+}
 /* DDA MP v4.0a-7: per-session move pool, owned by netplay. The avatar NPC is
  * unloaded and reloaded whenever the reality bubble flips between the host and
  * the client, and the NPC loader resets `moves` to 100 on every load — the
@@ -1536,7 +1546,7 @@ void host_pump_avatar_keys()
         }
         if( act == "WAIT" ) {
             // Pass the turn: spend the pool, mark the order, refresh the picture.
-            av_acted_since_tick[sk.sid] = true;
+            av_mark_acted( sk.sid );
             av_move_pool[sk.sid] = 0;
             netplay::host_send_hover_to_sid( sk.sid, "" );
             av_send_session_picture( sk.sid, av_session_center( sk.sid ), npc_ptr.get() );
@@ -1584,7 +1594,7 @@ void host_pump_avatar_keys()
             }
             av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
             npc_ptr->set_moves( av_move_pool[sk.sid] );
-            av_acted_since_tick[sk.sid] = true;
+            av_mark_acted( sk.sid );
             if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
                 netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
@@ -1616,7 +1626,7 @@ void host_pump_avatar_keys()
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                     }
-                    av_acted_since_tick[sk.sid] = true;
+                    av_mark_acted( sk.sid );
                     break;
                 }
                 const std::string target_name = cr->disp_name();
@@ -1649,7 +1659,7 @@ void host_pump_avatar_keys()
                     }
                     av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
                     npc_ptr->set_moves( av_move_pool[sk.sid] );
-                    av_acted_since_tick[sk.sid] = true;
+                    av_mark_acted( sk.sid );
                     if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
@@ -1679,7 +1689,7 @@ void host_pump_avatar_keys()
                     }
                     pool_it->second = std::max( 0, pool_it->second - mp_open_cost );
                     npc_ptr->set_moves( pool_it->second );
-                    av_acted_since_tick[sk.sid] = true;
+                    av_mark_acted( sk.sid );
                     netplay::host_send_event_to_sid(
                         sk.sid, _( "You open the door." ), static_cast<int>( m_info ) );
                     if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
@@ -1728,7 +1738,7 @@ void host_pump_avatar_keys()
                 // No action point left for this order: the player is done for
                 // this round. Do not block the host's turn on an exhausted
                 // pool (that deadlocked both sides until a manual wait).
-                av_acted_since_tick[sk.sid] = true;
+                av_mark_acted( sk.sid );
                 break;
             }
         }
@@ -1773,7 +1783,7 @@ void host_pump_avatar_keys()
                 }
             }
             // parity: this bind acted since the last world turn
-            av_acted_since_tick[sk.sid] = true;
+            av_mark_acted( sk.sid );
             // The step went through; tell the client whether its round is over.
             if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
@@ -2821,7 +2831,7 @@ void host_pump_client_actions()
         switch( static_cast<action_id>( action ) ) {
             case ACTION_WAIT:
                 // Same contract as the WAIT key: spend the pool, redraw.
-                av_acted_since_tick[sid] = true;
+                av_mark_acted( sid );
                 av_move_pool[sid] = 0;
                 netplay::host_send_hover_to_sid( sid, "" );
                 av_send_session_picture( sid, av_session_center( sid ), npc_ptr.get() );
@@ -2909,7 +2919,7 @@ void host_pump_client_actions()
                 }
                 pool_it->second = std::max( 0, pool_it->second - stair_cost );
                 av->set_moves( pool_it->second );
-                av_acted_since_tick[sid] = true;
+                av_mark_acted( sid );
                 netplay::host_send_event_to_sid(
                     sid, dz > 0 ? _( "You go up the stairs." ) : _( "You go down the stairs." ),
                     static_cast<int>( m_info ) );
@@ -2986,7 +2996,7 @@ void host_pump_client_actions()
                 // by the round gate while it sleeps.
                 av->get_comfort_at( av->pos_bub() ).add_try_msgs( *av );
                 av->assign_activity( try_sleep_activity_actor( 24_hours ) );
-                av_acted_since_tick[sid] = true;
+                av_mark_acted( sid );
                 netplay::host_send_hover_to_sid( sid, "" );
                 av_send_session_picture( sid, av->pos_bub(), npc_ptr.get() );
                 changed = true;
@@ -3044,7 +3054,7 @@ void host_pump_client_actions()
                     pool_it = av_move_pool.insert( { sid, av->get_speed() } ).first;
                 }
                 pool_it->second = std::max( 0, av->get_moves() );
-                av_acted_since_tick[sid] = true;
+                av_mark_acted( sid );
                 if( br.did_bash && br.success ) {
                     netplay::host_send_event_to_sid(
                         sid, string_format( _( "You smash the %s!" ), here.name( *target ) ),
@@ -3222,7 +3232,7 @@ void host_pump_client_actions()
             if( action == ACTION_OPEN || action == ACTION_CLOSE ) {
                 // These spend a turn on the host side; count the session as
                 // acted so the host's parity gate is not blocked by a door.
-                av_acted_since_tick[sid] = true;
+                av_mark_acted( sid );
             }
             av_send_status( sid );
         }
@@ -3357,7 +3367,7 @@ void host_pump_client_actions()
             }
         }
         // Picking items up takes a turn; count the session as acted.
-        av_acted_since_tick[psid] = true;
+        av_mark_acted( psid );
         av_send_status( psid );
     }
     if( mp_anchored ) {
@@ -3398,7 +3408,7 @@ void host_pump_intents()
                 } else {
                     av->make_craft( rid, batch );
                 }
-                av_acted_since_tick[in.sid] = true;
+                av_mark_acted( in.sid );
                 av_send_status( in.sid );
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 mp_forward_new_messages( in.sid, msg_before );
@@ -3418,7 +3428,7 @@ void host_pump_intents()
                     g->mp_anchor_map_on( *av, true );
                     const std::size_t msg_before = Messages::size();
                     av->make_craft( av->lastrecipe, batch );
-                    av_acted_since_tick[in.sid] = true;
+                    av_mark_acted( in.sid );
                     av_send_status( in.sid );
                     av_send_session_picture( in.sid, av->pos_bub(), av );
                     mp_forward_new_messages( in.sid, msg_before );
@@ -3449,7 +3459,7 @@ void host_pump_intents()
                     av->fire_gun( tgt, shots );
                     av_move_pool[in.sid] = std::max( 0, av->get_moves() );
                     av->set_moves( av_move_pool[in.sid] );
-                    av_acted_since_tick[in.sid] = true;
+                    av_mark_acted( in.sid );
                     if( av_move_pool[in.sid] <= 0 && !netplay::long_wait_active() ) {
                         av_waiting_for_turn[in.sid] = true;
                         netplay::host_send_hover_to_sid( in.sid,
@@ -3500,6 +3510,7 @@ void host_note_world_turn()
         return;
     }
     host_region_sync();
+    host_clear_auto_turn();
     av_acted_since_tick.clear();
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
@@ -3585,6 +3596,27 @@ bool host_turn_blocked()
         return false;
     }
     return !av_all_acted();
+}
+
+bool host_consume_auto_turn()
+{
+    const bool blocked = host_turn_blocked();
+    const bool flag = mp_client_finished_order;
+    if( !flag ) {
+        return false;
+    }
+    // Only when the whole round is ready; otherwise the flag stays pending
+    // for the moment the last client gives its order.
+    if( blocked ) {
+        return false;
+    }
+    mp_client_finished_order = false;
+    return true;
+}
+
+void host_clear_auto_turn()
+{
+    mp_client_finished_order = false;
 }
 
 } // namespace netplay

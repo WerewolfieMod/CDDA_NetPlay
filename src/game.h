@@ -1147,7 +1147,8 @@ class game
     private:
         // Input related
         // Handles box showing items under mouse
-        bool handle_mouseview( input_context &ctxt, std::string &action );
+        bool handle_mouseview( input_context &ctxt, std::string &action,
+                               bool default_mode = false );
 
         // On-request draw functions
         void display_faction_epilogues();

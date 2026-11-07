@@ -583,13 +583,6 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
-    if( netplay::host_is_running() && netplay::mp_diag_enabled() ) {
-        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-            std::fprintf( f, "world turn begin\n" );
-            std::fclose( f );
-        }
-    }
-
     // DDA MP v4.0a-7: strict turn parity - do not advance the world until
     // every connected client gave its order this round. The earlier gate in
     // handle_action() ran AFTER the world had already ticked, which refilled
@@ -646,6 +639,14 @@ bool game::do_turn()
 #endif
         std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
         return false;
+    }
+
+    // DDA MP v4.0a-144: the round is ready and the last order came from a
+    // client while the host was idle. Spend the host turn as a wait instead
+    // of sitting in handle_action() until the host player presses a key, so
+    // world time (and the split regions) keep advancing for the clients.
+    if( netplay::host_consume_auto_turn() ) {
+        u.set_moves( 0 );
     }
 
     drain_renderer_recovery();

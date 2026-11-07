@@ -2452,7 +2452,7 @@ int game::inventory_item_menu( item_location locThisItem,
 
 // Checks input to see if mouse was moved and handles the mouse view box accordingly.
 // Returns true if input requires breaking out into a game action.
-bool game::handle_mouseview( input_context &ctxt, std::string &action )
+bool game::handle_mouseview( input_context &ctxt, std::string &action, bool default_mode )
 {
     std::optional<tripoint_bub_ms> liveview_pos;
 
@@ -2475,6 +2475,22 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
             netplay::host_pump_avatar_keys();
             netplay::host_pump_inventory_actions();
             netplay::host_pump_client_actions();
+            // DDA MP v4.0a-144: a client finished its order while the host is
+            // sitting at its own input prompt. Break the wait and let the
+            // turn loop auto-wait the host so time advances for the client.
+            if( default_mode &&
+                ( action == "TIMEOUT" || action == "MOUSE_MOVE" ) &&
+                netplay::host_consume_auto_turn() ) {
+                u.set_moves( 0 );
+                action = "TIMEOUT";
+                // TIMEOUT normally means "keep waiting for input" (this
+                // function returns true), which is exactly why the old code
+                // kept consuming client orders without ever leaving the input
+                // wait. Break the wait now: false lets get_player_input return
+                // and do_turn run the world turn with the auto-wait.
+                liveview.hide();
+                return false;
+            }
         }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,

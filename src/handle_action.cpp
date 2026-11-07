@@ -480,13 +480,13 @@ input_context game::get_player_input( std::string &action )
                 netplay::host_draw_long_wait_hint( 0 );
                 refresh_display();
             }
-        } while( handle_mouseview( ctxt, action ) && uquit != QUIT_WATCH
+        } while( handle_mouseview( ctxt, action, true ) && uquit != QUIT_WATCH
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
     } else {
         ctxt.set_timeout( netplay::long_wait_active() && netplay::host_session_count() > 0 ? 10 :
                           125 );
-        while( handle_mouseview( ctxt, action ) ) {
+        while( handle_mouseview( ctxt, action, true ) ) {
             if( netplay::long_wait_active() && netplay::host_session_count() > 0 ) {
                 netplay::host_draw_long_wait_hint( 0 );
                 refresh_display();
