@@ -2350,6 +2350,70 @@ static void mp_draw_aim_panel()
  * select-only cursor on its own map mirror; the host fires the avatar's
  * wielded gun at that offset with Character::fire_gun, so ballistics,
  * ammo, recoil and messages stay on the authoritative side. */
+/* DDA MP v4.0a-150: tile/creature info for the look cursor. Draws into the
+ * current ImGui overlay pass; the caller owns overlay_begin/end so this and the
+ * sidebar share one frame (a separate earlier frame was cleared by the later
+ * sidebar pass, which is why the panel never appeared). */
+static void mp_draw_look_overlay( const snapshot &snap )
+{
+    if( mp_cursor != mp_cursor_mode::look ) {
+        return;
+    }
+    std::vector<std::string> lines;
+    const int tx = snap.width / 2 + mp_cursor_dx;
+    const int ty = snap.height / 2 + mp_cursor_dy;
+    if( tx >= 0 && ty >= 0 && tx < snap.width && ty < snap.height ) {
+        lines.push_back( string_format( _( "Tile %d,%d" ), snap.origin_x + tx,
+                                        snap.origin_y + ty ) );
+        const size_t idx = static_cast<size_t>( ty ) * snap.width + tx;
+        if( idx < snap.tiles.size() ) {
+            const tile_cell &t = snap.tiles[idx];
+            if( !t.ter.empty() ) {
+                lines.push_back( _( "Terrain: " ) + t.ter );
+            }
+            if( !t.furn.empty() ) {
+                lines.push_back( _( "Furniture: " ) + t.furn );
+            }
+            if( !t.item.empty() ) {
+                const itype_id iid( t.item );
+                lines.push_back( _( "Item: " ) +
+                                 ( iid.is_valid() ? item::nname( iid ) : t.item ) );
+            }
+            if( !t.critter.empty() ) {
+                const mtype_id mid( t.critter );
+                lines.push_back( _( "Creature: " ) +
+                                 ( mid.is_valid() ? mid->nname() : t.critter ) );
+            }
+            if( !t.field.empty() ) {
+                lines.push_back( _( "Field: " ) + t.field );
+            }
+            if( !t.trap.empty() ) {
+                lines.push_back( _( "Trap: " ) + t.trap );
+            }
+            if( !t.graffiti.empty() ) {
+                lines.push_back( _( "Graffiti: " ) + t.graffiti );
+            }
+        }
+    } else {
+        lines.push_back( _( "Outside the frame" ) );
+    }
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const float pad = ImGui::GetFontSize() * 0.6f;
+    const float line_h = ImGui::GetTextLineHeight();
+    float w = 0.0f;
+    for( const std::string &line : lines ) {
+        w = std::max( w, ImGui::CalcTextSize( line.c_str() ).x );
+    }
+    const float h = lines.size() * line_h + 2 * pad;
+    const ImVec2 p0( 8.0f, 8.0f );
+    dl->AddRectFilled( p0, ImVec2( p0.x + w + 2 * pad, p0.y + h ),
+                       IM_COL32( 0, 0, 0, 210 ), 4.0f );
+    for( size_t i = 0; i < lines.size(); i++ ) {
+        dl->AddText( ImVec2( p0.x + pad, p0.y + pad + i * line_h ),
+                     IM_COL32( 235, 235, 235, 255 ), lines[i].c_str() );
+    }
+}
+
 static void mp_run_client_fire()
 {
     avatar &cli = get_avatar();
@@ -4507,80 +4571,6 @@ void run_view_loop()
                                 // drawn tiles for one frame - the flicker seen
                                 // while input arrives in bursts. Keep the frame
                                 // single-pass: adaptors first, canvas last.
-                                if( mp_throw_active ) {
-                                    netplay::overlay_begin();
-                                    mp_draw_aim_panel();
-                                    netplay::overlay_end();
-                                }
-                                if( mp_cursor == mp_cursor_mode::look ) {
-                                    // DDA MP v4.0a-150: tile/creature info for
-                                    // the looked-at cell, drawn over the canvas
-                                    // instead of blocking in the stock UI.
-                                    std::vector<std::string> lines;
-                                    const int tx = snap.width / 2 + mp_cursor_dx;
-                                    const int ty = snap.height / 2 + mp_cursor_dy;
-                                    if( tx >= 0 && ty >= 0 && tx < snap.width &&
-                                        ty < snap.height ) {
-                                        lines.push_back( string_format(
-                                                             _( "Tile %d,%d" ),
-                                                             snap.origin_x + tx,
-                                                             snap.origin_y + ty ) );
-                                        const size_t idx =
-                                            static_cast<size_t>( ty ) * snap.width + tx;
-                                        if( idx < snap.tiles.size() ) {
-                                            const tile_cell &t = snap.tiles[idx];
-                                            if( !t.ter.empty() ) {
-                                                lines.push_back( _( "Terrain: " ) + t.ter );
-                                            }
-                                            if( !t.furn.empty() ) {
-                                                lines.push_back( _( "Furniture: " ) + t.furn );
-                                            }
-                                            if( !t.item.empty() ) {
-                                                const itype_id iid( t.item );
-                                                lines.push_back( _( "Item: " ) +
-                                                                 ( iid.is_valid() ?
-                                                                   item::nname( iid ) : t.item ) );
-                                            }
-                                            if( !t.critter.empty() ) {
-                                                const mtype_id mid( t.critter );
-                                                lines.push_back( _( "Creature: " ) +
-                                                                 ( mid.is_valid() ?
-                                                                   mid->nname() : t.critter ) );
-                                            }
-                                            if( !t.field.empty() ) {
-                                                lines.push_back( _( "Field: " ) + t.field );
-                                            }
-                                            if( !t.trap.empty() ) {
-                                                lines.push_back( _( "Trap: " ) + t.trap );
-                                            }
-                                            if( !t.graffiti.empty() ) {
-                                                lines.push_back( _( "Graffiti: " ) + t.graffiti );
-                                            }
-                                        }
-                                    } else {
-                                        lines.push_back( _( "Outside the frame" ) );
-                                    }
-                                    netplay::overlay_begin();
-                                    ImDrawList *dl = ImGui::GetForegroundDrawList();
-                                    const float pad = ImGui::GetFontSize() * 0.6f;
-                                    const float line_h = ImGui::GetTextLineHeight();
-                                    float w = 0.0f;
-                                    for( const std::string &line : lines ) {
-                                        w = std::max( w, ImGui::CalcTextSize( line.c_str() ).x );
-                                    }
-                                    const float h = lines.size() * line_h + 2 * pad;
-                                    const ImVec2 p0( 8.0f, 8.0f );
-                                    dl->AddRectFilled( p0, ImVec2( p0.x + w + 2 * pad,
-                                                                   p0.y + h ),
-                                                       IM_COL32( 0, 0, 0, 210 ), 4.0f );
-                                    for( size_t i = 0; i < lines.size(); i++ ) {
-                                        dl->AddText( ImVec2( p0.x + pad,
-                                                             p0.y + pad + i * line_h ),
-                                                     IM_COL32( 235, 235, 235, 255 ),
-                                                     lines[i].c_str() );
-                                    }
-                                    netplay::overlay_end();
-                                }
                                 mp_frame_trace( "end ok" );
                             }
                         }
@@ -4660,6 +4650,10 @@ void run_view_loop()
             // minimap and the character-sheet fallback.
             netplay::overlay_begin();
             mp_draw_sidebar_overlay();
+            if( mp_throw_active ) {
+                mp_draw_aim_panel();
+            }
+            mp_draw_look_overlay( snap );
             netplay::overlay_end();
 
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
