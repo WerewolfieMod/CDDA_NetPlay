@@ -2466,7 +2466,12 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             netplay::client_send_intent( "recraft", 0, {}, std::string() );
             break;
         case ACTION_FIRE:
+        case ACTION_FIRE_BURST:
             mp_run_client_fire();
+            break;
+        case ACTION_THROW:
+        case ACTION_THROW_WIELDED:
+            mp_run_host_inventory( inv_text );
             break;
         // DDA MP v4.0a-133: the item-action hotkeys open the inventory; the
         // row menu exposes drop/eat/wear/read/wield/use for the chosen item.
@@ -4835,7 +4840,17 @@ void run_view_loop()
                             netplay::client_send_intent( "recraft", 0, {}, std::string() );
                             continue;
                         case ACTION_FIRE:
+                        case ACTION_FIRE_BURST:
                             mp_run_client_fire();
+                            continue;
+                        case ACTION_THROW:
+                        case ACTION_THROW_WIELDED:
+                            // Vanilla t opens the inventory to pick something
+                            // to throw; the item menu's throw action starts the
+                            // client-side targeting. Without this case the key
+                            // was sent as an unknown host action and nothing
+                            // happened on the client.
+                            mp_run_host_inventory( mp_inv_text );
                             continue;
                         case ACTION_DROP:
                         case ACTION_EAT:
