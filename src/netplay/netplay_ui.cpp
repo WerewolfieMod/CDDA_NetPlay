@@ -2369,7 +2369,9 @@ static void mp_draw_cursor_info( const snapshot &snap )
         return;
     }
     map &here = get_map();
-    const tripoint_abs_ms ap( snap.origin_x + tx, snap.origin_y + ty, snap.origin_z );
+    // snap.origin_x/y is the pivot cell (the frame centre), not its top-left.
+    const tripoint_abs_ms ap( snap.origin_x + tx - snap.width / 2,
+                              snap.origin_y + ty - snap.height / 2, snap.origin_z );
     const tripoint_bub_ms lp = here.get_bub( ap );
     if( !here.inbounds( lp ) ) {
         return;
@@ -4718,15 +4720,14 @@ void run_view_loop()
                 const int ty = snap.height / 2 + rdy;
                 if( have_target && tx >= 0 && ty >= 0 && tx < snap.width &&
                     ty < snap.height && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
-                    // Tile centers sit at canvas_center + (cell - size/2) * tile.
-                    // The old -0.5 put the frame half a tile up/left, i.e.
-                    // between four tiles.
+                    // The renderer places a cell's top-left at
+                    // canvas_center + (cell - size/2) * tile; the cursor sprite
+                    // covers that whole cell. Subtracting another half tile put
+                    // the brackets on the intersection of four cells.
                     const float px = mp_canvas_cx +
-                                     ( tx - snap.width / 2.0f ) * mp_canvas_tw -
-                                     mp_canvas_tw * 0.5f;
+                                     ( tx - snap.width / 2.0f ) * mp_canvas_tw;
                     const float py = mp_canvas_cy +
-                                     ( ty - snap.height / 2.0f ) * mp_canvas_th -
-                                     mp_canvas_th * 0.5f;
+                                     ( ty - snap.height / 2.0f ) * mp_canvas_th;
                     const float w = mp_canvas_tw;
                     const float h = mp_canvas_th;
                     const float arm = std::max( 5.0f, std::min( w, h ) * 0.25f );

@@ -778,6 +778,18 @@ bool game::do_turn()
         }
         invalidate_main_ui_adaptor();
         ui_manager::redraw();
+        // The host has finished its input; show the same waiting hint as before
+        // while the clients spend their remaining action points.
+        const int mp_wait_w = std::min( TERMX, 48 );
+        static catacurses::window mp_wait_win;
+        if( !mp_wait_win ) {
+            mp_wait_win = catacurses::newwin( 1, mp_wait_w,
+                                              point( std::max( 0, ( TERMX - mp_wait_w ) / 2 ), 0 ) );
+        }
+        werase( mp_wait_win );
+        mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
+        wnoutrefresh( mp_wait_win );
+        netplay::host_draw_long_wait_hint( 1 );
         refresh_display();
         std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
         return false;
