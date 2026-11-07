@@ -4858,6 +4858,17 @@ void run_view_loop()
                                  TERMX, TERMY, font_px_w, font_px_h ) );
                 }
             }
+            // DDA MP test hook: put the client into long wait/AFK so the host
+            // can advance rounds without it.
+            if( const char *test_afk = std::getenv( "DDA_MP_TEST_CLIENT_AFK" );
+                test_afk != nullptr && test_afk[0] != '\0' ) {
+                static bool mp_test_afk_once = false;
+                if( !mp_test_afk_once ) {
+                    mp_test_afk_once = true;
+                    netplay::client_send_afk( true );
+                    mp_inv_log( "test: client afk" );
+                }
+            }
             // DDA MP test hook: draw the throw reticle/info without a real
             // throw, so an automated run can verify the trajectory dots.
             if( const char *test_throw = std::getenv( "DDA_MP_TEST_CLIENT_THROW" );

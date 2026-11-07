@@ -3730,6 +3730,11 @@ void host_mark_input_done()
     mp_host_input_done = true;
 }
 
+bool host_input_done()
+{
+    return mp_host_input_done;
+}
+
 bool host_round_done()
 {
     if( !host_is_running() || host_session_count() == 0 ) {

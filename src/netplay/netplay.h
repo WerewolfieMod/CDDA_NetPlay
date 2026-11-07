@@ -621,6 +621,8 @@ bool host_turn_blocked();
 bool host_round_done();
 /// Mark that the host player gave input in the current round.
 void host_mark_input_done();
+/// Whether the host player already gave input in the current round.
+bool host_input_done();
 /// DDA MP v4.0a-144: a client finished its order while the host idled. The
 /// host turn loop consumes this as an automatic wait, so time advances even
 /// when the host player does not press a key. False while the round is still

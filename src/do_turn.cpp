@@ -776,34 +776,79 @@ bool game::do_turn()
     // host_round_done().
     if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
         !netplay::host_round_done() ) {
-        netplay::host_pump_snapshot_requests();
-        netplay::host_pump_avatar_ops();
-        netplay::host_pump_avatar_keys();
-        netplay::host_pump_inventory_actions();
-        netplay::host_pump_client_actions();
-        static auto mp_last_wait_snap = std::chrono::steady_clock::now();
-        const auto mp_wait_now = std::chrono::steady_clock::now();
-        if( mp_wait_now - mp_last_wait_snap > std::chrono::milliseconds( 250 ) ) {
-            mp_last_wait_snap = mp_wait_now;
-            netplay::host_game_tick();
-        }
-        invalidate_main_ui_adaptor();
-        ui_manager::redraw();
-        // The host has finished its input; show the same waiting hint as before
-        // while the clients spend their remaining action points.
-        const int mp_wait_w = std::min( TERMX, 48 );
+        // DDA MP v4.0a-158: wait inside this call instead of returning to the
+        // main loop. Returning re-entered do_turn, which incremented the
+        // calendar and re-ran the pre-input pass on every iteration, so time
+        // raced while one side was still entering its orders.
         static catacurses::window mp_wait_win;
+        const int mp_wait_w = std::min( TERMX, 48 );
         if( !mp_wait_win ) {
             mp_wait_win = catacurses::newwin( 1, mp_wait_w,
                                               point( std::max( 0, ( TERMX - mp_wait_w ) / 2 ), 0 ) );
         }
-        werase( mp_wait_win );
-        mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
-        wnoutrefresh( mp_wait_win );
-        netplay::host_draw_long_wait_hint( 1 );
-        refresh_display();
-        std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
-        return false;
+        static auto mp_host_key_poll = std::chrono::steady_clock::now();
+        static auto mp_wait_hold_log = std::chrono::steady_clock::now();
+        // Test forensics: the calendar must not move while this loop waits.
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "round wait begin turn=%d\n",
+                              to_turn<int>( calendar::turn ) );
+                std::fclose( f );
+            }
+        }
+        while( !netplay::host_round_done() ) {
+            netplay::host_pump_snapshot_requests();
+            netplay::host_pump_avatar_ops();
+            netplay::host_pump_avatar_keys();
+            netplay::host_pump_inventory_actions();
+            netplay::host_pump_client_actions();
+            inp_mngr.pump_events();
+            static auto mp_last_wait_snap = std::chrono::steady_clock::now();
+            const auto mp_wait_now = std::chrono::steady_clock::now();
+            if( mp_wait_now - mp_last_wait_snap > std::chrono::milliseconds( 250 ) ) {
+                mp_last_wait_snap = mp_wait_now;
+                netplay::host_game_tick();
+            }
+            if( netplay::mp_diag_enabled() &&
+                mp_wait_now - mp_wait_hold_log > std::chrono::seconds( 2 ) ) {
+                mp_wait_hold_log = mp_wait_now;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "round wait hold turn=%d\n",
+                                  to_turn<int>( calendar::turn ) );
+                    std::fclose( f );
+                }
+            }
+            // A host with no action points still has to give input for this
+            // round; poll its keyboard here, since the normal input pass ran.
+            const auto mp_wait_key_now = std::chrono::steady_clock::now();
+            if( !netplay::host_input_done() &&
+                mp_wait_key_now - mp_host_key_poll > std::chrono::milliseconds( 100 ) ) {
+                mp_host_key_poll = mp_wait_key_now;
+                if( handle_key_blocking_activity() ) {
+                    netplay::host_mark_input_done();
+                }
+            }
+            if( is_game_over() ) {
+                return turn_handler::cleanup_at_end();
+            }
+            invalidate_main_ui_adaptor();
+            ui_manager::redraw();
+            // Show the waiting hint while the clients spend their remaining
+            // action points.
+            werase( mp_wait_win );
+            mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
+            wnoutrefresh( mp_wait_win );
+            netplay::host_draw_long_wait_hint( 1 );
+            refresh_display();
+            std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
+        }
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "round wait end turn=%d\n",
+                              to_turn<int>( calendar::turn ) );
+                std::fclose( f );
+            }
+        }
     }
 
     if( driving_view_offset.x() != 0 || driving_view_offset.y() != 0 ) {
