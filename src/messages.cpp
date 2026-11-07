@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <deque>
 #include <iterator>
 #include <memory>
@@ -132,6 +133,9 @@ class messages_impl
         std::vector<game_message> cooldown_templates; // Message cooldown
         time_point curmes = calendar::turn_zero; // The last-seen message.
         bool active = true;
+        // DDA MP v4.0a-160: monotonic append counter; size() can stay the same
+        // when MESSAGE_LIMIT rotates old entries out.
+        std::size_t added_count = 0;
 
         bool has_undisplayed_messages() const {
             return !messages.empty() && messages.back().turn() > curmes;
@@ -209,6 +213,7 @@ class messages_impl
             }
 
             messages.emplace_back( m );
+            ++added_count;
         }
 
         /** Check if the current message needs to be prevented (hidden) or not from being displayed in the side bar.
@@ -509,6 +514,21 @@ void Messages::deactivate()
 size_t Messages::size()
 {
     return player_messages.messages.size();
+}
+
+size_t Messages::generation()
+{
+    return player_messages.added_count;
+}
+
+size_t Messages::remove_last( const size_t count )
+{
+    std::deque<game_message> &msgs = player_messages.messages;
+    const size_t removed = std::min( count, msgs.size() );
+    if( removed > 0 ) {
+        msgs.erase( msgs.end() - static_cast<std::ptrdiff_t>( removed ), msgs.end() );
+    }
+    return removed;
 }
 
 bool Messages::has_undisplayed_messages()

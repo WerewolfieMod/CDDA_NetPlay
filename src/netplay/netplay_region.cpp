@@ -33,6 +33,7 @@
 #include "calendar.h"
 #include "creature_tracker.h"
 #include "game.h"
+#include "messages.h"
 #include "json.h"
 #include "json_loader.h"
 #include "map.h"
@@ -458,7 +459,11 @@ void host_tick_split_regions( const std::function<void( Character & )> &tick )
                 std::fclose( f );
             }
         }
+        // The tick runs for this session's bubble: its messages belong to
+        // that client, not to the host's log.
+        const std::size_t msg_generation = Messages::generation();
         tick( *viewer );
+        netplay::host_forward_new_messages( job.first, msg_generation );
     }
 }
 

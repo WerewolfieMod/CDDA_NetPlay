@@ -3478,81 +3478,15 @@ static void mp_queue_native_cursor( const snapshot & )
 }
 #endif
 
-/* DDA MP v4.0a-115: the sidebar itself, drawn by the game's own panel code
- * for the client's character mirror. The host's build_sidebar_snapshot skips
- * exactly the same panels (message log and creature widgets), so both sides
- * show the same widget set; the client keeps its own log below them. */
-struct mp_sidebar_panel {
-    const window_panel *panel = nullptr;
-    int y = 0;
-    int h = 0;
-};
-
-static std::vector<mp_sidebar_panel> mp_native_sidebar_panels()
-{
-    std::vector<mp_sidebar_panel> out;
-    panel_manager &mgr = panel_manager::get_manager();
-    int y = 0;
-    for( const window_panel &p : mgr.get_current_layout().panels() ) {
-        if( !p.render() ) {
-            continue;
-        }
-        // Height -2 is the message log; it belongs to the client's own log.
-        if( p.get_height() == -2 ) {
-            continue;
-        }
-        // Widget-less panels (the message-log placeholder) span the whole
-        // terminal and would black out the map if drawn as a sidebar block.
-        if( p.get_widget().is_null() ) {
-            continue;
-        }
-        const int h = std::min( p.get_height(), TERMY - y );
-        if( h <= 0 ) {
-            break;
-        }
-        const std::string wid = p.get_widget().str();
-        if( wid.find( "monster" ) != std::string::npos ||
-            wid.find( "creature" ) != std::string::npos ||
-            wid.find( "critter" ) != std::string::npos ||
-            wid.find( "npc" ) != std::string::npos ) {
-            // DDA MP v4.0a-147: the host draws this block, so reserve its
-            // rows even though the client does not paint the widget. Without
-            // the reservation the client log/minimap started h rows too high.
-            y += h;
-            continue;
-        }
-        if( p.toggle && y + h <= TERMY - 14 ) {
-            out.push_back( { &p, y, h } );
-        }
-        y += h;
-    }
-    return out;
-}
-
-static int mp_native_sidebar_rows()
-{
-    // Count every rendered panel, including the monster/critter widgets the
-    // client reserves but does not paint. This is the row where the host's
-    // message log starts.
-    panel_manager &mgr = panel_manager::get_manager();
-    int y = 0;
-    for( const window_panel &p : mgr.get_current_layout().panels() ) {
-        if( !p.render() || p.get_height() == -2 || p.get_widget().is_null() ) {
-            continue;
-        }
-        const int h = std::min( p.get_height(), TERMY - y );
-        if( h <= 0 ) {
-            break;
-        }
-        y += h;
-    }
-    return y;
-}
+/* DDA MP v4.0a-115/160: the sidebar itself, drawn by the game's own panel
+ * code for the client's character mirror. The loop below mirrors
+ * game::draw_panels(): spacer rows, disabled panels take no space, and a
+ * panel whose draw returns a negative line count reclaims those rows (the
+ * client used to keep the reserved height and left blank gaps). */
+static int mp_native_sidebar_used_rows = 0;
 
 static int mp_native_sidebar_width()
 {
-    // Width is shared by the drawn and reserved panels; the log starts at
-    // the same x on both sides.
     panel_manager &mgr = panel_manager::get_manager();
     int width = 0;
     for( const window_panel &p : mgr.get_current_layout().panels() ) {
@@ -3583,18 +3517,39 @@ static void mp_draw_native_sidebar()
     // character the widgets' global math conditions see.
     avatar &you = get_avatar();
     const bool right = get_option<std::string>( "SIDEBAR_POSITION" ) == "right";
-    const std::vector<mp_sidebar_panel> panels = mp_native_sidebar_panels();
-    for( const mp_sidebar_panel &e : panels ) {
-        const int w = e.panel->get_width();
+    const int spacer = get_option<bool>( "SIDEBAR_SPACERS" ) ? 1 : 0;
+    int y = 0;
+    for( const window_panel &panel : panel_manager::get_manager().get_current_layout().panels() ) {
+        if( !panel.render() ) {
+            continue;
+        }
+        // Widget-less panels are the message log and the native minimap; the
+        // client paints its own log/minimap in the space that follows.
+        if( panel.get_widget().is_null() ) {
+            continue;
+        }
+        int h = std::min( panel.get_height(), TERMY - y );
+        // Height -2 is the message log: the client paints its own log/minimap
+        // in the space that follows the panels.
+        if( h == -2 ) {
+            continue;
+        }
+        h += spacer;
+        if( !panel.toggle || h <= 0 ) {
+            continue;
+        }
+        const int w = panel.get_width();
         if( w <= 0 || w > TERMX ) {
             continue;
         }
-        catacurses::window win = catacurses::newwin( e.h, w,
-                                 point( right ? TERMX - w : 0, e.y ) );
+        catacurses::window win = catacurses::newwin( h, w,
+                                 point( right ? TERMX - w : 0, y ) );
         werase( win );
-        e.panel->draw( { you, win, e.panel->get_widget() } );
+        h += panel.draw( { you, win, panel.get_widget() } );
         wnoutrefresh( win );
+        y += h;
     }
+    mp_native_sidebar_used_rows = y;
 }
 
 /* Black column behind the native panels. It is painted before the UI redraw,
@@ -3721,6 +3676,7 @@ void run_view_loop()
             mp_log.erase( mp_log.begin() );
         }
         mp_log.push_back( { s, type, mp_cur_turn } );
+        mp_inv_log( "clientlog: " + s );
     };
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
@@ -3770,7 +3726,7 @@ void run_view_loop()
             // rows the panels occupy.
             int draw_y = 0;
             if( mp_panels_native ) {
-                draw_y = mp_native_sidebar_rows();
+                draw_y = mp_native_sidebar_used_rows;
             } else {
             dl->AddRectFilled( ImVec2( x0 - cw, 0.0f ), io.DisplaySize, IM_COL32( 0, 0, 0, 210 ) );
             // Real used height: the frame is TERMY rows tall, most of them empty.
@@ -3836,7 +3792,7 @@ void run_view_loop()
             // window), so convert their row count to pixels with the grid's
             // own row height instead of the ImGui line height.
             const float mp_row_h = io.DisplaySize.y / static_cast<float>( std::max( 1, TERMY ) );
-            float ly = mp_panels_native ? ( draw_y + 2 ) * mp_row_h : draw_y * ch;
+            float ly = mp_panels_native ? draw_y * mp_row_h : draw_y * ch;
             // DDA MP v4.0a-13: creatures this character can see (own list).
             // DDA MP v4.0a-77: the host's compass legend is now computed from
             // this character, so the sidebar already carries the list. The old
@@ -5032,6 +4988,21 @@ void run_view_loop()
                     mp_test_afk_once = true;
                     netplay::client_send_afk( true );
                     mp_inv_log( "test: client afk" );
+                }
+            }
+            // DDA MP test hook: send one engine action from the client after
+            // the first picture, so automated runs can exercise the host's
+            // per-action message routing (smash emits action messages).
+            if( const char *test_action = std::getenv( "DDA_MP_TEST_CLIENT_ACTION" );
+                test_action != nullptr && test_action[0] != '\0' ) {
+                static bool mp_test_action_once = false;
+                if( !mp_test_action_once && mp_have_picture ) {
+                    mp_test_action_once = true;
+                    const std::string action_name( test_action );
+                    if( action_name == "smash" ) {
+                        netplay::client_send_client_action( ACTION_SMASH );
+                    }
+                    mp_inv_log( "test: client action " + action_name );
                 }
             }
             // DDA MP test hook: draw the throw reticle/info without a real

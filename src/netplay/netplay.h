@@ -415,6 +415,10 @@ bool host_relay_character_message( const Character *who, const std::string &text
 void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,
                               int msg_type );
 void host_relay_sees_message( const Creature &target, const std::string &text, int msg_type );
+/// DDA MP v4.0a-160: forward every message appended since `before_generation`
+/// to `sid` and remove it from the host's log (a session avatar's action ran,
+/// not the host player's).
+void host_forward_new_messages( int sid, std::size_t before_generation );
 /// DDA MP v4.0a-139 (multi-region foundation): preserve live monsters when the
 /// reality bubble switches away from their area, and bring them back when it
 /// returns. Without this, walking far despawns everything left behind.

@@ -35,6 +35,13 @@ void add_msg( const game_message_params &params, std::string msg );
 void clear_messages();
 void deactivate();
 size_t size();
+/// Monotonic counter of messages ever appended to the log (survives the
+/// MESSAGE_LIMIT rotation, unlike size()). Used to forward exactly the
+/// messages a host action produced to the acting client.
+size_t generation();
+/// Drop the newest `count` messages from the host's log. Client action
+/// messages are forwarded to that client and must not stay on the host.
+size_t remove_last( size_t count );
 bool has_undisplayed_messages();
 void display_messages();
 void display_messages( const catacurses::window &ipk_target, int left, int top, int right,

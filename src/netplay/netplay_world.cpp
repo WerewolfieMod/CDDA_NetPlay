@@ -978,6 +978,22 @@ void host_game_tick()
     // DDA MP v4.0a-142: create/follow split regions before the frames are
     // built, so a player that walked away already has its own map.
     host_region_sync();
+    // DDA MP test hook: one host-only log line, to verify it never reaches
+    // the clients.
+    if( const char *test_mark = std::getenv( "DDA_MP_TEST_HOST_MARK" );
+        test_mark != nullptr && test_mark[0] != '\0' ) {
+        static bool mp_test_mark_done = false;
+        if( !mp_test_mark_done ) {
+            mp_test_mark_done = true;
+            add_msg( "HOSTMARK" );
+            if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "test: host mark\n" );
+                    std::fclose( f );
+                }
+            }
+        }
+    }
     // DDA MP v4.0a-143 test hook: let an automated run exercise the region
     // tick without driving the host player. It calls exactly the same path the
     // world turn uses.
@@ -2903,17 +2919,39 @@ static void mp_send_pickup_listing( int sid, npc &av,
 static void mp_send_pickup_listing( int sid, npc &av,
                                     const std::vector<tripoint_bub_ms> &tiles );
 
-static void mp_forward_new_messages( int sid, std::size_t before )
+static void mp_forward_new_messages( int sid, std::size_t before_generation )
 {
-    const std::size_t after = Messages::size();
-    if( after <= before ) {
+    const std::size_t after_generation = Messages::generation();
+    if( after_generation <= before_generation ) {
+        return;
+    }
+    std::size_t count = after_generation - before_generation;
+    // The rotating MESSAGE_LIMIT buffer may have dropped some of them; only
+    // the newest `size()` entries still exist.
+    count = std::min( count, Messages::size() );
+    if( count == 0 ) {
         return;
     }
     const std::vector<std::pair<std::string, int>> recent =
-        Messages::recent_messages_typed( after - before );
+        Messages::recent_messages_typed( count );
     for( const auto &m : recent ) {
         netplay::host_send_event_to_sid( sid, m.first, m.second );
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "forward sid=%d msg=%s\n", sid, m.first.c_str() );
+                std::fclose( f );
+            }
+        }
     }
+    // DDA MP v4.0a-160: the action ran for the session avatar, not for the
+    // host player. Forward the lines and take them back out of the host's
+    // log instead of painting another player's events into it.
+    Messages::remove_last( count );
+}
+
+void host_forward_new_messages( int sid, std::size_t before_generation )
+{
+    mp_forward_new_messages( sid, before_generation );
 }
 
 void host_pump_client_actions()
@@ -3162,10 +3200,17 @@ void host_pump_client_actions()
                         sid, _( "There's nothing to smash here." ), static_cast<int>( m_info ) );
                     break;
                 }
-                const std::size_t msg_before = Messages::size();
+                const std::size_t msg_before = Messages::generation();
                 const int move_cost = !av->is_armed() ? 80 :
                                       static_cast<int>( av->get_wielded_item()->attack_time( *av ) * 0.8 );
                 const bash_params br = here.bash( *target, av->smash_ability(), false, false, false );
+                // DDA MP test hook: a plain global add_msg() inside a client
+                // action must be forwarded to that client and removed from the
+                // host's log.
+                if( const char *test_global = std::getenv( "DDA_MP_TEST_GLOBAL_MSG" );
+                    test_global != nullptr && test_global[0] != '\0' ) {
+                    add_msg( "GLOBALCLIENTMSG" );
+                }
                 av->mod_moves( -move_cost );
                 auto pool_it = av_move_pool.find( sid );
                 if( pool_it == av_move_pool.end() ) {
@@ -3273,7 +3318,7 @@ void host_pump_client_actions()
                         static_cast<int>( m_info ) );
                     break;
                 }
-                const std::size_t msg_before = Messages::size();
+                const std::size_t msg_before = Messages::generation();
                 const tripoint_bub_ms p = *target;
                 if( here.has_furn( p ) && here.furn( p ).obj().can_examine( p ) ) {
                     here.furn( p ).obj().examine( *av, p );
@@ -3520,7 +3565,7 @@ void host_pump_intents()
             } else {
                 const int batch = in.args.empty() ? 1 : std::max( 1, in.args[0] );
                 g->mp_anchor_map_on( *av, true );
-                const std::size_t msg_before = Messages::size();
+                const std::size_t msg_before = Messages::generation();
                 if( in.action == "craft.all" ) {
                     av->make_all_craft( rid, batch, std::nullopt );
                 } else {
@@ -3544,7 +3589,7 @@ void host_pump_intents()
                 } else {
                     const int batch = std::max( 1, av->last_batch );
                     g->mp_anchor_map_on( *av, true );
-                    const std::size_t msg_before = Messages::size();
+                    const std::size_t msg_before = Messages::generation();
                     av->make_craft( av->lastrecipe, batch );
                     av_mark_acted( in.sid );
                     av_send_status( in.sid );
@@ -3573,7 +3618,7 @@ void host_pump_intents()
                 const int shots = std::max( 1, in.args[2] );
                 const item_location gun = av->get_wielded_item();
                 if( gun && gun->is_gun() ) {
-                    const std::size_t msg_before = Messages::size();
+                    const std::size_t msg_before = Messages::generation();
                     av->fire_gun( tgt, shots );
                     av_move_pool[in.sid] = std::max( 0, av->get_moves() );
                     av->set_moves( av_move_pool[in.sid] );
