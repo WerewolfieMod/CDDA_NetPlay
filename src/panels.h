@@ -142,11 +142,15 @@ class panel_manager
 
         void init();
 
+        /// DDA MP v4.0a-147: the panel layout is part of the netplay WELCOME
+        /// state; the host serializes it and the client applies the same
+        /// layout so the native sidebar and its log start row match.
+        void serialize( JsonOut &json );
+        void deserialize( const JsonArray &ja );
+
     private:
         bool save();
         bool load();
-        void serialize( JsonOut &json );
-        void deserialize( const JsonArray &ja );
         // update the screen offsets so the game knows how to adjust the main window
         void update_offsets( int x );
 

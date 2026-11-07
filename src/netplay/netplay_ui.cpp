@@ -3223,16 +3223,20 @@ static std::vector<mp_sidebar_panel> mp_native_sidebar_panels()
         if( p.get_widget().is_null() ) {
             continue;
         }
+        const int h = std::min( p.get_height(), TERMY - y );
+        if( h <= 0 ) {
+            break;
+        }
         const std::string wid = p.get_widget().str();
         if( wid.find( "monster" ) != std::string::npos ||
             wid.find( "creature" ) != std::string::npos ||
             wid.find( "critter" ) != std::string::npos ||
             wid.find( "npc" ) != std::string::npos ) {
+            // DDA MP v4.0a-147: the host draws this block, so reserve its
+            // rows even though the client does not paint the widget. Without
+            // the reservation the client log/minimap started h rows too high.
+            y += h;
             continue;
-        }
-        const int h = std::min( p.get_height(), TERMY - y );
-        if( h <= 0 ) {
-            break;
         }
         if( p.toggle && y + h <= TERMY - 14 ) {
             out.push_back( { &p, y, h } );
@@ -3244,18 +3248,35 @@ static std::vector<mp_sidebar_panel> mp_native_sidebar_panels()
 
 static int mp_native_sidebar_rows()
 {
-    int rows = 0;
-    for( const mp_sidebar_panel &e : mp_native_sidebar_panels() ) {
-        rows = std::max( rows, e.y + e.h );
+    // Count every rendered panel, including the monster/critter widgets the
+    // client reserves but does not paint. This is the row where the host's
+    // message log starts.
+    panel_manager &mgr = panel_manager::get_manager();
+    int y = 0;
+    for( const window_panel &p : mgr.get_current_layout().panels() ) {
+        if( !p.render() || p.get_height() == -2 || p.get_widget().is_null() ) {
+            continue;
+        }
+        const int h = std::min( p.get_height(), TERMY - y );
+        if( h <= 0 ) {
+            break;
+        }
+        y += h;
     }
-    return rows;
+    return y;
 }
 
 static int mp_native_sidebar_width()
 {
+    // Width is shared by the drawn and reserved panels; the log starts at
+    // the same x on both sides.
+    panel_manager &mgr = panel_manager::get_manager();
     int width = 0;
-    for( const mp_sidebar_panel &e : mp_native_sidebar_panels() ) {
-        width = std::max( width, e.panel->get_width() );
+    for( const window_panel &p : mgr.get_current_layout().panels() ) {
+        if( !p.render() || p.get_height() == -2 || p.get_widget().is_null() ) {
+            continue;
+        }
+        width = std::max( width, p.get_width() );
     }
     return width;
 }
@@ -4498,6 +4519,26 @@ void run_view_loop()
                 wnoutrefresh( mp_hint_win );
             }
 
+            // DDA MP v4.0a-147: adopt the host's panel layout before the
+            // native sidebar is built, so its height and the log start row
+            // match the host instead of the client's local panel options.
+            {
+                static std::string mp_applied_panel_layout;
+                std::string mp_host_layout;
+                if( netplay::client_panel_layout( mp_host_layout ) &&
+                    mp_host_layout != mp_applied_panel_layout ) {
+                    mp_inv_log( string_format( "panels: got len=%d",
+                                               static_cast<int>( mp_host_layout.size() ) ) );
+                    try {
+                        JsonValue jv = json_loader::from_string( mp_host_layout );
+                        panel_manager::get_manager().deserialize( jv.get_array() );
+                        mp_applied_panel_layout = mp_host_layout;
+                        mp_inv_log( "panels: host layout applied" );
+                    } catch( ... ) {
+                        // Malformed layout: keep the client's own.
+                    }
+                }
+            }
             // DDA MP v4.0a-115: draw the mirrored sidebar with the game's own
             // panel renderer, after the map so it always sits on top.
             if( mp_native_render_enabled() ) {

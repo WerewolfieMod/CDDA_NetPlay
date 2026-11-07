@@ -354,6 +354,10 @@ struct netplay_state {
     std::mutex sidebar_mutex;
     sidebar_frame sidebar;
     bool have_sidebar = false;
+    /* DDA MP v4.0a-147: host panel_manager layout json. */
+    std::mutex panel_layout_mutex;
+    std::string panel_layout;
+    bool have_panel_layout = false;
     /* DDA MP v4.0a-11: event lines for the client's own message log. */
     std::mutex event_mutex;
     std::deque<std::pair<int, std::string>> client_events;
@@ -2063,6 +2067,25 @@ bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb )
     return true;
 }
 
+bool host_send_panel_layout_to_sid( int sid, const std::string &json )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    // The layout json is several KB; put_str8 truncates at 255 bytes.
+    put_str( p, json );
+    if( !send_all( it->second, encode_frame( frame::PANEL_LAYOUT, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    return true;
+}
+
 bool host_send_sheet_to_sid( int sid, const std::string &text )
 {
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
@@ -2531,6 +2554,16 @@ static void client_run( socket_t sock )
                     state.have_sidebar = true;
                 }
             }
+        } else if( op == frame::PANEL_LAYOUT ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            const std::string json = r.get_str();
+            if( r.ok && !json.empty() ) {
+                std::lock_guard<std::mutex> lk( state.panel_layout_mutex );
+                state.panel_layout = json;
+                state.have_panel_layout = true;
+            }
         } else if( op == frame::EVENT_TEXT ) {
             reader r;
             r.data = payload.data();
@@ -2801,6 +2834,16 @@ bool client_sidebar( sidebar_frame &out )
         return false;
     }
     out = state.sidebar;
+    return true;
+}
+
+bool client_panel_layout( std::string &out )
+{
+    std::lock_guard<std::mutex> lk( state.panel_layout_mutex );
+    if( !state.have_panel_layout ) {
+        return false;
+    }
+    out = state.panel_layout;
     return true;
 }
 

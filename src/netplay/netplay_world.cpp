@@ -2022,6 +2022,29 @@ static void av_send_status( int sid )
         g->mp_anchor_map_on( *av, true );
     }
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
+    // DDA MP v4.0a-147: the client's native sidebar must use the host's panel
+    // layout, otherwise its log/minimap start at a different row and the
+    // panel sets differ. Serialize once and resend on status; the client
+    // applies it only when the string changes.
+    {
+        static std::string mp_panel_layout_json;
+        if( mp_panel_layout_json.empty() ) {
+            std::ostringstream os;
+            JsonOut js( os );
+            panel_manager::get_manager().serialize( js );
+            mp_panel_layout_json = os.str();
+        }
+        const bool sent = netplay::host_send_panel_layout_to_sid( sid, mp_panel_layout_json );
+        static bool mp_panel_sent_logged = false;
+        if( sent && !mp_panel_sent_logged && netplay::mp_diag_enabled() ) {
+            mp_panel_sent_logged = true;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "panels: host sent len=%d sid=%d\n",
+                              static_cast<int>( mp_panel_layout_json.size() ), sid );
+                std::fclose( f );
+            }
+        }
+    }
     // DDA MP v4.1: tag the avatar's items before the raw snapshot so the
     // client's mirror and the row listing carry the same stable ids.
     mp_tag_avatar_items( *av );

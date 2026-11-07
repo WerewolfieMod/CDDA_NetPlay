@@ -105,6 +105,9 @@ enum class frame : int {
     /// tile first (the host's own choose_adjacent_highlight does the same).
     PICKUP_TILES = 43,      ///< host -> client: str text (gen + dx/dy rows)
     PICKUP_TILE = 44,       ///< client -> host: i32 gen, i32 dx, i32 dy
+    /// DDA MP v4.0a-147: the host's panel_manager layout (json), so the client
+    /// draws the same native sidebar and its log starts at the same row.
+    PANEL_LAYOUT = 45,      ///< host -> client: str json
     /// DDA MP v4.1: a single player intent — what the client wants done.
     /// Payload: [str action][i32 generation][u16 n][i32 args[n]][str data].
     /// The host runs it with the session avatar's own engine code; the old
@@ -394,6 +397,8 @@ bool host_send_character_json_to_sid( int sid, const std::string &json );
 bool client_character_json( std::string &out );
 /// DDA MP v4.0a-9: send the host-rendered sidebar (colour cells) to a session.
 bool host_send_sidebar_to_sid( int sid, const sidebar_frame &sb );
+/// DDA MP v4.0a-147: send the host's panel_manager layout (json) to a session.
+bool host_send_panel_layout_to_sid( int sid, const std::string &json );
 /// DDA MP v4.0a-134: event type for "your avatar died"; the client logs it and
 /// offers to return to the main menu. Values 0..255 fit the wire byte.
 constexpr int EVENT_DEATH = 200;
@@ -643,6 +648,8 @@ bool client_take_hover( std::string &out );
 bool client_sheet( std::string &out );
 /// DDA MP v4.0a-9: latest rendered sidebar from the host (copied per call).
 bool client_sidebar( sidebar_frame &out );
+/// DDA MP v4.0a-147: latest host panel layout json (copied per call).
+bool client_panel_layout( std::string &out );
 /// DDA MP v4.0a-11: pop one event line sent by the host (false when empty).
 bool client_take_event( std::string &out, int &msg_type );
 /// DDA MP v4.0a-12: latest overmap minimap block (copied per call).
