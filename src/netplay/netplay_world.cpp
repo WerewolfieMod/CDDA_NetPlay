@@ -1514,6 +1514,34 @@ static bool av_all_acted()
 void host_pump_avatar_keys()
 {
     host_region_sync();
+    // DDA MP test hook: feed the host a movement key without touching the OS
+    // window/focus, so automated runs can exercise the both-sides turn rule.
+    if( const char *test_host_keys = std::getenv( "DDA_MP_TEST_HOST_KEYS" );
+        test_host_keys != nullptr && test_host_keys[0] != '\0' ) {
+        static int mp_test_host_left = std::atoi( test_host_keys );
+        static auto mp_test_host_last =
+            std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+        const auto mp_test_now = std::chrono::steady_clock::now();
+        bool mp_test_split = false;
+        for( int sid : host_session_ids() ) {
+            if( host_session_region( sid ) > 0 ) {
+                mp_test_split = true;
+                break;
+            }
+        }
+        if( mp_test_split && mp_test_host_left > 0 &&
+            mp_test_now - mp_test_host_last > std::chrono::seconds( 2 ) ) {
+            mp_test_host_last = mp_test_now;
+            --mp_test_host_left;
+            netplay::host_push_legacy_key( 2 ); // RIGHT
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "test: synthetic host right\n" );
+                    std::fclose( f );
+                }
+            }
+        }
+    }
     netplay::sid_key sk;
     int mp_steps = 0;
     while( netplay::host_pop_sid_key( sk ) ) {
@@ -3599,6 +3627,13 @@ void host_note_world_turn()
     host_region_sync();
     host_clear_auto_turn();
     mp_round_start = std::chrono::steady_clock::now();
+    if( mp_diag_enabled() ) {
+        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "round complete sessions=%d\n",
+                          static_cast<int>( host_session_ids().size() ) );
+            std::fclose( f );
+        }
+    }
     av_acted_since_tick.clear();
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
@@ -3684,6 +3719,35 @@ bool host_turn_blocked()
         return false;
     }
     return !av_all_acted();
+}
+
+bool host_round_done()
+{
+    if( !host_is_running() || host_session_count() == 0 ) {
+        return true;
+    }
+    // The host itself must be done first: do_turn calls this only after the
+    // host input pass, i.e. after its move pool is spent.
+    for( const auto &entry : av_sid_to_npc ) {
+        const int sid = entry.first;
+        if( host_session_afk( sid ) ) {
+            continue;
+        }
+        const npc *npc_ptr = av_session_npc( sid );
+        if( npc_ptr == nullptr || npc_ptr->is_dead_state() ) {
+            continue;
+        }
+        if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
+            continue;
+        }
+        // No pool entry yet means the client has not spent anything this
+        // round; a positive pool means it still has actions left.
+        const auto it = av_move_pool.find( sid );
+        if( it == av_move_pool.end() || it->second > 0 ) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool host_consume_auto_turn()

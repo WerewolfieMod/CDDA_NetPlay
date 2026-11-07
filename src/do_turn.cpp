@@ -583,72 +583,6 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
-    // DDA MP v4.0a-7: strict turn parity - do not advance the world until
-    // every connected client gave its order this round. The earlier gate in
-    // handle_action() ran AFTER the world had already ticked, which refilled
-    // the clients' move pools (they kept walking while the host stood still).
-    if( netplay::host_turn_blocked() ) {
-        netplay::host_pump_snapshot_requests();
-        netplay::host_pump_avatar_ops();
-        netplay::host_pump_avatar_keys();
-        netplay::host_pump_inventory_actions();
-        // DDA MP v4.0a-91: client action-menu orders (inventory, @, pickup) must
-        // be serviced while the host waits for the turn round too; otherwise a
-        // pickup request sits in the queue until the next host input and the
-        // client sees nothing.
-        netplay::host_pump_client_actions();
-        // Refresh idle clients occasionally, not 17 times a second: each frame
-        // is a full 1519-tile payload, and nothing changes while we wait.
-        static std::chrono::steady_clock::time_point mp_last_idle_snap;
-        const auto mp_idle_now = std::chrono::steady_clock::now();
-        if( mp_idle_now - mp_last_idle_snap > std::chrono::milliseconds( 250 ) ) {
-            mp_last_idle_snap = mp_idle_now;
-            netplay::host_game_tick();
-        }
-        // The host just took its turn; while we wait for the client the frame
-        // must still be re-rendered, otherwise the host's own screen keeps the
-        // pre-move picture (the client already received the new one).
-        invalidate_main_ui_adaptor();
-#if defined(TILES)
-        if( tilecontext ) {
-            tilecontext->set_draw_cache_dirty();
-        }
-#endif
-        ui_manager::redraw();
-        // Draw the waiting hint AFTER the frame (redraw erases the screen, so a
-        // hint drawn earlier is wiped out and never reaches the display).
-        const int mp_wait_w = std::min( TERMX, 48 );
-        static catacurses::window mp_wait_win;
-        if( !mp_wait_win ) {
-            mp_wait_win = catacurses::newwin( 1, mp_wait_w,
-                                              point( std::max( 0, ( TERMX - mp_wait_w ) / 2 ), 0 ) );
-        }
-        werase( mp_wait_win );
-        mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
-        wnoutrefresh( mp_wait_win );
-        // DDA MP v4.0a-86: long wait mode is announced in the same place.
-        netplay::host_draw_long_wait_hint( 1 );
-#if defined(TILES)
-        // ui_manager::redraw only fills the display buffer; without an explicit
-        // present the host keeps seeing the frame from before its own move
-        // until the client's input arrives.
-        refresh_display();
-        // Pump the platform event queue, or Windows marks the window as "Not
-        // responding" while we sit in the waiting loop.
-        SDL_PumpEvents();
-#endif
-        std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
-        return false;
-    }
-
-    // DDA MP v4.0a-144: the round is ready and the last order came from a
-    // client while the host was idle. Spend the host turn as a wait instead
-    // of sitting in handle_action() until the host player presses a key, so
-    // world time (and the split regions) keep advancing for the clients.
-    if( netplay::host_consume_auto_turn() ) {
-        u.set_moves( 0 );
-    }
-
     drain_renderer_recovery();
 
     weather_manager &weather = get_weather();
@@ -822,6 +756,31 @@ bool game::do_turn()
                 }
             }
         }
+    }
+
+    // DDA MP v4.0a-155: all players input first, then the world advances.
+    // The host input pass above is never withheld; only the world turn waits
+    // for the remaining sessions to spend their action pool. Long waits, long
+    // activities, sleep and dead avatars are already excluded by
+    // host_round_done().
+    if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
+        !netplay::host_round_done() ) {
+        netplay::host_pump_snapshot_requests();
+        netplay::host_pump_avatar_ops();
+        netplay::host_pump_avatar_keys();
+        netplay::host_pump_inventory_actions();
+        netplay::host_pump_client_actions();
+        static auto mp_last_wait_snap = std::chrono::steady_clock::now();
+        const auto mp_wait_now = std::chrono::steady_clock::now();
+        if( mp_wait_now - mp_last_wait_snap > std::chrono::milliseconds( 250 ) ) {
+            mp_last_wait_snap = mp_wait_now;
+            netplay::host_game_tick();
+        }
+        invalidate_main_ui_adaptor();
+        ui_manager::redraw();
+        refresh_display();
+        std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
+        return false;
     }
 
     if( driving_view_offset.x() != 0 || driving_view_offset.y() != 0 ) {

@@ -615,6 +615,10 @@ void host_note_world_turn();
 /// DDA MP v4.0a-7: true while the host must wait for clients to give their
 /// orders (strict turn parity, with a short grace for idle clients).
 bool host_turn_blocked();
+/// DDA MP v4.0a-155: true when the host and every active session have spent
+/// their action pool for the current round. The world turn waits until then,
+/// but host input is never withheld.
+bool host_round_done();
 /// DDA MP v4.0a-144: a client finished its order while the host idled. The
 /// host turn loop consumes this as an automatic wait, so time advances even
 /// when the host player does not press a key. False while the round is still
