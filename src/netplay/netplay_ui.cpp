@@ -4654,10 +4654,11 @@ void run_view_loop()
                 mp_draw_aim_panel();
             }
             mp_draw_look_overlay( snap );
-            // DDA MP v4.0a-152: always mark the selected cell. The tileset
-            // cursor sprite is not guaranteed to exist in every tileset (and
-            // sat under the avatar at offset 0,0), so draw a bright cell box
-            // and crosshair in the same overlay pass as the panels.
+            // DDA MP v4.0a-153: the original game's cursor sprite is four
+            // white corner brackets (32x32, arms ~6px). Draw the same shape in
+            // the shared overlay pass. It is visible even when the tileset
+            // cursor sprite does not resolve in the replay backend, and it
+            // matches the host's selected-cell look.
             {
                 bool have_target = false;
                 int rdx = 0;
@@ -4679,16 +4680,24 @@ void run_view_loop()
                                      ( tx - snap.width / 2.0f - 0.5f ) * mp_canvas_tw;
                     const float py = mp_canvas_cy +
                                      ( ty - snap.height / 2.0f - 0.5f ) * mp_canvas_th;
+                    const float w = mp_canvas_tw;
+                    const float h = mp_canvas_th;
+                    const float arm = std::max( 3.0f, std::min( w, h ) * 0.19f );
+                    const float lw = std::max( 1.5f, std::min( w, h ) * 0.06f );
                     ImDrawList *dl = ImGui::GetForegroundDrawList();
-                    const ImU32 col = IM_COL32( 255, 220, 0, 255 );
-                    dl->AddRect( ImVec2( px, py ),
-                                 ImVec2( px + mp_canvas_tw, py + mp_canvas_th ),
-                                 col, 0.0f, 0, 2.5f );
-                    const float mx = px + mp_canvas_tw * 0.5f;
-                    const float my = py + mp_canvas_th * 0.5f;
-                    const float arm = std::max( 4.0f, mp_canvas_tw * 0.3f );
-                    dl->AddLine( ImVec2( mx - arm, my ), ImVec2( mx + arm, my ), col, 1.5f );
-                    dl->AddLine( ImVec2( mx, my - arm ), ImVec2( mx, my + arm ), col, 1.5f );
+                    const ImU32 col = IM_COL32( 255, 255, 255, 235 );
+                    // top-left
+                    dl->AddLine( ImVec2( px, py ), ImVec2( px + arm, py ), col, lw );
+                    dl->AddLine( ImVec2( px, py ), ImVec2( px, py + arm ), col, lw );
+                    // top-right
+                    dl->AddLine( ImVec2( px + w - arm, py ), ImVec2( px + w, py ), col, lw );
+                    dl->AddLine( ImVec2( px + w, py ), ImVec2( px + w, py + arm ), col, lw );
+                    // bottom-left
+                    dl->AddLine( ImVec2( px, py + h - arm ), ImVec2( px, py + h ), col, lw );
+                    dl->AddLine( ImVec2( px, py + h ), ImVec2( px + arm, py + h ), col, lw );
+                    // bottom-right
+                    dl->AddLine( ImVec2( px + w - arm, py + h ), ImVec2( px + w, py + h ), col, lw );
+                    dl->AddLine( ImVec2( px + w, py + h - arm ), ImVec2( px + w, py + h ), col, lw );
                 }
             }
             netplay::overlay_end();
@@ -4745,7 +4754,7 @@ void run_view_loop()
                 if( !mp_test_look_once && mp_have_picture ) {
                     mp_test_look_once = true;
                     mp_cursor = mp_cursor_mode::look;
-                    mp_cursor_dx = 0;
+                    mp_cursor_dx = 8;
                     mp_cursor_dy = 0;
                     mp_inv_log( "test: look cursor" );
                 }
