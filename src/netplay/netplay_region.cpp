@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -220,33 +221,71 @@ void destroy_region( int id )
  * DDA_MP_TEST_TELEPORT="dx,dy" (map tiles). Applied once. */
 void maybe_test_teleport()
 {
-    static bool done = false;
-    if( done ) {
+    static bool teleported = false;
+    static bool returned = false;
+    static std::chrono::steady_clock::time_point teleport_time =
+        std::chrono::steady_clock::now();
+
+    if( !teleported ) {
+        const char *env = std::getenv( "DDA_MP_TEST_TELEPORT" );
+        if( env == nullptr || env[0] == '\0' ) {
+            return;
+        }
+        int dx = 0;
+        int dy = 0;
+        if( std::sscanf( env, "%d,%d", &dx, &dy ) != 2 ) {
+            teleported = true;
+            return;
+        }
+        for( int sid : host_session_ids() ) {
+            npc *av = host_session_avatar_npc( sid );
+            if( av != nullptr ) {
+                const tripoint_abs_ms target =
+                    get_avatar().pos_abs() + tripoint_rel_ms( dx, dy, 0 );
+                av->setpos( target, false );
+                if( netplay::mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "region test teleport sid=%d to=%d,%d\n",
+                                      sid, target.x(), target.y() );
+                        std::fclose( f );
+                    }
+                }
+                teleported = true;
+                teleport_time = std::chrono::steady_clock::now();
+                break;
+            }
+        }
         return;
     }
-    const char *env = std::getenv( "DDA_MP_TEST_TELEPORT" );
-    if( env == nullptr || env[0] == '\0' ) {
+
+    // Optional merge test: after N seconds bring the avatar back next to the
+    // host; host_region_sync() must then drop region 1 and fold the session
+    // into the host bubble again.
+    if( returned ) {
         return;
     }
-    int dx = 0;
-    int dy = 0;
-    if( std::sscanf( env, "%d,%d", &dx, &dy ) != 2 ) {
-        done = true;
+    const char *back = std::getenv( "DDA_MP_TEST_RETURN_AFTER" );
+    if( back == nullptr || back[0] == '\0' ) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if( now - teleport_time < std::chrono::seconds( std::atoi( back ) ) ) {
         return;
     }
     for( int sid : host_session_ids() ) {
         npc *av = host_session_avatar_npc( sid );
         if( av != nullptr ) {
-            const tripoint_abs_ms target = get_avatar().pos_abs() + tripoint_rel_ms( dx, dy, 0 );
+            const tripoint_abs_ms target =
+                get_avatar().pos_abs() + tripoint_rel_ms( 10, 0, 0 );
             av->setpos( target, false );
             if( netplay::mp_diag_enabled() ) {
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "region test teleport sid=%d to=%d,%d\n",
+                    std::fprintf( f, "region test return sid=%d to=%d,%d\n",
                                   sid, target.x(), target.y() );
                     std::fclose( f );
                 }
             }
-            done = true;
+            returned = true;
             break;
         }
     }
