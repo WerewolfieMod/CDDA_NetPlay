@@ -1282,8 +1282,19 @@ void refresh_display()
     {
         static int mp_screen_dump_count = 0;
         ++mp_screen_dump_count;
+        // DDA MP test hook: capture consecutive frames around the moment a
+        // client joins / walks away, so one-frame position flicker is visible.
+        static const bool mp_dump_fast = []() {
+            const char *v = std::getenv( "DDA_MP_TEST_DUMP_FAST" );
+            return v != nullptr && v[0] != '\0';
+        }();
+        const bool mp_fast_window = mp_dump_fast &&
+                                    mp_screen_dump_count >= 150 &&
+                                    mp_screen_dump_count <= 400 &&
+                                    mp_screen_dump_count % 2 == 0;
         const bool mp_dump = mp_netplay_diag &&
-                             ( mp_screen_dump_count <= 3 || mp_screen_dump_count % 50 == 0 );
+                             ( mp_screen_dump_count <= 3 || mp_screen_dump_count % 50 == 0 ||
+                               mp_fast_window );
         if( mp_dump && permanent_render_target_bind( renderer, nullptr, present_vp ) ==
             bind_result::ok ) {
             const char *role = "menu";

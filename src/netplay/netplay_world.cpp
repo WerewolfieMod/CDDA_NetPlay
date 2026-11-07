@@ -1013,6 +1013,17 @@ void host_game_tick()
         // host's. The scope restores the host context on exit.
         region_scope scope( sid );
         npc *viewer = av_session_npc( sid );
+        // DDA MP test hook: simulate the avatar NPC being transiently
+        // unavailable, which used to send a host-centred watcher frame to a
+        // bound client and made its @ jump back towards the host.
+        if( const char *test_drop = std::getenv( "DDA_MP_TEST_DROP_AVATAR" );
+            test_drop != nullptr && test_drop[0] != '\0' && viewer != nullptr ) {
+            static int mp_drop_no = 0;
+            ++mp_drop_no;
+            if( mp_drop_no % 3 != 0 ) {
+                viewer = nullptr;
+            }
+        }
         if( viewer != nullptr && !get_map().inbounds( viewer->pos_bub() ) ) {
             if( scope.split() ) {
                 g->mp_anchor_map_on( *viewer, true );
@@ -1033,6 +1044,19 @@ void host_game_tick()
                 center = viewer->pos_bub();
                 g->mp_anchor_map_on( get_avatar() );
             }
+        }
+        // A bound session whose avatar NPC could not be resolved for this
+        // frame must not receive a watcher frame centred on the host: the
+        // client sets its own mirror avatar to the frame origin, so the @
+        // jumps back to the host and then forward again. Keep its last frame.
+        if( viewer == nullptr && av_sid_to_npc.find( sid ) != av_sid_to_npc.end() ) {
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "srv snap skip: bound sid=%d has no npc\n", sid );
+                    std::fclose( f );
+                }
+            }
+            continue;
         }
         av_send_session_picture( sid, center, viewer );
     }
@@ -1533,6 +1557,64 @@ static bool av_all_acted()
 void host_pump_avatar_keys()
 {
     host_region_sync();
+    // DDA MP test hook: move every bound avatar one absolute tile east a few
+    // times a second, ignoring terrain. This isolates the client's mirror /
+    // camera updates from pathfinding and world turns.
+    if( const char *test_step = std::getenv( "DDA_MP_TEST_STEP" );
+        test_step != nullptr && test_step[0] != '\0' ) {
+        static int mp_test_step_left = std::atoi( test_step );
+        static auto mp_test_step_last =
+            std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+        const auto mp_test_step_now = std::chrono::steady_clock::now();
+        if( mp_test_step_left > 0 &&
+            mp_test_step_now - mp_test_step_last > std::chrono::milliseconds( 500 ) ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av == nullptr ) {
+                    continue;
+                }
+                // Start counting only once a session avatar is actually bound;
+                // otherwise the hook burns all its steps while the client loads.
+                mp_test_step_last = mp_test_step_now;
+                --mp_test_step_left;
+                const tripoint_abs_ms next = av->pos_abs() + tripoint_rel_ms( 1, 0, 0 );
+                av->setpos( next, false );
+                av_send_session_picture( sid, av->pos_bub(), av );
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "test: step sid=%d to=%d,%d\n", sid,
+                                      next.x(), next.y() );
+                        std::fclose( f );
+                    }
+                }
+                break;
+            }
+        }
+    }
+    // DDA MP test hook: make the host pass its turn without touching the OS
+    // window/focus. Unlike HOST_KEYS this works in the shared bubble too, so
+    // a client can walk 30-40 tiles with normal world turns.
+    if( const char *test_wait = std::getenv( "DDA_MP_TEST_HOST_WAIT" );
+        test_wait != nullptr && test_wait[0] != '\0' ) {
+        static int mp_test_wait_left = std::atoi( test_wait );
+        static auto mp_test_wait_last =
+            std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+        const auto mp_test_wait_now = std::chrono::steady_clock::now();
+        if( mp_test_wait_left > 0 &&
+            mp_test_wait_now - mp_test_wait_last > std::chrono::seconds( 2 ) ) {
+            mp_test_wait_last = mp_test_wait_now;
+            --mp_test_wait_left;
+            // "pause" (one turn) spends the host's move pool without opening
+            // the WAIT menu and without needing a passable tile.
+            netplay::host_push_legacy_key( 11 );
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "test: synthetic host wait\n" );
+                    std::fclose( f );
+                }
+            }
+        }
+    }
     // DDA MP test hook: feed the host a movement key without touching the OS
     // window/focus, so automated runs can exercise the both-sides turn rule.
     if( const char *test_host_keys = std::getenv( "DDA_MP_TEST_HOST_KEYS" );

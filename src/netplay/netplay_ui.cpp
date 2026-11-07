@@ -3068,9 +3068,15 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
 {
     static bool ready = false;
     static tripoint_abs_ms bubble_center;
+    // The mirror loads an 11-submap map (132 tiles). The visible 49x32 frame
+    // needs ~24 tiles of camera margin, so the camera can stay centred while
+    // the avatar is at most ~42 tiles from the anchor; 40 keeps that safe.
+    constexpr int mp_mirror_reanchor_distance = 40;
     const bool inside = ready &&
-                        std::abs( center_abs.x() - bubble_center.x() ) <= 40 &&
-                        std::abs( center_abs.y() - bubble_center.y() ) <= 40 &&
+                        std::abs( center_abs.x() - bubble_center.x() ) <=
+                        mp_mirror_reanchor_distance &&
+                        std::abs( center_abs.y() - bubble_center.y() ) <=
+                        mp_mirror_reanchor_distance &&
                         center_abs.z() == bubble_center.z();
     if( inside ) {
         return;
@@ -3137,6 +3143,11 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
     here.mp_load_bubble_storage( origin );
 
     mp_inv_log( "native: bubble loaded, placing avatar" );
+    if( ready ) {
+        mp_inv_log( string_format( "native: re-anchor %d,%d -> %d,%d",
+                                   bubble_center.x(), bubble_center.y(),
+                                   center_abs.x(), center_abs.y() ) );
+    }
     get_avatar().setpos( center_abs, false );
     // The streamed terrain writes go through map::ter_set(), which calls
     // avatar::sees() and therefore indexes the visibility cache. A session
@@ -3253,6 +3264,22 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     mp_native_ensure_bubble( center_abs );
     map &here = get_map();
     get_avatar().setpos( center_abs, false );
+    if( netplay::mp_diag_enabled() ) {
+        static int mp_apply_no = 0;
+        static bool mp_have_last = false;
+        static int mp_last_x = 0;
+        static int mp_last_y = 0;
+        if( !mp_have_last || snap.origin_x != mp_last_x || snap.origin_y != mp_last_y ) {
+            mp_have_last = true;
+            mp_last_x = snap.origin_x;
+            mp_last_y = snap.origin_y;
+            ++mp_apply_no;
+            mp_inv_log( string_format( "snapapply #%d origin=%d,%d av=%d,%d",
+                                       mp_apply_no, snap.origin_x, snap.origin_y,
+                                       get_avatar().pos_abs().x(),
+                                       get_avatar().pos_abs().y() ) );
+        }
+    }
     const tripoint_bub_ms center = here.get_bub( center_abs );
     if( !here.inbounds( center ) ) {
         return;
@@ -3451,6 +3478,25 @@ static void mp_native_setup_terrain_window( const snapshot &snap, int dest_x, in
     POSY = snap.height / 2;
     g->ter_view_p = get_map().get_bub(
                         tripoint_abs_ms( snap.origin_x, snap.origin_y, snap.origin_z ) );
+    if( netplay::mp_diag_enabled() ) {
+        static int mp_last_setup_x = 0;
+        static int mp_last_setup_y = 0;
+        static bool mp_setup_have_last = false;
+        if( !mp_setup_have_last || snap.origin_x != mp_last_setup_x ||
+            snap.origin_y != mp_last_setup_y ) {
+            mp_setup_have_last = true;
+            mp_last_setup_x = snap.origin_x;
+            mp_last_setup_y = snap.origin_y;
+            const map &hm = get_map();
+            mp_inv_log( string_format(
+                            "render origin=%d,%d av=%d,%d tv=%d,%d off=%d,%d sub=%d,%d",
+                            snap.origin_x, snap.origin_y,
+                            get_avatar().pos_bub().x(), get_avatar().pos_bub().y(),
+                            g->ter_view_p.x(), g->ter_view_p.y(),
+                            get_avatar().view_offset.x(), get_avatar().view_offset.y(),
+                            hm.get_abs_sub().x(), hm.get_abs_sub().y() ) );
+        }
+    }
     werase( mp_native_terrain_win );
     wnoutrefresh( mp_native_terrain_win );
 }
@@ -4925,6 +4971,11 @@ void run_view_loop()
             if( const char *test_move = std::getenv( "DDA_MP_TEST_CLIENT_MOVE" );
                 test_move != nullptr && test_move[0] != '\0' ) {
                 static int mp_test_moves_left = std::atoi( test_move );
+                static const int mp_test_move_code = []() {
+                    const char *dir = std::getenv( "DDA_MP_TEST_CLIENT_MOVE_DIR" );
+                    const int code = dir != nullptr && dir[0] != '\0' ? std::atoi( dir ) : 2;
+                    return code == 1 || code == 3 || code == 4 ? code : 2;
+                }();
                 static auto mp_test_last_move =
                     std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
                 ctxt.set_timeout( 100 );
@@ -4934,9 +4985,9 @@ void run_view_loop()
                     mp_test_last_move = mp_test_now;
                     --mp_test_moves_left;
                     key_event test_ke;
-                    test_ke.code = 2; // RIGHT
+                    test_ke.code = static_cast<uint32_t>( mp_test_move_code );
                     client_send_keys( { test_ke } );
-                    mp_tlog( "test: synthetic right" );
+                    mp_tlog( string_format( "test: synthetic step %d", mp_test_move_code ) );
                 }
             }
             // DDA MP test hook: open the look cursor after the first picture so
