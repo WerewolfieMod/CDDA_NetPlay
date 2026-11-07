@@ -2433,7 +2433,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_PL_INFO:
             mp_run_character_info( char_json );
             break;
-        case ACTION_LOOK: {
+        case ACTION_LOOK:
+        // DDA MP v4.0a-145: examine (X) is the same local look UI on the
+        // streamed mirror. It used to fall through to the host action bridge,
+        // where a session avatar has no examine handler, so X did nothing.
+        case ACTION_EXAMINE: {
             // DDA MP v4.0a-117: looking around is free and local. The client's
             // map mirror holds exactly the frame the host streams, so the
             // game's own look UI can run on the client avatar.
@@ -4763,7 +4767,8 @@ void run_view_loop()
                         case ACTION_PL_INFO:
                             mp_run_character_info( mp_char_json );
                             continue;
-                        case ACTION_LOOK: {
+                        case ACTION_LOOK:
+                        case ACTION_EXAMINE: {
                             ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
                             g->look_around();
                             continue;
