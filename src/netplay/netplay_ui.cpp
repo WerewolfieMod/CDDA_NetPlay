@@ -995,6 +995,32 @@ static bool mp_throw_active = false;
 static std::string mp_throw_uid;
 static int mp_throw_dx = 1;
 static int mp_throw_dy = 0;
+/* DDA MP v4.0a-150: netplay-native look/fire cursor. The stock look_around()
+ * and target UI block on a game window the view loop does not present, so the
+ * client only saw a frozen screen. These modes draw the reticle and tile info
+ * straight onto the streamed canvas and send the final offset to the host. */
+enum class mp_cursor_mode : int {
+    none = 0,
+    look,
+    fire
+};
+static mp_cursor_mode mp_cursor = mp_cursor_mode::none;
+static int mp_cursor_dx = 0;
+static int mp_cursor_dy = 0;
+
+static void mp_inv_log( const std::string &msg );
+
+static void mp_begin_client_fire()
+{
+    const item_location weapon = get_avatar().get_wielded_item();
+    if( !weapon || !weapon->is_gun() ) {
+        mp_inv_log( "fire: no gun wielded" );
+        return;
+    }
+    mp_cursor = mp_cursor_mode::fire;
+    mp_cursor_dx = 0;
+    mp_cursor_dy = 0;
+}
 static float mp_canvas_cx = 0.0f;
 static float mp_canvas_cy = 0.0f;
 static float mp_canvas_tw = 0.0f;
@@ -2444,17 +2470,14 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_run_character_info( char_json );
             break;
         case ACTION_LOOK:
-        // DDA MP v4.0a-145: examine (X) is the same local look UI on the
-        // streamed mirror. It used to fall through to the host action bridge,
-        // where a session avatar has no examine handler, so X did nothing.
-        case ACTION_EXAMINE: {
-            // DDA MP v4.0a-117: looking around is free and local. The client's
-            // map mirror holds exactly the frame the host streams, so the
-            // game's own look UI can run on the client avatar.
-            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
-            g->look_around();
+        case ACTION_EXAMINE:
+            // DDA MP v4.0a-150: the stock look_around() waits on a game window
+            // the netplay view loop does not present, so it only froze input.
+            // Use the netplay cursor instead.
+            mp_cursor = mp_cursor_mode::look;
+            mp_cursor_dx = 0;
+            mp_cursor_dy = 0;
             break;
-        }
 
         case ACTION_CRAFT:
             mp_run_client_craft( false );
@@ -2467,7 +2490,7 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             break;
         case ACTION_FIRE:
         case ACTION_FIRE_BURST:
-            mp_run_client_fire();
+            mp_begin_client_fire();
             break;
         case ACTION_THROW:
         case ACTION_THROW_WIELDED:
@@ -4417,11 +4440,16 @@ void run_view_loop()
                                 // feedback through the tileset, not ImGui:
                                 // "line_trail" sprites along the trajectory and
                                 // the "cursor" sprite on the target tile.
-                                if( mp_throw_active ) {
+                                if( mp_throw_active ||
+                                    mp_cursor != mp_cursor_mode::none ) {
+                                    const int rdx = mp_throw_active ? mp_throw_dx :
+                                                    mp_cursor_dx;
+                                    const int rdy = mp_throw_active ? mp_throw_dy :
+                                                    mp_cursor_dy;
                                     const int acx = snap.width / 2;
                                     const int acy = snap.height / 2;
-                                    int tx = acx + mp_throw_dx;
-                                    int ty = acy + mp_throw_dy;
+                                    int tx = acx + rdx;
+                                    int ty = acy + rdy;
                                     if( tx >= 0 && ty >= 0 && tx < snap.width &&
                                         ty < snap.height ) {
                                         int x0 = acx;
@@ -4482,6 +4510,75 @@ void run_view_loop()
                                 if( mp_throw_active ) {
                                     netplay::overlay_begin();
                                     mp_draw_aim_panel();
+                                    netplay::overlay_end();
+                                }
+                                if( mp_cursor == mp_cursor_mode::look ) {
+                                    // DDA MP v4.0a-150: tile/creature info for
+                                    // the looked-at cell, drawn over the canvas
+                                    // instead of blocking in the stock UI.
+                                    std::vector<std::string> lines;
+                                    const int tx = snap.width / 2 + mp_cursor_dx;
+                                    const int ty = snap.height / 2 + mp_cursor_dy;
+                                    if( tx >= 0 && ty >= 0 && tx < snap.width &&
+                                        ty < snap.height ) {
+                                        lines.push_back( string_format(
+                                                             _( "Tile %d,%d" ),
+                                                             snap.origin_x + tx,
+                                                             snap.origin_y + ty ) );
+                                        const size_t idx =
+                                            static_cast<size_t>( ty ) * snap.width + tx;
+                                        if( idx < snap.tiles.size() ) {
+                                            const tile_cell &t = snap.tiles[idx];
+                                            if( !t.ter.empty() ) {
+                                                lines.push_back( _( "Terrain: " ) + t.ter );
+                                            }
+                                            if( !t.furn.empty() ) {
+                                                lines.push_back( _( "Furniture: " ) + t.furn );
+                                            }
+                                            if( !t.item.empty() ) {
+                                                const itype_id iid( t.item );
+                                                lines.push_back( _( "Item: " ) +
+                                                                 ( iid.is_valid() ?
+                                                                   item::nname( iid ) : t.item ) );
+                                            }
+                                            if( !t.critter.empty() ) {
+                                                const mtype_id mid( t.critter );
+                                                lines.push_back( _( "Creature: " ) +
+                                                                 ( mid.is_valid() ?
+                                                                   mid->nname() : t.critter ) );
+                                            }
+                                            if( !t.field.empty() ) {
+                                                lines.push_back( _( "Field: " ) + t.field );
+                                            }
+                                            if( !t.trap.empty() ) {
+                                                lines.push_back( _( "Trap: " ) + t.trap );
+                                            }
+                                            if( !t.graffiti.empty() ) {
+                                                lines.push_back( _( "Graffiti: " ) + t.graffiti );
+                                            }
+                                        }
+                                    } else {
+                                        lines.push_back( _( "Outside the frame" ) );
+                                    }
+                                    netplay::overlay_begin();
+                                    ImDrawList *dl = ImGui::GetForegroundDrawList();
+                                    const float pad = ImGui::GetFontSize() * 0.6f;
+                                    const float line_h = ImGui::GetTextLineHeight();
+                                    float w = 0.0f;
+                                    for( const std::string &line : lines ) {
+                                        w = std::max( w, ImGui::CalcTextSize( line.c_str() ).x );
+                                    }
+                                    const float h = lines.size() * line_h + 2 * pad;
+                                    const ImVec2 p0( 8.0f, 8.0f );
+                                    dl->AddRectFilled( p0, ImVec2( p0.x + w + 2 * pad,
+                                                                   p0.y + h ),
+                                                       IM_COL32( 0, 0, 0, 210 ), 4.0f );
+                                    for( size_t i = 0; i < lines.size(); i++ ) {
+                                        dl->AddText( ImVec2( p0.x + pad,
+                                                             p0.y + pad + i * line_h ),
+                                                     IM_COL32( 235, 235, 235, 255 ),
+                                                     lines[i].c_str() );
+                                    }
                                     netplay::overlay_end();
                                 }
                                 mp_frame_trace( "end ok" );
@@ -4609,6 +4706,19 @@ void run_view_loop()
                     mp_tlog( "test: synthetic right" );
                 }
             }
+            // DDA MP test hook: open the look cursor after the first picture so
+            // an automated run can verify the reticle/info panel rendering.
+            if( const char *test_look = std::getenv( "DDA_MP_TEST_CLIENT_LOOK" );
+                test_look != nullptr && test_look[0] != '\0' ) {
+                static bool mp_test_look_once = false;
+                if( !mp_test_look_once && mp_have_picture ) {
+                    mp_test_look_once = true;
+                    mp_cursor = mp_cursor_mode::look;
+                    mp_cursor_dx = 0;
+                    mp_cursor_dy = 0;
+                    mp_inv_log( "test: look cursor" );
+                }
+            }
             const std::string action = ctxt.handle_input();
             // DDA MP v4.0a-97: choose the tile to pick from (several tiles
             // with items): arrows cycle the candidates, ENTER confirms.
@@ -4659,6 +4769,43 @@ void run_view_loop()
                             break;
                         }
                     }
+                }
+                continue;
+            }
+            // DDA MP v4.0a-150: look/fire cursor. Arrow keys move the reticle,
+            // Enter confirms (fire sends the offset to the host), Esc cancels.
+            if( mp_cursor != mp_cursor_mode::none ) {
+                const input_event mp_ev = ctxt.get_raw_input();
+                const int mp_key = mp_ev.get_first_input();
+                if( mp_key == 27 || action == "QUIT" ) {
+                    mp_cursor = mp_cursor_mode::none;
+                    continue;
+                }
+                if( action == "UP" ) {
+                    --mp_cursor_dy;
+                    continue;
+                }
+                if( action == "DOWN" ) {
+                    ++mp_cursor_dy;
+                    continue;
+                }
+                if( action == "LEFT" ) {
+                    --mp_cursor_dx;
+                    continue;
+                }
+                if( action == "RIGHT" ) {
+                    ++mp_cursor_dx;
+                    continue;
+                }
+                if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
+                    if( mp_cursor == mp_cursor_mode::fire ) {
+                        netplay::client_send_intent(
+                            "fire", 0, { mp_cursor_dx, mp_cursor_dy, 1 } );
+                        mp_inv_log( string_format( "fire: target %d,%d",
+                                                   mp_cursor_dx, mp_cursor_dy ) );
+                    }
+                    mp_cursor = mp_cursor_mode::none;
+                    continue;
                 }
                 continue;
             }
@@ -4824,11 +4971,11 @@ void run_view_loop()
                             mp_run_character_info( mp_char_json );
                             continue;
                         case ACTION_LOOK:
-                        case ACTION_EXAMINE: {
-                            ui_adaptor mp_ui_blocker( ui_adaptor::disable_uis_below{} );
-                            g->look_around();
+                        case ACTION_EXAMINE:
+                            mp_cursor = mp_cursor_mode::look;
+                            mp_cursor_dx = 0;
+                            mp_cursor_dy = 0;
                             continue;
-                        }
 
                         case ACTION_CRAFT:
                             mp_run_client_craft( false );
@@ -4841,7 +4988,7 @@ void run_view_loop()
                             continue;
                         case ACTION_FIRE:
                         case ACTION_FIRE_BURST:
-                            mp_run_client_fire();
+                            mp_begin_client_fire();
                             continue;
                         case ACTION_THROW:
                         case ACTION_THROW_WIELDED:
