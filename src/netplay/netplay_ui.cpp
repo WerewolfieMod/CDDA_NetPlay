@@ -67,6 +67,7 @@
 #include "options.h"
 #include "panels.h"
 #include "safemode_ui.h"
+#include "ui_extended_description.h"
 #include "cata_imgui.h"
 #include "imgui/imgui.h"
 #include "worldfactory.h" // world_generator / WORLD (fat client)
@@ -1007,6 +1008,29 @@ enum class mp_cursor_mode : int {
 static mp_cursor_mode mp_cursor = mp_cursor_mode::none;
 static int mp_cursor_dx = 0;
 static int mp_cursor_dy = 0;
+static bool mp_look_fast_scroll = false;
+
+/* Tile under the look/fire/throw reticle. The snapshot origin is the pivot
+ * cell (frame centre), not the frame's top-left. */
+static bool mp_cursor_target( const snapshot &snap, tripoint_abs_ms &ap,
+                              tripoint_bub_ms &lp )
+{
+    if( mp_cursor == mp_cursor_mode::none && !mp_throw_active ) {
+        return false;
+    }
+    const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
+    const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
+    const int tx = snap.width / 2 + rdx;
+    const int ty = snap.height / 2 + rdy;
+    if( tx < 0 || ty < 0 || tx >= snap.width || ty >= snap.height ) {
+        return false;
+    }
+    ap = tripoint_abs_ms( snap.origin_x + tx - snap.width / 2,
+                          snap.origin_y + ty - snap.height / 2, snap.origin_z );
+    map &here = get_map();
+    lp = here.get_bub( ap );
+    return here.inbounds( lp );
+}
 
 static void mp_inv_log( const std::string &msg );
 
@@ -1758,6 +1782,96 @@ static void mp_run_pickup( const std::string &text )
  * through its stable mp_uid, so an action names the very same host item even
  * if the mirror rebuilt the inventory in a different order. The streamed rows
  * remain only as a fallback when no mirror snapshot is available. */
+/* DDA MP v4.0a-159: start client-side throw targeting for the chosen item.
+ * Shared by the inventory item menu and the 't' throw-item selection, so both
+ * paths pick a throwable and enter the same reticle. */
+static void mp_start_client_throw( const item &it, const std::string &uid )
+{
+    static const bool mp_legacy_throw = []() {
+        const char *env = std::getenv( "DDA_MP_LEGACY_THROW" );
+        return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+    }();
+    // Running the stock target_ui against the client's local map needs a fully
+    // initialised client game/map; it is opt-in until the client has a real map
+    // view (otherwise it can hard-crash).
+    static const bool mp_try_host_aim = []() {
+        const char *env = std::getenv( "DDA_MP_TRY_HOST_AIM" );
+        return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
+    }();
+    if( !mp_legacy_throw && mp_try_host_aim && mp_have_origin ) {
+        mp_run_client_throw( it, uid,
+                             tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
+        return;
+    }
+    avatar &viewer = get_avatar();
+    mp_throw_uid = uid;
+    mp_throw_dx = 1;
+    mp_throw_dy = 0;
+    mp_throw_name = it.tname();
+    mp_throw_range = std::max( 1, viewer.throw_range( it ) );
+    const std::string tr_var = it.get_var( "mp_throw_range", std::string() );
+    if( !tr_var.empty() ) {
+        mp_throw_range = std::max( 1, std::atoi( tr_var.c_str() ) );
+    }
+    mp_throw_active = true;
+    // Same idea as target_ui::choose_initial_target: start on the nearest
+    // visible target in range instead of an arbitrary tile.
+    {
+        auto glyph_at = []( int dx, int dy ) -> uint32_t {
+            if( mp_aim_w <= 0 || mp_aim_h <= 0 ) {
+                return 0;
+            }
+            const int x = mp_aim_w / 2 + dx;
+            const int y = mp_aim_h / 2 + dy;
+            if( x < 0 || y < 0 || x >= mp_aim_w || y >= mp_aim_h ) {
+                return 0;
+            }
+            const size_t i = static_cast<size_t>( y ) * mp_aim_w + x;
+            return i < mp_aim_glyphs.size() ? mp_aim_glyphs[i] : 0;
+        };
+        int best = INT_MAX;
+        for( const netplay::aim_target &t : mp_aim_targets ) {
+            // AIM_TARGETS offsets can be one tile off from the glyph cells;
+            // snap to the character glyph when present.
+            int tx = t.dx;
+            int ty = t.dy;
+            if( t.is_character && glyph_at( tx, ty ) != '@' ) {
+                static const int offs[8][2] = {
+                    { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
+                    { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 }
+                };
+                for( const auto &o : offs ) {
+                    if( glyph_at( t.dx + o[0], t.dy + o[1] ) == '@' ) {
+                        tx = t.dx + o[0];
+                        ty = t.dy + o[1];
+                        break;
+                    }
+                }
+            }
+            const int d = std::abs( tx ) + std::abs( ty );
+            if( d > 0 && d <= mp_throw_range && d < best ) {
+                best = d;
+                mp_throw_dx = tx;
+                mp_throw_dy = ty;
+            }
+        }
+    }
+    mp_aim_text.clear();
+    mp_client_aim_lines.clear();
+    mp_aim_char.reset();
+    if( !mp_char_json_cache.empty() ) {
+        try {
+            JsonValue jv = json_loader::from_string( mp_char_json_cache );
+            std::unique_ptr<npc> tmp = std::make_unique<npc>();
+            tmp->deserialize( jv.get_object() );
+            mp_aim_char = std::move( tmp );
+            mp_aim_item = it;
+        } catch( ... ) {
+            mp_aim_char.reset();
+        }
+    }
+}
+
 static void mp_run_host_inventory( const std::string &text )
 {
     try {
@@ -1906,87 +2020,7 @@ static void mp_run_host_inventory( const std::string &text )
             break;
         }
         if( act == 't' ) {
-            static const bool mp_legacy_throw = []() {
-                const char *env = std::getenv( "DDA_MP_LEGACY_THROW" );
-                return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
-            }();
-            // Running the stock target_ui against the client's local map needs
-            // a fully initialised client game/map; it is opt-in until the
-            // client has a real map view (otherwise it can hard-crash).
-            static const bool mp_try_host_aim = []() {
-                const char *env = std::getenv( "DDA_MP_TRY_HOST_AIM" );
-                return env != nullptr && env[0] != '\0' && std::string( env ) != "0";
-            }();
-            if( !mp_legacy_throw && mp_try_host_aim && mp_have_origin ) {
-                mp_run_client_throw( it, uid,
-                                     tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
-            } else {
-                mp_throw_uid = uid;
-                mp_throw_dx = 1;
-                mp_throw_dy = 0;
-                mp_throw_name = it.tname();
-                mp_throw_range = std::max( 1, viewer.throw_range( it ) );
-                const std::string tr_var = it.get_var( "mp_throw_range", std::string() );
-                if( !tr_var.empty() ) {
-                    mp_throw_range = std::max( 1, std::atoi( tr_var.c_str() ) );
-                }
-                mp_throw_active = true;
-                // Same idea as target_ui::choose_initial_target: start on the
-                // nearest visible target in range instead of an arbitrary tile.
-                {
-                    auto glyph_at = []( int dx, int dy ) -> uint32_t {
-                        if( mp_aim_w <= 0 || mp_aim_h <= 0 ) {
-                            return 0;
-                        }
-                        const int x = mp_aim_w / 2 + dx;
-                        const int y = mp_aim_h / 2 + dy;
-                        if( x < 0 || y < 0 || x >= mp_aim_w || y >= mp_aim_h ) {
-                            return 0;
-                        }
-                        const size_t i = static_cast<size_t>( y ) * mp_aim_w + x;
-                        return i < mp_aim_glyphs.size() ? mp_aim_glyphs[i] : 0;
-                    };
-                    int best = INT_MAX;
-                    for( const netplay::aim_target &t : mp_aim_targets ) {
-                        // AIM_TARGETS offsets can be one tile off from the glyph
-                        // cells; snap to the character glyph when present.
-                        int tx = t.dx;
-                        int ty = t.dy;
-                        if( t.is_character && glyph_at( tx, ty ) != '@' ) {
-                            static const int offs[8][2] = {
-                                { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
-                                { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 }
-                            };
-                            for( const auto &o : offs ) {
-                                if( glyph_at( t.dx + o[0], t.dy + o[1] ) == '@' ) {
-                                    tx = t.dx + o[0];
-                                    ty = t.dy + o[1];
-                                    break;
-                                }
-                            }
-                        }
-                        const int d = std::abs( tx ) + std::abs( ty );
-                        if( d > 0 && d <= mp_throw_range && d < best ) {
-                            best = d;
-                            mp_throw_dx = tx;
-                            mp_throw_dy = ty;
-                        }
-                    }
-                }
-                mp_aim_text.clear();
-                mp_client_aim_lines.clear();
-                mp_aim_char.reset();
-                if( !mp_char_json_cache.empty() ) {
-                    try {
-                        JsonValue jv = json_loader::from_string( mp_char_json_cache );
-                        std::unique_ptr<npc> tmp = std::make_unique<npc>();
-                        tmp->deserialize( jv.get_object() );
-                        mp_aim_char = std::move( tmp );
-                        mp_aim_item = it;
-                    } catch( ... ) {
-                        mp_aim_char.reset();
-                    }
-                }            }
+            mp_start_client_throw( it, uid );
             break;
         }
         if( act > 0 ) {
@@ -2000,6 +2034,48 @@ static void mp_run_host_inventory( const std::string &text )
         mp_inv_log( std::string( "error: " ) + e.what() );
     } catch( ... ) {
         mp_inv_log( "error: unknown" );
+    }
+}
+
+/* DDA MP v4.0a-159: 't' opens the throw-item selection (like the host's
+ * avatar_action::plthrow -> game_menus::inv::titled_menu( "Throw item" )),
+ * not the general inventory. Picking an item starts the throw reticle. */
+static void mp_run_throw_select( const std::string &text )
+{
+    try {
+        ui_adaptor mp_session_blocker( ui_adaptor::disable_uis_below{} );
+        (void)text;
+        if( !mp_native_avatar_ready ) {
+            mp_inv_log( "throw: no character mirror yet" );
+            return;
+        }
+        avatar &viewer = get_avatar();
+        inventory_selector_preset inv_preset;
+        inventory_pick_selector sel( viewer, inv_preset );
+        sel.set_title( _( "Throw item" ) );
+        sel.set_display_stats( false );
+        sel.clear_items();
+        sel.add_character_items( viewer );
+        if( sel.empty() ) {
+            popup( _( "You don't have any items to throw." ) );
+            return;
+        }
+        item_location chosen = sel.execute();
+        if( !chosen ) {
+            return;
+        }
+        const item &it = *chosen;
+        const std::string uid = it.get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            mp_inv_log( "throw: item has no mp_uid, ignored" );
+            return;
+        }
+        mp_start_client_throw( it, uid );
+        mp_inv_log( "throw: selected" );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "throw error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "throw error: unknown" );
     }
 }
 
@@ -2350,49 +2426,78 @@ static void mp_draw_aim_panel()
  * select-only cursor on its own map mirror; the host fires the avatar's
  * wielded gun at that offset with Character::fire_gun, so ballistics,
  * ammo, recoil and messages stay on the authoritative side. */
-/* DDA MP v4.0a-150: tile/creature info for the look cursor. Draws into the
- * current ImGui overlay pass; the caller owns overlay_begin/end so this and the
- * sidebar share one frame (a separate earlier frame was cleared by the later
- * sidebar pass, which is why the panel never appeared). */
+/* DDA MP v4.0a-150/159: tile and creature info for the look cursor. With the
+ * native renderer this is a real curses window the game paints itself (same
+ * colors, backgrounds and height as the host's look window); the ImGui blit
+ * remains only for the non-native replay fallback. The caller owns
+ * overlay_begin/end so this and the sidebar share one frame. */
 static int mp_native_sidebar_width();
+static bool mp_native_render_enabled();
 
 static void mp_draw_cursor_info( const snapshot &snap )
 {
-    if( mp_cursor == mp_cursor_mode::none && !mp_throw_active ) {
-        return;
-    }
-    const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
-    const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
-    const int tx = snap.width / 2 + rdx;
-    const int ty = snap.height / 2 + rdy;
-    if( tx < 0 || ty < 0 || tx >= snap.width || ty >= snap.height ) {
+    tripoint_bub_ms lp;
+    tripoint_abs_ms ap;
+    if( !mp_cursor_target( snap, ap, lp ) ) {
         return;
     }
     map &here = get_map();
-    // snap.origin_x/y is the pivot cell (the frame centre), not its top-left.
-    const tripoint_abs_ms ap( snap.origin_x + tx - snap.width / 2,
-                              snap.origin_y + ty - snap.height / 2, snap.origin_z );
-    const tripoint_bub_ms lp = here.get_bub( ap );
-    if( !here.inbounds( lp ) ) {
+    const visibility_variables cache = here.get_visibility_variables_cache();
+    // DDA MP v4.0a-159: the look window is the whole sidebar, exactly like
+    // game::look_around: full width, full height, bottom control hints and
+    // pre_print_all_tile_info (which adds the overmap place name above the
+    // terrain header).
+    const int info_w = std::min( TERMX, std::max( 30, mp_native_sidebar_width() ) );
+    const int info_h = TERMY;
+    const bool right = get_option<std::string>( "SIDEBAR_POSITION" ) == "right";
+    const int info_x = right ? std::max( 0, TERMX - info_w ) : 0;
+    static catacurses::window mp_info_win;
+    static int mp_info_w = -1;
+    static int mp_info_h = -1;
+    static int mp_info_x = -1;
+    if( !mp_info_win || mp_info_w != info_w || mp_info_h != info_h ||
+        mp_info_x != info_x ) {
+        mp_info_win = catacurses::newwin( info_h, info_w, point( info_x, 0 ) );
+        mp_info_w = info_w;
+        mp_info_h = info_h;
+        mp_info_x = info_x;
+    }
+    if( !mp_info_win ) {
         return;
     }
-    // DDA MP v4.0a-154: use the game's own look-around formatter. It emits the
-    // same sections, terrain description, creature and item lines as the host,
-    // instead of our ad-hoc key=value list.
-    const int info_w = std::max( 30, mp_native_sidebar_width() );
-    const int info_h = std::min( TERMY, 30 );
-    catacurses::window win = catacurses::newwin( info_h, info_w, point( 0, 0 ) );
+    catacurses::window win = mp_info_win;
     werase( win );
     draw_border( win );
     const char *title = mp_throw_active ? _( "< <color_green>Throwing</color> >" ) :
                         mp_cursor == mp_cursor_mode::fire ? _( "< <color_green>Aiming</color> >" ) :
                         _( "< <color_green>Look around</color> >" );
     center_print( win, 0, c_white, title );
+    {
+        input_context lctxt( "LOOK" );
+        lctxt.register_action( "EXTENDED_DESCRIPTION" );
+        lctxt.register_action( "TOGGLE_FAST_SCROLL" );
+        mvwprintz( win, point( 1, info_h - 3 ), c_light_green, "%s - %s",
+                   lctxt.get_desc( "EXTENDED_DESCRIPTION" ),
+                   lctxt.get_action_name( "EXTENDED_DESCRIPTION" ) );
+        mvwprintz( win, point( 1, info_h - 2 ),
+                   mp_look_fast_scroll ? c_light_green : c_green, "%s - %s",
+                   lctxt.get_desc( "TOGGLE_FAST_SCROLL" ),
+                   lctxt.get_action_name( "TOGGLE_FAST_SCROLL" ) );
+    }
     int line = 1;
-    const visibility_variables cache = here.get_visibility_variables_cache();
     try {
-        g->print_all_tile_info( lp, win, "", 1, line, info_h - 4, cache );
+        g->pre_print_all_tile_info( lp, win, line, info_h - 4, cache );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "lookinfo: error " ) + e.what() );
+        return;
     } catch( ... ) {
+        mp_inv_log( "lookinfo: error unknown" );
+        return;
+    }
+    if( mp_native_render_enabled() ) {
+        // The regular curses pass paints this window with the exact colors and
+        // backgrounds the host uses.
+        wnoutrefresh( win );
         return;
     }
     cata_cursesport::WINDOW *raw = win.get<cata_cursesport::WINDOW>();
@@ -2601,9 +2706,18 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_begin_client_fire();
             break;
         case ACTION_THROW:
-        case ACTION_THROW_WIELDED:
-            mp_run_host_inventory( inv_text );
+            mp_run_throw_select( inv_text );
             break;
+        case ACTION_THROW_WIELDED: {
+            const item_location wielded = get_avatar().get_wielded_item();
+            if( wielded ) {
+                const std::string uid = wielded->get_var( "mp_uid", std::string() );
+                if( !uid.empty() ) {
+                    mp_start_client_throw( *wielded, uid );
+                }
+            }
+            break;
+        }
         // DDA MP v4.0a-133: the item-action hotkeys open the inventory; the
         // row menu exposes drop/eat/wear/read/wield/use for the chosen item.
         case ACTION_DROP:
@@ -3340,6 +3454,29 @@ static void mp_native_setup_terrain_window( const snapshot &snap, int dest_x, in
     werase( mp_native_terrain_win );
     wnoutrefresh( mp_native_terrain_win );
 }
+
+/* DDA MP v4.0a-159: queue the tileset's own "cursor" sprite, exactly like the
+ * host's game::draw_cursor spends it. The previous hand-drawn ImGui brackets
+ * used a different arm/line geometry than the tileset cursor. */
+#if defined(TILES)
+static void mp_queue_native_cursor( const snapshot &snap )
+{
+    tripoint_abs_ms ap;
+    tripoint_bub_ms lp;
+    if( !mp_cursor_target( snap, ap, lp ) ) {
+        return;
+    }
+    g->draw_cursor( lp );
+    // The terrain window is otherwise only refreshed when a new snapshot
+    // arrives (a few times a second); the moved reticle must reach the next
+    // present at view-loop speed.
+    wnoutrefresh( g->w_terrain );
+}
+#else
+static void mp_queue_native_cursor( const snapshot & )
+{
+}
+#endif
 
 /* DDA MP v4.0a-115: the sidebar itself, drawn by the game's own panel code
  * for the client's character mirror. The host's build_sidebar_snapshot skips
@@ -4693,17 +4830,22 @@ void run_view_loop()
             // ImGui pass on top of the map and the native panels: message log,
             // minimap and the character-sheet fallback.
             netplay::overlay_begin();
-            mp_draw_sidebar_overlay();
+            // While looking/aiming the whole sidebar belongs to the look
+            // window (the host does the same); skip the client log/minimap so
+            // their ImGui layer cannot paint over the native look panel.
+            if( mp_cursor == mp_cursor_mode::none && !mp_throw_active ) {
+                mp_draw_sidebar_overlay();
+            }
             mp_draw_cursor_info( snap );
             if( mp_throw_active ) {
                 mp_draw_aim_panel();
             }
-            // DDA MP v4.0a-153: the original game's cursor sprite is four
-            // white corner brackets (32x32, arms ~6px). Draw the same shape in
-            // the shared overlay pass. It is visible even when the tileset
-            // cursor sprite does not resolve in the replay backend, and it
-            // matches the host's selected-cell look.
-            {
+            // DDA MP v4.0a-159: on the native renderer use the tileset's own
+            // "cursor" sprite through game::draw_cursor, exactly like the host.
+            // The hand-drawn brackets remain only for the replay fallback.
+            if( mp_native_render_enabled() ) {
+                mp_queue_native_cursor( snap );
+            } else {
                 bool have_target = false;
                 int rdx = 0;
                 int rdy = 0;
@@ -4857,6 +4999,29 @@ void run_view_loop()
                                  mp_canvas_cx, mp_canvas_cy, mp_canvas_tw, mp_canvas_th,
                                  TERMX, TERMY, font_px_w, font_px_h ) );
                 }
+                // Prefer an NPC/monster tile so the creature section of the
+                // look panel (character block, worn gear, attitude background)
+                // is exercised too. Keep scanning: the first picture often
+                // arrives before any creature is streamed.
+                static bool mp_test_look_on_creature = false;
+                if( mp_cursor == mp_cursor_mode::look && !mp_test_look_on_creature ) {
+                    for( const snapshot::creature_frame &cf : snap.creatures ) {
+                        if( cf.az != snap.origin_z ) {
+                            continue;
+                        }
+                        const int ddx = cf.ax - snap.origin_x;
+                        const int ddy = cf.ay - snap.origin_y;
+                        if( std::abs( ddx ) < snap.width / 2 &&
+                            std::abs( ddy ) < snap.height / 2 ) {
+                            mp_cursor_dx = ddx;
+                            mp_cursor_dy = ddy;
+                            mp_test_look_on_creature = true;
+                            mp_inv_log( string_format( "test: look creature offset %d,%d",
+                                                       ddx, ddy ) );
+                            break;
+                        }
+                    }
+                }
             }
             // DDA MP test hook: put the client into long wait/AFK so the host
             // can advance rounds without it.
@@ -4944,20 +5109,45 @@ void run_view_loop()
                     mp_cursor = mp_cursor_mode::none;
                     continue;
                 }
+                // The host's LOOK actions are not registered in the view
+                // context; map the raw key through the same context the host
+                // uses so the bottom hints are real controls.
+                input_context lctxt( "LOOK", keyboard_mode::keycode );
+                lctxt.register_action( "EXTENDED_DESCRIPTION" );
+                lctxt.register_action( "TOGGLE_FAST_SCROLL" );
+                const std::string look_act = lctxt.input_to_action( mp_ev );
+                if( look_act == "TOGGLE_FAST_SCROLL" ) {
+                    mp_look_fast_scroll = !mp_look_fast_scroll;
+                    continue;
+                }
+                if( look_act == "EXTENDED_DESCRIPTION" ) {
+                    tripoint_abs_ms look_ap;
+                    tripoint_bub_ms look_lp;
+                    if( mp_cursor_target( snap, look_ap, look_lp ) ) {
+                        try {
+                            extended_description_window ext_desc( look_lp );
+                            ext_desc.show();
+                        } catch( ... ) {
+                        }
+                    }
+                    continue;
+                }
+                const int mp_step = mp_look_fast_scroll
+                                    ? std::max( 1, get_option<int>( "FAST_SCROLL_OFFSET" ) ) : 1;
                 if( action == "UP" ) {
-                    --mp_cursor_dy;
+                    mp_cursor_dy -= mp_step;
                     continue;
                 }
                 if( action == "DOWN" ) {
-                    ++mp_cursor_dy;
+                    mp_cursor_dy += mp_step;
                     continue;
                 }
                 if( action == "LEFT" ) {
-                    --mp_cursor_dx;
+                    mp_cursor_dx -= mp_step;
                     continue;
                 }
                 if( action == "RIGHT" ) {
-                    ++mp_cursor_dx;
+                    mp_cursor_dx += mp_step;
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
@@ -5154,14 +5344,24 @@ void run_view_loop()
                             mp_begin_client_fire();
                             continue;
                         case ACTION_THROW:
-                        case ACTION_THROW_WIELDED:
-                            // Vanilla t opens the inventory to pick something
-                            // to throw; the item menu's throw action starts the
-                            // client-side targeting. Without this case the key
-                            // was sent as an unknown host action and nothing
-                            // happened on the client.
-                            mp_run_host_inventory( mp_inv_text );
+                            // Vanilla t opens the "Throw item" selection, not
+                            // the general inventory; pick the item here and
+                            // start the client-side targeting.
+                            mp_run_throw_select( mp_inv_text );
                             continue;
+                        case ACTION_THROW_WIELDED: {
+                            // The host's plthrow_wielded uses the wielded item
+                            // directly, without opening a selection.
+                            const item_location wielded = get_avatar().get_wielded_item();
+                            if( wielded ) {
+                                const std::string uid = wielded->get_var(
+                                                            "mp_uid", std::string() );
+                                if( !uid.empty() ) {
+                                    mp_start_client_throw( *wielded, uid );
+                                }
+                            }
+                            continue;
+                        }
                         case ACTION_DROP:
                         case ACTION_EAT:
                         case ACTION_WEAR:
