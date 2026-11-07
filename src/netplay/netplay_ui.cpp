@@ -2354,66 +2354,108 @@ static void mp_draw_aim_panel()
  * current ImGui overlay pass; the caller owns overlay_begin/end so this and the
  * sidebar share one frame (a separate earlier frame was cleared by the later
  * sidebar pass, which is why the panel never appeared). */
-static void mp_draw_look_overlay( const snapshot &snap )
+static int mp_native_sidebar_width();
+
+static void mp_draw_cursor_info( const snapshot &snap )
 {
-    if( mp_cursor != mp_cursor_mode::look ) {
+    if( mp_cursor == mp_cursor_mode::none && !mp_throw_active ) {
         return;
     }
-    std::vector<std::string> lines;
-    const int tx = snap.width / 2 + mp_cursor_dx;
-    const int ty = snap.height / 2 + mp_cursor_dy;
-    if( tx >= 0 && ty >= 0 && tx < snap.width && ty < snap.height ) {
-        lines.push_back( string_format( _( "Tile %d,%d" ), snap.origin_x + tx,
-                                        snap.origin_y + ty ) );
-        const size_t idx = static_cast<size_t>( ty ) * snap.width + tx;
-        if( idx < snap.tiles.size() ) {
-            const tile_cell &t = snap.tiles[idx];
-            if( !t.ter.empty() ) {
-                lines.push_back( _( "Terrain: " ) + t.ter );
-            }
-            if( !t.furn.empty() ) {
-                lines.push_back( _( "Furniture: " ) + t.furn );
-            }
-            if( !t.item.empty() ) {
-                const itype_id iid( t.item );
-                lines.push_back( _( "Item: " ) +
-                                 ( iid.is_valid() ? item::nname( iid ) : t.item ) );
-            }
-            if( !t.critter.empty() ) {
-                const mtype_id mid( t.critter );
-                lines.push_back( _( "Creature: " ) +
-                                 ( mid.is_valid() ? mid->nname() : t.critter ) );
-            }
-            if( !t.field.empty() ) {
-                lines.push_back( _( "Field: " ) + t.field );
-            }
-            if( !t.trap.empty() ) {
-                lines.push_back( _( "Trap: " ) + t.trap );
-            }
-            if( !t.graffiti.empty() ) {
-                lines.push_back( _( "Graffiti: " ) + t.graffiti );
-            }
-        }
-    } else {
-        lines.push_back( _( "Outside the frame" ) );
+    const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
+    const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
+    const int tx = snap.width / 2 + rdx;
+    const int ty = snap.height / 2 + rdy;
+    if( tx < 0 || ty < 0 || tx >= snap.width || ty >= snap.height ) {
+        return;
     }
+    map &here = get_map();
+    const tripoint_abs_ms ap( snap.origin_x + tx, snap.origin_y + ty, snap.origin_z );
+    const tripoint_bub_ms lp = here.get_bub( ap );
+    if( !here.inbounds( lp ) ) {
+        return;
+    }
+    // DDA MP v4.0a-154: use the game's own look-around formatter. It emits the
+    // same sections, terrain description, creature and item lines as the host,
+    // instead of our ad-hoc key=value list.
+    const int info_w = std::max( 30, mp_native_sidebar_width() );
+    const int info_h = std::min( TERMY, 30 );
+    catacurses::window win = catacurses::newwin( info_h, info_w, point( 0, 0 ) );
+    werase( win );
+    draw_border( win );
+    const char *title = mp_throw_active ? _( "< <color_green>Throwing</color> >" ) :
+                        mp_cursor == mp_cursor_mode::fire ? _( "< <color_green>Aiming</color> >" ) :
+                        _( "< <color_green>Look around</color> >" );
+    center_print( win, 0, c_white, title );
+    int line = 1;
+    const visibility_variables cache = here.get_visibility_variables_cache();
+    try {
+        g->print_all_tile_info( lp, win, "", 1, line, info_h - 4, cache );
+    } catch( ... ) {
+        return;
+    }
+    cata_cursesport::WINDOW *raw = win.get<cata_cursesport::WINDOW>();
+    if( raw == nullptr ) {
+        return;
+    }
+    const ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
-    const float pad = ImGui::GetFontSize() * 0.6f;
-    const float line_h = ImGui::GetTextLineHeight();
-    float w = 0.0f;
-    for( const std::string &line : lines ) {
-        w = std::max( w, ImGui::CalcTextSize( line.c_str() ).x );
-    }
-    const float h = lines.size() * line_h + 2 * pad;
-    const ImVec2 p0( 8.0f, 8.0f );
-    dl->AddRectFilled( p0, ImVec2( p0.x + w + 2 * pad, p0.y + h ),
-                       IM_COL32( 0, 0, 0, 210 ), 4.0f );
-    for( size_t i = 0; i < lines.size(); i++ ) {
-        dl->AddText( ImVec2( p0.x + pad, p0.y + pad + i * line_h ),
-                     IM_COL32( 235, 235, 235, 255 ), lines[i].c_str() );
+    const float cw = ImGui::CalcTextSize( "M" ).x;
+    const float ch = ImGui::GetTextLineHeight();
+    const float x0 = std::max( 0.0f, io.DisplaySize.x - info_w * cw - cw );
+    const float x1 = std::min( io.DisplaySize.x, x0 + info_w * cw );
+    // Cover the native/pixel sidebar: the host shows this info in exactly that
+    // place.
+    dl->AddRectFilled( ImVec2( std::max( 0.0f, x0 - cw ), 0.0f ), io.DisplaySize,
+                       IM_COL32( 0, 0, 0, 255 ) );
+    dl->AddRect( ImVec2( x0 - cw, 0.0f ), ImVec2( x1, info_h * ch ),
+                 IM_COL32( 140, 140, 140, 255 ) );
+    auto box_glyph = []( const std::string &s ) {
+        if( s.empty() ) {
+            return true;
+        }
+        const unsigned char c = static_cast<unsigned char>( s[0] );
+        if( c >= 0x20 && c < 0x7F ) {
+            return false;
+        }
+        if( c == 0xD0 || c == 0xD1 ) {
+            return false;
+        }
+        if( c == 0xE2 && s.size() >= 3 && static_cast<unsigned char>( s[1] ) == 0x80 ) {
+            return false;
+        }
+        return true;
+    };
+    for( int row = 0; row < info_h; row++ ) {
+        const int col_begin = 1;
+        const int col_end = info_w - 1;
+        int col = col_begin;
+        while( col < col_end ) {
+            const cata_cursesport::cursecell &c = raw->line[row].chars[col];
+            if( c.ch.empty() || c.ch == " " ) {
+                ++col;
+                continue;
+            }
+            const cata_cursesport::base_color run_col = c.FG;
+            std::string run;
+            int end = col;
+            while( end < col_end ) {
+                const cata_cursesport::cursecell &cc = raw->line[row].chars[end];
+                if( cc.ch.empty() || cc.ch == " " || cc.FG != run_col ) {
+                    break;
+                }
+                run += cc.ch;
+                ++end;
+            }
+            if( !box_glyph( run ) ) {
+                dl->AddText( ImVec2( x0 + col * cw, row * ch ),
+                             cataimgui::ImU32_from_color(
+                                 decode_cell_color( static_cast<int>( run_col ) ) ),
+                             run.c_str() );
+            }
+            col = end;
+        }
     }
 }
-
 static void mp_run_client_fire()
 {
     avatar &cli = get_avatar();
@@ -4650,10 +4692,10 @@ void run_view_loop()
             // minimap and the character-sheet fallback.
             netplay::overlay_begin();
             mp_draw_sidebar_overlay();
+            mp_draw_cursor_info( snap );
             if( mp_throw_active ) {
                 mp_draw_aim_panel();
             }
-            mp_draw_look_overlay( snap );
             // DDA MP v4.0a-153: the original game's cursor sprite is four
             // white corner brackets (32x32, arms ~6px). Draw the same shape in
             // the shared overlay pass. It is visible even when the tileset
@@ -4676,14 +4718,19 @@ void run_view_loop()
                 const int ty = snap.height / 2 + rdy;
                 if( have_target && tx >= 0 && ty >= 0 && tx < snap.width &&
                     ty < snap.height && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+                    // Tile centers sit at canvas_center + (cell - size/2) * tile.
+                    // The old -0.5 put the frame half a tile up/left, i.e.
+                    // between four tiles.
                     const float px = mp_canvas_cx +
-                                     ( tx - snap.width / 2.0f - 0.5f ) * mp_canvas_tw;
+                                     ( tx - snap.width / 2.0f ) * mp_canvas_tw -
+                                     mp_canvas_tw * 0.5f;
                     const float py = mp_canvas_cy +
-                                     ( ty - snap.height / 2.0f - 0.5f ) * mp_canvas_th;
+                                     ( ty - snap.height / 2.0f ) * mp_canvas_th -
+                                     mp_canvas_th * 0.5f;
                     const float w = mp_canvas_tw;
                     const float h = mp_canvas_th;
-                    const float arm = std::max( 3.0f, std::min( w, h ) * 0.19f );
-                    const float lw = std::max( 1.5f, std::min( w, h ) * 0.06f );
+                    const float arm = std::max( 5.0f, std::min( w, h ) * 0.25f );
+                    const float lw = std::max( 3.0f, std::min( w, h ) * 0.09f );
                     ImDrawList *dl = ImGui::GetForegroundDrawList();
                     const ImU32 col = IM_COL32( 255, 255, 255, 235 );
                     // top-left
@@ -4698,6 +4745,53 @@ void run_view_loop()
                     // bottom-right
                     dl->AddLine( ImVec2( px + w - arm, py + h ), ImVec2( px + w, py + h ), col, lw );
                     dl->AddLine( ImVec2( px + w, py + h - arm ), ImVec2( px + w, py + h ), col, lw );
+                }
+            }
+            // DDA MP v4.0a-154: the host's line_trail is a dot on every tile
+            // between the character and the target. Draw the same dots for
+            // fire/throw, so the trajectory is readable even if the tileset
+            // line sprite does not resolve in the replay backend.
+            if( ( mp_throw_active || mp_cursor == mp_cursor_mode::fire ) &&
+                mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+                const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
+                const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
+                const int cx = snap.width / 2;
+                const int cy = snap.height / 2;
+                const int tx = cx + rdx;
+                const int ty = cy + rdy;
+                if( tx >= 0 && ty >= 0 && tx < snap.width && ty < snap.height ) {
+                    ImDrawList *dl = ImGui::GetForegroundDrawList();
+                    const ImU32 dot = IM_COL32( 255, 255, 255, 200 );
+                    const float rad = std::max( 2.0f, std::min( mp_canvas_tw,
+                                                                mp_canvas_th ) * 0.08f );
+                    int x = cx;
+                    int y = cy;
+                    const int dx = std::abs( tx - cx );
+                    const int sx = cx < tx ? 1 : -1;
+                    const int dy = -std::abs( ty - cy );
+                    const int sy = cy < ty ? 1 : -1;
+                    int err = dx + dy;
+                    while( true ) {
+                        if( !( x == cx && y == cy ) && !( x == tx && y == ty ) ) {
+                            const float pcx = mp_canvas_cx +
+                                              ( x - snap.width / 2.0f ) * mp_canvas_tw;
+                            const float pcy = mp_canvas_cy +
+                                              ( y - snap.height / 2.0f ) * mp_canvas_th;
+                            dl->AddCircleFilled( ImVec2( pcx, pcy ), rad, dot );
+                        }
+                        if( x == tx && y == ty ) {
+                            break;
+                        }
+                        const int e2 = 2 * err;
+                        if( e2 >= dy ) {
+                            err += dy;
+                            x += sx;
+                        }
+                        if( e2 <= dx ) {
+                            err += dx;
+                            y += sy;
+                        }
+                    }
                 }
             }
             netplay::overlay_end();
@@ -4757,6 +4851,23 @@ void run_view_loop()
                     mp_cursor_dx = 8;
                     mp_cursor_dy = 0;
                     mp_inv_log( "test: look cursor" );
+                    mp_tlog( string_format(
+                                 "look geom cx=%.1f cy=%.1f tw=%.1f th=%.1f term=%dx%d font=%dx%d",
+                                 mp_canvas_cx, mp_canvas_cy, mp_canvas_tw, mp_canvas_th,
+                                 TERMX, TERMY, font_px_w, font_px_h ) );
+                }
+            }
+            // DDA MP test hook: draw the throw reticle/info without a real
+            // throw, so an automated run can verify the trajectory dots.
+            if( const char *test_throw = std::getenv( "DDA_MP_TEST_CLIENT_THROW" );
+                test_throw != nullptr && test_throw[0] != '\0' ) {
+                static bool mp_test_throw_once = false;
+                if( !mp_test_throw_once && mp_have_picture ) {
+                    mp_test_throw_once = true;
+                    mp_throw_active = true;
+                    mp_throw_dx = 5;
+                    mp_throw_dy = 0;
+                    mp_inv_log( "test: throw cursor" );
                 }
             }
             const std::string action = ctxt.handle_input();
