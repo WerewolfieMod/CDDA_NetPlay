@@ -1409,6 +1409,9 @@ static int mp_client_item_menu( Character &you, const item &it )
     mp_menu_entry( menu, 'T', pgettext( "action", "take off" ), mp_rate_take_off( it, worn ) );
     mp_menu_entry( menu, 'd', pgettext( "action", "drop" ),
                    can_drop ? hint_rating::good : hint_rating::cant );
+    // DDA MP v4.0a-148: partner interaction - hand the item to a player
+    // standing next to the avatar (the host resolves the nearest one).
+    mp_menu_entry( menu, 'g', pgettext( "action", "give" ), hint_rating::good );
     mp_menu_entry( menu, 'U', pgettext( "action", "unload" ),
                    you.rate_action_unload( it ) == hint_rating::cant ?
                    hint_rating::cant : hint_rating::good );
@@ -1867,6 +1870,13 @@ static void mp_run_host_inventory( const std::string &text )
             if( invlet != KEY_ESCAPE && ( invlet == ' ' || inv_chars.valid( invlet ) ) ) {
                 netplay::client_send_inventory_uid( uid, '=', {}, { invlet } );
             }
+            break;
+        }
+        if( act == 'g' ) {
+            // Partner interaction: the host hands this item to the nearest
+            // adjacent player (another session avatar or the host player).
+            netplay::client_send_inventory_uid( uid, 'g', {}, {} );
+            mp_inv_log( "action: uid key=g give" );
             break;
         }
         if( act == 't' ) {

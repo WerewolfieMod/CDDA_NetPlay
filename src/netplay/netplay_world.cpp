@@ -2444,6 +2444,58 @@ void host_pump_inventory_actions()
                 changed = true;
                 break;
             }
+            case 'g': { // give to an adjacent player (partner interaction)
+                Character *target = nullptr;
+                int target_sid = -1;
+                int best = 3;
+                for( const auto &entry : av_sid_to_npc ) {
+                    if( entry.first == sid ) {
+                        continue;
+                    }
+                    npc *other = host_session_avatar_npc( entry.first );
+                    if( other == nullptr || other == av || other->is_dead_state() ) {
+                        continue;
+                    }
+                    const int d = rl_dist( av->pos_abs(), other->pos_abs() );
+                    if( d <= 2 && d < best ) {
+                        best = d;
+                        target = other;
+                        target_sid = entry.first;
+                    }
+                }
+                avatar &host_player = get_avatar();
+                if( static_cast<Character *>( &host_player ) != av ) {
+                    const int d = rl_dist( av->pos_abs(), host_player.pos_abs() );
+                    if( d <= 2 && d < best ) {
+                        best = d;
+                        target = &host_player;
+                        target_sid = 0;
+                    }
+                }
+                if( target == nullptr ) {
+                    deny( _( "There is no one close enough to give it to." ) );
+                    break;
+                }
+                const std::string gift_name = loc->tname();
+                item gift = *loc;
+                loc.remove_item();
+                target->i_add_or_drop( gift );
+                netplay::host_send_event_to_sid(
+                    sid, string_format( _( "You give the %s to %s." ), gift_name,
+                                        target->get_name() ),
+                    static_cast<int>( m_good ) );
+                if( target_sid > 0 ) {
+                    netplay::host_send_event_to_sid(
+                        target_sid, string_format( _( "%s gives you the %s." ),
+                                                   av->get_name(), gift_name ),
+                        static_cast<int>( m_good ) );
+                    av_send_status( target_sid );
+                } else {
+                    add_msg( m_good, _( "%s gives you the %s." ), av->get_name(), gift_name );
+                }
+                changed = true;
+                break;
+            }
             case 'E': { // eat / drink
                 const ret_val<edible_rating> can = av->can_eat( *loc );
                 if( !can.success() &&
