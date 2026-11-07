@@ -4654,6 +4654,43 @@ void run_view_loop()
                 mp_draw_aim_panel();
             }
             mp_draw_look_overlay( snap );
+            // DDA MP v4.0a-152: always mark the selected cell. The tileset
+            // cursor sprite is not guaranteed to exist in every tileset (and
+            // sat under the avatar at offset 0,0), so draw a bright cell box
+            // and crosshair in the same overlay pass as the panels.
+            {
+                bool have_target = false;
+                int rdx = 0;
+                int rdy = 0;
+                if( mp_throw_active ) {
+                    have_target = true;
+                    rdx = mp_throw_dx;
+                    rdy = mp_throw_dy;
+                } else if( mp_cursor != mp_cursor_mode::none ) {
+                    have_target = true;
+                    rdx = mp_cursor_dx;
+                    rdy = mp_cursor_dy;
+                }
+                const int tx = snap.width / 2 + rdx;
+                const int ty = snap.height / 2 + rdy;
+                if( have_target && tx >= 0 && ty >= 0 && tx < snap.width &&
+                    ty < snap.height && mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+                    const float px = mp_canvas_cx +
+                                     ( tx - snap.width / 2.0f - 0.5f ) * mp_canvas_tw;
+                    const float py = mp_canvas_cy +
+                                     ( ty - snap.height / 2.0f - 0.5f ) * mp_canvas_th;
+                    ImDrawList *dl = ImGui::GetForegroundDrawList();
+                    const ImU32 col = IM_COL32( 255, 220, 0, 255 );
+                    dl->AddRect( ImVec2( px, py ),
+                                 ImVec2( px + mp_canvas_tw, py + mp_canvas_th ),
+                                 col, 0.0f, 0, 2.5f );
+                    const float mx = px + mp_canvas_tw * 0.5f;
+                    const float my = py + mp_canvas_th * 0.5f;
+                    const float arm = std::max( 4.0f, mp_canvas_tw * 0.3f );
+                    dl->AddLine( ImVec2( mx - arm, my ), ImVec2( mx + arm, my ), col, 1.5f );
+                    dl->AddLine( ImVec2( mx, my - arm ), ImVec2( mx, my + arm ), col, 1.5f );
+                }
+            }
             netplay::overlay_end();
 
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).

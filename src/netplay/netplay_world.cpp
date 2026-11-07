@@ -843,6 +843,11 @@ bool av_npc_alive( const shared_ptr_fast<npc> &p );
 /* session id -> the npc id of the avatar that session drives (see the
  * avatar-registry section; main thread only) */
 static std::map<int, int> av_sid_to_npc;
+/* DDA MP v4.0a-152: wall clock of the current turn round. A client that has
+ * not given an order within the grace window is treated as passing, so an
+ * idle player can never freeze the host forever. */
+static std::chrono::steady_clock::time_point mp_round_start =
+    std::chrono::steady_clock::now();
 /* DDA MP v4.0a-18: per-session item locations matching the last INVENTORY
  * payload row order. Client actions reference a row index; only the host
  * main thread rebuilds/consumes this map. */
@@ -1237,6 +1242,7 @@ static void av_bind_session( int sid, int npc_id )
         }
     }
     av_sid_to_npc[sid] = npc_id;
+    mp_round_start = std::chrono::steady_clock::now();
 }
 
 static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
@@ -1472,6 +1478,7 @@ static bool av_all_acted()
             ++it;
         }
     }
+    const auto mp_now = std::chrono::steady_clock::now();
     for( const auto &entry : av_sid_to_npc ) {
         // DDA MP v4.0a-88: an AFK (long wait) session must not block the
         // others; it does not take part in the turn round at all.
@@ -1490,6 +1497,11 @@ static bool av_all_acted()
         }
         const auto it = av_acted_since_tick.find( entry.first );
         if( it == av_acted_since_tick.end() || !it->second ) {
+            // DDA MP v4.0a-152: do not let an idle client freeze the host.
+            // After a short grace it counts as having passed this round.
+            if( mp_now - mp_round_start > std::chrono::milliseconds( 1500 ) ) {
+                continue;
+            }
             return false;
         }
     }
@@ -3586,6 +3598,7 @@ void host_note_world_turn()
     }
     host_region_sync();
     host_clear_auto_turn();
+    mp_round_start = std::chrono::steady_clock::now();
     av_acted_since_tick.clear();
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
