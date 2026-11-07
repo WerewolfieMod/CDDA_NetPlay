@@ -3082,6 +3082,7 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
         return;
     }
     mp_inv_log( "native: ensure bubble begin" );
+    const auto mp_bubble_t0 = std::chrono::steady_clock::now();
     map &here = get_map();
     static const ter_id t_open_air( "t_open_air" );
     // The client keeps no save of its own. Fill the mapbuffer with empty,
@@ -3132,15 +3133,27 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
             }
         }
     }
-    mp_inv_log( string_format( "native: submaps ready, missing=%d, overmap", missing ) );
+    const auto mp_fill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - mp_bubble_t0 ).count();
+    mp_inv_log( string_format( "native: submaps ready, missing=%d, overmap (fill=%lldms)",
+                               missing, static_cast<long long>( mp_fill_ms ) ) );
     // map::loadn() asks the current overmap for weather settings; the client
     // never loaded one. Create/load the host's overmap chunk first (same world
     // seed, so the base world matches the host's).
+    const auto mp_om_t0 = std::chrono::steady_clock::now();
     overmap_buffer.get( project_to<coords::om>( center_abs ).xy() );
+    const auto mp_om_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - mp_om_t0 ).count();
     // Populate the grid directly: map::load() also actualizes every submap
     // (map extras/monsters) and reconciles items, which assumes a real save.
     // Only the storage and caches are needed for rendering.
+    const auto mp_load_t0 = std::chrono::steady_clock::now();
     here.mp_load_bubble_storage( origin );
+    const auto mp_load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - mp_load_t0 ).count();
+    mp_inv_log( string_format( "native: overmap=%lldms load=%lldms",
+                               static_cast<long long>( mp_om_ms ),
+                               static_cast<long long>( mp_load_ms ) ) );
 
     mp_inv_log( "native: bubble loaded, placing avatar" );
     if( ready ) {
@@ -3153,12 +3166,19 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
     // avatar::sees() and therefore indexes the visibility cache. A session
     // without a local world has never built one, so create it here (from the
     // empty bubble) before the first snapshot is applied.
+    const auto mp_cache_t0 = std::chrono::steady_clock::now();
     here.build_map_cache_for( center_abs.z(), /*skip_lightmap=*/false, get_avatar() );
     here.update_visibility_cache( center_abs.z() );
+    const auto mp_cache_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - mp_cache_t0 ).count();
     ready = true;
     bubble_center = center_abs;
-    mp_inv_log( string_format( "native: bubble at %d,%d z%d", center_abs.x(),
-                               center_abs.y(), center_abs.z() ) );
+    mp_inv_log( string_format( "native: bubble at %d,%d z%d (cache=%lldms total=%lldms)",
+                               center_abs.x(), center_abs.y(), center_abs.z(),
+                               static_cast<long long>( mp_cache_ms ),
+                               static_cast<long long>(
+                                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - mp_bubble_t0 ).count() ) ) );
 }
 
 static void mp_native_apply_avatar_json()

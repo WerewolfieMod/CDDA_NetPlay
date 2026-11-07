@@ -52,7 +52,13 @@ namespace
 /* Keep both players inside one map until they can no longer share a frame
  * with the host. Two maps are resident after the split; they overlap, which
  * is fine because both are views onto the same MAPBUFFER submaps. */
-constexpr int region_split_distance = 48;
+// DDA MP v4.0a-162: split at 30 tiles instead of 48. While an avatar is in
+// the host's map, every snapshot re-casts the host map's light/LOS caches for
+// that avatar's view and the host's own next draw recasts them back; the two
+// views thrash the shared caches and the client's steps lag (30-45 tiles).
+// Its own region map removes the thrash. Closer than 30 both views are close
+// enough that the shared bubble stays responsive.
+constexpr int region_split_distance = 30;
 
 std::map<int, bubble_region> mp_regions;
 /* The host region (id 0) is not in the map above: it uses g->m and the host

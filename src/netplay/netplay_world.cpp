@@ -953,14 +953,17 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center,
         return;
     }
     snapshot snap;
+    const auto mp_build_t0 = std::chrono::steady_clock::now();
     build_host_snapshot( snap, center, viewer );
+    const long long mp_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - mp_build_t0 ).count();
     if( netplay::mp_diag_enabled() ) {
         const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::system_clock::now().time_since_epoch() ).count();
         const tripoint_bub_ms vp = viewer != nullptr ? viewer->pos_bub() : get_avatar().pos_bub();
         if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-            std::fprintf( f, "srv snap wms=%lld sid=%d center=%d,%d viewer=%d,%d\n",
-                          wms, sid, center.x(), center.y(), vp.x(), vp.y() );
+            std::fprintf( f, "srv snap wms=%lld sid=%d center=%d,%d viewer=%d,%d build=%lldms\n",
+                          wms, sid, center.x(), center.y(), vp.x(), vp.y(), mp_build_ms );
             std::fclose( f );
         }
     }
@@ -1563,6 +1566,7 @@ void host_pump_avatar_keys()
     if( const char *test_step = std::getenv( "DDA_MP_TEST_STEP" );
         test_step != nullptr && test_step[0] != '\0' ) {
         static int mp_test_step_left = std::atoi( test_step );
+        static bool mp_test_step_started = false;
         static auto mp_test_step_last =
             std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
         const auto mp_test_step_now = std::chrono::steady_clock::now();
@@ -1572,6 +1576,13 @@ void host_pump_avatar_keys()
                 npc *av = av_session_npc( sid );
                 if( av == nullptr ) {
                     continue;
+                }
+                // Give the client time to build its mirror/overmap after the
+                // bind; otherwise the first steps are lost in that load.
+                if( !mp_test_step_started ) {
+                    mp_test_step_started = true;
+                    mp_test_step_last = mp_test_step_now + std::chrono::seconds( 10 );
+                    break;
                 }
                 // Start counting only once a session avatar is actually bound;
                 // otherwise the hook burns all its steps while the client loads.
