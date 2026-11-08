@@ -5171,8 +5171,8 @@ void run_view_loop()
                 test_action != nullptr && test_action[0] != '\0' ) {
                 static bool mp_test_action_once = false;
                 if( !mp_test_action_once && mp_have_picture ) {
-                    mp_test_action_once = true;
                     const std::string action_name( test_action );
+                    bool sent = true;
                     if( action_name == "smash" ) {
                         netplay::client_send_client_action( ACTION_SMASH );
                     } else if( action_name == "butcher" ) {
@@ -5182,7 +5182,9 @@ void run_view_loop()
                                                      "board_up_window" );
                     } else if( action_name == "disassemble" ) {
                         // Address the first carried item by its host uid, exactly
-                        // like the inventory item menu does.
+                        // like the inventory item menu does. The mirror arrives
+                        // with a status push, so retry until an item is there.
+                        sent = false;
                         for( item *it : get_avatar().inv_dump() ) {
                             if( it == nullptr ) {
                                 continue;
@@ -5190,11 +5192,15 @@ void run_view_loop()
                             const std::string uid = it->get_var( "mp_uid", std::string() );
                             if( !uid.empty() ) {
                                 netplay::client_send_inventory_uid( uid, 'D' );
+                                sent = true;
                                 break;
                             }
                         }
                     }
-                    mp_inv_log( "test: client action " + action_name );
+                    if( sent ) {
+                        mp_test_action_once = true;
+                        mp_inv_log( "test: client action " + action_name );
+                    }
                 }
             }
             // DDA MP test hook: draw the throw reticle/info without a real

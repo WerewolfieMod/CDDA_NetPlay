@@ -1636,6 +1636,39 @@ static bool av_all_acted()
 void host_pump_avatar_keys()
 {
     host_region_sync();
+    // DDA MP test hook: put a corpse, a butchering tool and a disassemblable
+    // item on the session avatar, so the butcher / disassembly paths can be
+    // exercised end to end.
+    if( const char *test_give = std::getenv( "DDA_MP_TEST_GIVE" );
+        test_give != nullptr && test_give[0] != '\0' ) {
+        static bool mp_test_give_done = false;
+        if( !mp_test_give_done ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av != nullptr ) {
+                    mp_test_give_done = true;
+                    item knife( itype_id( "knife_combat" ), calendar::turn );
+                    av->i_add( knife );
+                    item scythe( itype_id( "blade_scythe" ), calendar::turn );
+                    av->i_add( scythe );
+                    // The test corner of the shelter is just below the crafting
+                    // light threshold; the game's own "camp vision" effect makes
+                    // the disassembly path testable without moving the avatar.
+                    av->add_effect( efftype_id( "HACK_camp_vision_for_npc" ), 1_hours );
+                    get_map().add_item( av->pos_bub(),
+                                        item::make_corpse( mtype_id( "mon_zombie" ) ) );
+                    av_send_status( sid );
+                    if( mp_diag_enabled() ) {
+                        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "test: gave corpse + items sid=%d\n", sid );
+                            std::fclose( f );
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
     // DDA MP test hook: emit one ordinary engine message for the first bound
     // session avatar, so the localized client journal (msgid + arguments) can
     // be verified: the argument is an item name resolved on the client.
@@ -2802,6 +2835,15 @@ void host_pump_inventory_actions()
                 changed = av->unload( loc );
                 break;
             case 'D': { // disassemble the chosen item (silent: no host dialogs)
+                if( netplay::mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "disassemble: pos=%d,%d z=%d fine=%.2f ambient=%.2f\n",
+                                      av->pos_bub().x(), av->pos_bub().y(), av->pos_bub().z(),
+                                      av->fine_detail_vision_mod(),
+                                      get_map().ambient_light_at( av->pos_bub() ) );
+                        std::fclose( f );
+                    }
+                }
                 if( av->disassemble( loc, false, false, true ) ) {
                     changed = true;
                 }
@@ -3787,6 +3829,12 @@ static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
         }
     }
     if( corpse == nullptr ) {
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "butcher: no corpse at %d,%d\n", pos.x(), pos.y() );
+                std::fclose( f );
+            }
+        }
         av.add_msg_if_player( m_info, _( "There are no corpses here to butcher." ) );
         return;
     }
@@ -3803,6 +3851,13 @@ static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
     }
     item_location corpse_loc( map_cursor( pos ), corpse );
     av.assign_activity( butchery_activity_actor( butchery_data( corpse_loc, butcher_type::FULL ) ) );
+    if( netplay::mp_diag_enabled() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "butcher: activity started sid=%d corpse=%s\n", sid,
+                          corpse->tname().c_str() );
+            std::fclose( f );
+        }
+    }
     av_mark_acted( sid );
     netplay::host_send_hover_to_sid( sid, "" );
     av_send_session_picture( sid, av.pos_bub(), &av );
