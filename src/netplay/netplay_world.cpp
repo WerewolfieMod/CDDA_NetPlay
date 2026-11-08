@@ -1560,6 +1560,21 @@ static bool av_all_acted()
 void host_pump_avatar_keys()
 {
     host_region_sync();
+    // DDA MP test hook: put the host into long wait once a session exists.
+    if( const char *test_lw = std::getenv( "DDA_MP_TEST_HOST_LONGWAIT" );
+        test_lw != nullptr && test_lw[0] != '\0' ) {
+        static bool mp_test_lw_done = false;
+        if( !mp_test_lw_done && !host_session_ids().empty() ) {
+            mp_test_lw_done = true;
+            netplay::set_long_wait( true );
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "test: host long wait ON\n" );
+                    std::fclose( f );
+                }
+            }
+        }
+    }
     // DDA MP test hook: move every bound avatar one absolute tile east a few
     // times a second, ignoring terrain. This isolates the client's mirror /
     // camera updates from pathfinding and world turns.
@@ -1591,6 +1606,7 @@ void host_pump_avatar_keys()
                 const tripoint_abs_ms next = av->pos_abs() + tripoint_rel_ms( 1, 0, 0 );
                 av->setpos( next, false );
                 av_send_session_picture( sid, av->pos_bub(), av );
+                av_send_status( sid );
                 if( mp_diag_enabled() ) {
                     if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
                         std::fprintf( f, "test: step sid=%d to=%d,%d\n", sid,
@@ -1660,7 +1676,7 @@ void host_pump_avatar_keys()
         // DDA MP v4.0a-90: with long wait the step is refunded, so a queued
         // burst could move the avatar many tiles in one pump. Keep the burst
         // to one step per pump; the input loop calls this ~100/s.
-        if( netplay::long_wait_active() && ++mp_steps > 1 ) {
+        if( netplay::host_session_afk( sk.sid ) && ++mp_steps > 1 ) {
             netplay::host_put_back_sid_key( sk );
             break;
         }
@@ -1747,7 +1763,7 @@ void host_pump_avatar_keys()
             av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
             npc_ptr->set_moves( av_move_pool[sk.sid] );
             av_mark_acted( sk.sid );
-            if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
+            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) ) {
                 av_waiting_for_turn[sk.sid] = true;
                 netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
             } else {
@@ -1773,7 +1789,7 @@ void host_pump_avatar_keys()
                 if( pool_it == av_move_pool.end() ) {
                     pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
                 }
-                if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) ) {
                     if( !av_waiting_for_turn[sk.sid] ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
@@ -1812,7 +1828,7 @@ void host_pump_avatar_keys()
                     av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
                     npc_ptr->set_moves( av_move_pool[sk.sid] );
                     av_mark_acted( sk.sid );
-                    if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
+                    if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                     } else {
@@ -1844,7 +1860,7 @@ void host_pump_avatar_keys()
                     av_mark_acted( sk.sid );
                     netplay::host_send_event_to_sid(
                         sk.sid, _( "You open the door." ), static_cast<int>( m_info ) );
-                    if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                    if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                     } else {
@@ -1883,7 +1899,8 @@ void host_pump_avatar_keys()
                 // later turn — a delayed automatic move reads as "my input was
                 // ignored and then happened by itself"). The player presses
                 // again when the host's turn starts a new round.
-                if( !netplay::long_wait_active() && !av_waiting_for_turn[sk.sid] ) {
+                if( !netplay::host_session_afk( sk.sid ) &&
+                    !av_waiting_for_turn[sk.sid] ) {
                     av_waiting_for_turn[sk.sid] = true;
                     netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                 }
@@ -1900,10 +1917,11 @@ void host_pump_avatar_keys()
             // DDA MP v4.0a-7: actually spend the pool (owned by netplay — the
             // NPC loader resets the engine moves on every bubble flip).
             av_move_pool[sk.sid] = std::max( 0, av_move_pool[sk.sid] - mp_step_cost );
-            if( netplay::long_wait_active() ) {
-                // DDA MP v4.0a-90: while the host long-waits it takes no turns,
-                // so it must not pace the moving player. The step is refunded
-                // and the world time stands still.
+            if( netplay::host_session_afk( sk.sid ) ) {
+                // DDA MP v4.0a-90/163: only THIS client's AFK refunds its
+                // step. The host's own long wait must not: the client's steps
+                // then never exhaust the pool, no world turn happens and its
+                // minimap/log freeze.
                 av_move_pool[sk.sid] += mp_step_cost;
             }
             npc_ptr->set_moves( av_move_pool[sk.sid] );
@@ -1922,6 +1940,12 @@ void host_pump_avatar_keys()
             // show the step to its own session immediately: without this the
             // movement would wait for the parity tick below
             av_send_session_picture( sk.sid, dst, npc_ptr.get() );
+            // DDA MP v4.0a-163: refresh the status/minimap with every step.
+            // When the host long-waits the world turn (and its status push)
+            // is driven by the clients, but the transient NPC lookup could
+            // skip that push and leave the client's minimap frozen at the
+            // join position.
+            av_send_status( sk.sid );
             if( netplay::mp_diag_enabled() ) {
                 const long long mp_total_ms = mp_ms_since( mp_t0 );
                 const int mp_dist = rl_dist( get_avatar().pos_bub(), npc_ptr->pos_bub() );
@@ -1937,7 +1961,7 @@ void host_pump_avatar_keys()
             // parity: this bind acted since the last world turn
             av_mark_acted( sk.sid );
             // The step went through; tell the client whether its round is over.
-            if( av_move_pool[sk.sid] <= 0 && !netplay::long_wait_active() ) {
+            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) ) {
                 av_waiting_for_turn[sk.sid] = true;
                 netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
             } else {
@@ -3172,7 +3196,7 @@ void host_pump_client_actions()
                 netplay::host_send_event_to_sid(
                     sid, dz > 0 ? _( "You go up the stairs." ) : _( "You go down the stairs." ),
                     static_cast<int>( m_info ) );
-                if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) ) {
                     av_waiting_for_turn[sid] = true;
                     netplay::host_send_hover_to_sid( sid, _( "Waiting for other players…" ) );
                 } else {
@@ -3321,7 +3345,7 @@ void host_pump_client_actions()
                                             here.name( *target ) ),
                         static_cast<int>( m_info ) );
                 }
-                if( pool_it->second <= 0 && !netplay::long_wait_active() ) {
+                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) ) {
                     av_waiting_for_turn[sid] = true;
                     netplay::host_send_hover_to_sid( sid, _( "Waiting for other players…" ) );
                 } else {
@@ -3716,7 +3740,7 @@ void host_pump_intents()
                     av_move_pool[in.sid] = std::max( 0, av->get_moves() );
                     av->set_moves( av_move_pool[in.sid] );
                     av_mark_acted( in.sid );
-                    if( av_move_pool[in.sid] <= 0 && !netplay::long_wait_active() ) {
+                    if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) ) {
                         av_waiting_for_turn[in.sid] = true;
                         netplay::host_send_hover_to_sid( in.sid,
                                                          _( "Waiting for other players…" ) );
@@ -3873,10 +3897,51 @@ bool host_input_done()
     return mp_host_input_done;
 }
 
+bool host_any_avatar_bound()
+{
+    return !av_sid_to_npc.empty();
+}
+
+bool host_any_active_client()
+{
+    for( const auto &entry : av_sid_to_npc ) {
+        if( host_session_afk( entry.first ) ) {
+            continue;
+        }
+        const npc *av = av_session_npc( entry.first );
+        if( av == nullptr || av->is_dead_state() ) {
+            continue;
+        }
+        if( av->has_effect( effect_sleep ) || !av->activity.is_null() ) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool host_round_done()
 {
     if( !host_is_running() || host_session_count() == 0 ) {
         return true;
+    }
+    if( mp_diag_enabled() ) {
+        static int mp_gate_logs = 0;
+        if( mp_gate_logs++ % 10 == 0 ) {
+            std::string s = string_format( "gate cin=%d lw=%d",
+                                           mp_host_input_done ? 1 : 0,
+                                           netplay::long_wait_active() ? 1 : 0 );
+            for( const auto &entry : av_sid_to_npc ) {
+                const auto it = av_move_pool.find( entry.first );
+                s += string_format( " sid%d pool=%d afk=%d", entry.first,
+                                    it == av_move_pool.end() ? -999 : it->second,
+                                    host_session_afk( entry.first ) ? 1 : 0 );
+            }
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "%s\n", s.c_str() );
+                std::fclose( f );
+            }
+        }
     }
     // DDA MP v4.0a-157: the host must give input in this round too. Without
     // this, a host with no action points (prone/lying) was treated as done and

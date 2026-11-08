@@ -1,4 +1,4 @@
-#include "game.h" // IWYU pragma: associated
+﻿#include "game.h" // IWYU pragma: associated
 
 #include <algorithm>
 #include <chrono>
@@ -358,6 +358,15 @@ input_context game::get_player_input( std::string &action )
 
         creature_tracker &creatures = get_creature_tracker();
         do {
+            // DDA MP v4.0a-163: a host in long wait auto-passes instead of
+            // sitting in the prompt forever (the world then never turns for
+            // the clients, freezing their minimap/log).
+            if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
+                netplay::host_any_active_client() &&
+                netplay::long_wait_active() ) {
+                action = "pause";
+                break;
+            }
             if( bWeatherEffect && get_option<bool>( "ANIMATION_RAIN" ) ) {
                 /*
                 Location to add rain drop animation bits! Since it refreshes w_terrain it can be added to the animation section easily
@@ -440,7 +449,7 @@ input_context game::get_player_input( std::string &action )
             if( uquit == QUIT_WATCH ) {
                 deathcam_msg_popup = std::make_unique<static_popup>();
                 deathcam_msg_popup
-                ->wait_message( c_red, _( "Press %s to accept your fate…" ), ctxt.get_desc( "QUIT" ) )
+                ->wait_message( c_red, _( "Press %s to accept your fateвЂ¦" ), ctxt.get_desc( "QUIT" ) )
                 .on_top( true );
             }
 
@@ -487,6 +496,12 @@ input_context game::get_player_input( std::string &action )
         ctxt.set_timeout( netplay::long_wait_active() && netplay::host_session_count() > 0 ? 10 :
                           125 );
         while( handle_mouseview( ctxt, action, true ) ) {
+            if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
+                netplay::host_any_active_client() &&
+                netplay::long_wait_active() ) {
+                action = "pause";
+                break;
+            }
             if( netplay::long_wait_active() && netplay::host_session_count() > 0 ) {
                 netplay::host_draw_long_wait_hint( 0 );
                 refresh_display();
@@ -538,7 +553,7 @@ static void rcdrive( const point_rel_ms &d )
     } else if( !here.add_item_or_charges( dest, *rc_car ).is_null() ) {
         tripoint_bub_ms src( c );
         //~ Sound of moving a remote controlled car
-        sounds::sound( src, 6, sounds::sound_t::movement, _( "zzz…" ), true, "misc", "rc_car_drives" );
+        sounds::sound( src, 6, sounds::sound_t::movement, _( "zzzвЂ¦" ), true, "misc", "rc_car_drives" );
         player_character.mod_moves( -to_moves<int>( 1_seconds ) * 0.5 );
         here.i_rem( src, rc_car );
         // FIXME: migrate to abs
@@ -1748,7 +1763,7 @@ static void fire()
     }
 
     if( !you.try_break_relax_gas( _( "Your willpower asserts itself, and so do you!" ),
-                                  _( "You're too pacified to strike anything…" ) ) ) {
+                                  _( "You're too pacified to strike anythingвЂ¦" ) ) ) {
         return;
     }
 

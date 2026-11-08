@@ -1,4 +1,4 @@
-#include "do_turn.h"
+﻿#include "do_turn.h"
 
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
@@ -531,7 +531,7 @@ void game::handle_progress_ui()
     time_duration wait_refresh_rate;
     if( player_is_sleeping ) {
         wait_redraw = true;
-        wait_message = _( "Wait till you wake up…" );
+        wait_message = _( "Wait till you wake upвЂ¦" );
         wait_refresh_rate = 30_minutes;
     } else if( const std::optional<std::string> progress = u.activity.get_progress_message( u ) ) {
         wait_redraw = true;
@@ -692,10 +692,43 @@ bool game::do_turn()
         sfx::do_hearing_loss();
     }
 
+    // DDA MP v4.0a-163: a host in long wait auto-passes its own turn. Without
+    // this it sat in the input loop waiting for a key, so do_turn never
+    // reached the world turn even though the clients had finished their
+    // orders (the client's minimap and log then froze).
+    if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
+        netplay::host_any_active_client() &&
+        netplay::long_wait_active() && !u.has_effect( effect_sleep ) ) {
+        u.set_moves( 0 );
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "lw: start autopass\n" );
+                std::fclose( f );
+            }
+        }
+    }
+
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
             while( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
+                // DDA MP v4.0a-163: the host's long wait must also end an
+                // input pass that is already in progress. The long wait can be
+                // switched on while this loop is polling, so checking only at
+                // the start of do_turn left the host sitting here forever and
+                // the world never reached its turn.
+                if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
+                    netplay::host_any_active_client() &&
+                    netplay::long_wait_active() ) {
+                    u.set_moves( 0 );
+                    if( netplay::mp_diag_enabled() ) {
+                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "lw: loop autopass\n" );
+                            std::fclose( f );
+                        }
+                    }
+                    break;
+                }
 
                 // handle_action() may cause map updates, creatures to die
                 m.process_falling();
@@ -836,7 +869,7 @@ bool game::do_turn()
             // Show the waiting hint while the clients spend their remaining
             // action points.
             werase( mp_wait_win );
-            mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other players…" ) );
+            mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other playersвЂ¦" ) );
             wnoutrefresh( mp_wait_win );
             netplay::host_draw_long_wait_hint( 1 );
             refresh_display();
@@ -961,7 +994,7 @@ bool game::do_turn()
     // DDA MP: stream the current view to connected network sessions once per
     // world turn (and collect any queued remote keystrokes for the next turn).
     netplay::host_game_tick();
-    // DDA MP v4.0a-7: a fresh turn round — clients may give their orders again.
+    // DDA MP v4.0a-7: a fresh turn round вЂ” clients may give their orders again.
     netplay::host_note_world_turn();
     return false;
 }

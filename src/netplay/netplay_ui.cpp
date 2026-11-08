@@ -3784,8 +3784,11 @@ void run_view_loop()
             }
             const float cw = ImGui::CalcTextSize( "M" ).x;
             const float ch = ImGui::GetTextLineHeight();
+            // The native panels start exactly at TERMX - width cells; the log
+            // must start there too (the old extra -cw put it one cell left of
+            // the sidebar).
             const float x0 = std::max( 0.0f,
-                                       io.DisplaySize.x - mp_sb_cells * cw - cw );
+                                       io.DisplaySize.x - mp_sb_cells * cw );
             // DDA MP v4.0a-115: the panels themselves are painted by the
             // game's own panel renderer into curses windows; only the
             // client-only log and minimap stay in the pixel layer, below the
@@ -4102,6 +4105,22 @@ void run_view_loop()
                 // Host-rendered panels are no longer streamed: the client
                 // draws the same panels itself from its character mirror.
                 netplay::client_minimap( mp_mini_map );
+                if( netplay::mp_diag_enabled() ) {
+                    // Forensics: did the minimap data actually change?
+                    static std::size_t mp_mini_hash = 0;
+                    std::size_t h = 0;
+                    for( uint8_t c : mp_mini_map.color ) {
+                        h = h * 131u + c;
+                    }
+                    for( uint8_t c : mp_mini_map.seen ) {
+                        h = h * 131u + c;
+                    }
+                    if( h != mp_mini_hash ) {
+                        mp_mini_hash = h;
+                        mp_inv_log( string_format( "minimap update h=%zu w=%d h=%d",
+                                                   h, mp_mini_map.width, mp_mini_map.height ) );
+                    }
+                }
                 mp_aim_minimap = mp_mini_map;
                 netplay::client_aim_targets( mp_aim_targets );
                 {
