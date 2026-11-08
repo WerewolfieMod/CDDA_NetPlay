@@ -18,21 +18,20 @@
 #include "netplay/netplay_msgcap.h"
 #include "translations.h"
 
-#include <cctype>
-#include <unordered_map>
-
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #ifdef _WIN32
 #include <windows.h> // WideCharToMultiByte (crash diagnostics)
 #endif
@@ -1613,37 +1612,70 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )
  * rendered them. Item and monster names are translation objects carrying a
  * JSON context ("stone", ...), so a context-less to_translation() would pick a
  * wrong word. The client keeps a lazily built index from the untranslated name
- * (what an English sender writes) to the name in the client's language. */
-static const std::unordered_map<std::string, std::string> &mp_name_index()
+ * (what an English sender writes) to the name in the client's language, keyed
+ * by both the singular and the plural form so stacks ("2 rocks") translate as
+ * well. */
+static const std::unordered_map<std::string, const translation *> &mp_name_index()
 {
-    static std::unordered_map<std::string, std::string> index;
+    static std::unordered_map<std::string, const translation *> index;
     static bool built = false;
     if( built ) {
         return index;
     }
     built = true;
-    const auto add = []( const translation &tr, const std::string &translated ) {
+    const auto add = []( const translation &tr ) {
         const std::string &raw = tr.msgid();
-        if( !raw.empty() && !translated.empty() && raw != translated ) {
-            index.emplace( raw, translated );
+        if( raw.empty() || tr.translated( 1 ) == raw ) {
+            // No translation for this name in the client's language.
+            return;
+        }
+        index.emplace( raw, &tr );
+        const std::string &raw_pl = tr.msgid_plural();
+        if( raw_pl != raw ) {
+            index.emplace( raw_pl, &tr );
         }
     };
     if( item_controller ) {
         for( const itype *t : item_controller->all() ) {
             if( t != nullptr ) {
-                add( t->raw_name(), t->nname( 1 ) );
+                add( t->raw_name() );
             }
         }
     }
     for( const mtype &m : MonsterGenerator::generator().get_all_mtypes() ) {
-        add( m.raw_name(), m.nname( 1 ) );
+        add( m.raw_name() );
     }
     return index;
+}
+
+static std::string mp_translate_name( const std::string &name, int count )
+{
+    const auto &index = mp_name_index();
+    const auto it = index.find( name );
+    if( it == index.end() ) {
+        return name;
+    }
+    return it->second->translated( count > 1 ? count : 1 );
 }
 
 static std::string mp_translate_name_arg( const std::string &arg )
 {
     if( arg.empty() ) {
+        return arg;
+    }
+    // A stack is rendered as "<count> <name>"; keep the number and translate
+    // the name with that count so the plural form is right.
+    std::size_t digits = 0;
+    while( digits < arg.size() && std::isdigit( static_cast<unsigned char>( arg[digits] ) ) ) {
+        ++digits;
+    }
+    if( digits > 0 && digits < arg.size() && arg[digits] == ' ' ) {
+        const int count = std::atoi( arg.substr( 0, digits ).c_str() );
+        const std::string rest = arg.substr( digits + 1 );
+        const std::string translated = mp_translate_name( rest, count );
+        if( translated != rest ) {
+            return arg.substr( 0, digits + 1 ) + translated;
+        }
         return arg;
     }
     bool numeric = true;
@@ -1657,9 +1689,7 @@ static std::string mp_translate_name_arg( const std::string &arg )
     if( numeric ) {
         return arg;
     }
-    const auto &index = mp_name_index();
-    const auto it = index.find( arg );
-    return it == index.end() ? arg : it->second;
+    return mp_translate_name( arg, 1 );
 }
 
 static std::string mp_event_arg( const std::string &raw )

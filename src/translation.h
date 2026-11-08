@@ -80,6 +80,11 @@ class translation
         const std::string &msgid() const {
             return raw;
         }
+        /// DDA MP v4.0a-167: the untranslated plural form (same as msgid()
+        /// when the string has none). Used by the client's name index.
+        const std::string &msgid_plural() const {
+            return raw_pl ? *raw_pl : raw;
+        }
         /// Whether this object actually goes through the translation catalog
         /// (false for `no_translation` strings).
         bool translatable() const {

@@ -1620,6 +1620,9 @@ void host_pump_avatar_keys()
                     mp_test_msg_done = true;
                     av->add_msg_if_player( _( "You pick up the %s." ),
                                            item::nname( itype_id( "rock" ) ) );
+                    av->add_msg_if_player( _( "You pick up the %s." ),
+                                           string_format( "%d %s", 2,
+                                                   item::nname( itype_id( "rock" ), 2 ) ) );
                     if( mp_diag_enabled() ) {
                         if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
                             std::fprintf( f, "test: avatar engine message\n" );
