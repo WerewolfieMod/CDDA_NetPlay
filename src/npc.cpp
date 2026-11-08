@@ -1,4 +1,4 @@
-#include "npc.h"
+﻿#include "npc.h"
 
 #include <algorithm>
 #include <climits>
@@ -59,6 +59,7 @@
 #include "monster.h"
 #include "mtype.h"
 #include "mutation.h"
+#include "netplay/netplay.h"
 #include "npc_class.h"
 #include "npctalk.h"
 #include "npctrade.h"
@@ -3133,7 +3134,7 @@ int npc::print_info( const catacurses::window &w, int line, int vLines, int colu
         int worn_numlines = worn_lines.size();
         for( int i = 0; i < worn_numlines && line < last_line; i++ ) {
             if( line + 1 == last_line ) {
-                worn_lines[i].append( "…" );
+                worn_lines[i].append( "вЂ¦" );
             }
             trim_and_print( w, point( column, line++ ), iWidth, c_light_gray, worn_lines[i] );
         }
@@ -3150,7 +3151,7 @@ int npc::print_info( const catacurses::window &w, int line, int vLines, int colu
         int trait_numlines = trait_lines.size();
         for( int i = 0; i < trait_numlines && line < last_line; i++ ) {
             if( line + 1 == last_line ) {
-                trait_lines[i].append( "…" );
+                trait_lines[i].append( "вЂ¦" );
             }
             trim_and_print( w, point( column, line++ ), iWidth, c_light_gray, trait_lines[i] );
         }
@@ -3485,17 +3486,40 @@ std::string npc_attitude_name( npc_attitude att )
 }
 
 //message related stuff
+/// DDA MP v4.0a-166: relay a session avatar's "you" line to the client that
+/// drives it, keeping the untranslated msgid and its msgid-language instance
+/// captured by the add_msg template. Returns false for ordinary NPCs, which
+/// keep ignoring player-facing messages exactly as before.
+static bool mp_relay_npc_player_msg( const npc *who, const std::string &msg, int msg_type )
+{
+    netplay_msgcap::captured cap;
+    if( !netplay_msgcap::take( msg, cap ) ) {
+        // The line came from the `_()` macro (the common case); recover the raw
+        // msgid from the last translation so the client can re-create it.
+        std::string msgid;
+        std::string instance;
+        if( netplay::capture_msgid_for( msg, msgid, instance ) ) {
+            cap.msgid = std::move( msgid );
+            cap.instance = std::move( instance );
+        }
+    }
+    return netplay::host_relay_character_message( who, msg, msg_type,
+            cap.msgid, cap.instance );
+}
 
-//message related stuff
 void npc::add_msg_if_npc( const std::string &msg ) const
 {
     add_msg( replace_with_npc_name( msg ) );
 }
 
-void npc::add_msg_player_or_npc( const std::string &/*player_msg*/,
-                                 const std::string &npc_msg ) const
+void npc::add_msg_if_player( const std::string &msg ) const
 {
-    add_msg_if_player_sees( *this, replace_with_npc_name( npc_msg ) );
+    mp_relay_npc_player_msg( this, msg, static_cast<int>( m_info ) );
+}
+
+void npc::add_msg_if_player( const game_message_params &params, const std::string &msg ) const
+{
+    mp_relay_npc_player_msg( this, msg, static_cast<int>( params.type ) );
 }
 
 void npc::add_msg_if_npc( const game_message_params &params, const std::string &msg ) const
@@ -3503,10 +3527,22 @@ void npc::add_msg_if_npc( const game_message_params &params, const std::string &
     add_msg( params, replace_with_npc_name( msg ) );
 }
 
-void npc::add_msg_player_or_npc( const game_message_params &params,
-                                 const std::string &/*player_msg*/,
+void npc::add_msg_player_or_npc( const std::string &player_msg,
                                  const std::string &npc_msg ) const
 {
+    if( mp_relay_npc_player_msg( this, player_msg, static_cast<int>( m_info ) ) ) {
+        return;
+    }
+    add_msg_if_player_sees( *this, replace_with_npc_name( npc_msg ) );
+}
+
+void npc::add_msg_player_or_npc( const game_message_params &params,
+                                 const std::string &player_msg,
+                                 const std::string &npc_msg ) const
+{
+    if( mp_relay_npc_player_msg( this, player_msg, static_cast<int>( params.type ) ) ) {
+        return;
+    }
     const map &here = get_map();
 
     if( get_player_view().sees( here, *this ) ) {
@@ -3514,15 +3550,22 @@ void npc::add_msg_player_or_npc( const game_message_params &params,
     }
 }
 
-void npc::add_msg_player_or_say( const std::string &/*player_msg*/,
+void npc::add_msg_player_or_say( const std::string &player_msg,
                                  const std::string &npc_speech ) const
 {
+    if( mp_relay_npc_player_msg( this, player_msg, static_cast<int>( m_info ) ) ) {
+        return;
+    }
     say( npc_speech );
 }
 
-void npc::add_msg_player_or_say( const game_message_params &/*params*/,
-                                 const std::string &/*player_msg*/, const std::string &npc_speech ) const
+void npc::add_msg_player_or_say( const game_message_params &params,
+                                 const std::string &player_msg,
+                                 const std::string &npc_speech ) const
 {
+    if( mp_relay_npc_player_msg( this, player_msg, static_cast<int>( params.type ) ) ) {
+        return;
+    }
     say( npc_speech );
 }
 

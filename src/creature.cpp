@@ -1,4 +1,4 @@
-#include "creature.h"
+﻿#include "creature.h"
 
 #include <algorithm>
 #include <array>
@@ -3628,13 +3628,27 @@ void Creature::adjust_taken_damage_by_enchantments_post_absorbed( damage_unit &d
                           du.amount ) );
 }
 
+/* DDA MP v4.0a-166: remember the untranslated source of a message that has no
+ * arguments, so the netplay relay can re-create it in the client's language.
+ * The no-args overloads below are the ones `add_msg( _( "..." ) )` resolves to. */
+static void mp_stash_msgid( const translation &msg, const std::string &text )
+{
+    if( msg.translatable() && !msg.msgid().empty() ) {
+        netplay_msgcap::stash( msg.msgid(), msg.msgid(), text );
+    } else {
+        netplay_msgcap::clear();
+    }
+}
+
 void Creature::add_msg_if_player( const translation &msg ) const
 {
+    mp_stash_msgid( msg, msg.translated() );
     add_msg_if_player( msg.translated() );
 }
 
 void Creature::add_msg_if_player( const game_message_params &params, const translation &msg ) const
 {
+    mp_stash_msgid( msg, msg.translated() );
     add_msg_if_player( params, msg.translated() );
 }
 
@@ -3650,23 +3664,27 @@ void Creature::add_msg_if_npc( const game_message_params &params, const translat
 
 void Creature::add_msg_player_or_npc( const translation &pc, const translation &npc ) const
 {
+    mp_stash_msgid( pc, pc.translated() );
     add_msg_player_or_npc( pc.translated(), npc.translated() );
 }
 
 void Creature::add_msg_player_or_npc( const game_message_params &params, const translation &pc,
                                       const translation &npc ) const
 {
+    mp_stash_msgid( pc, pc.translated() );
     add_msg_player_or_npc( params, pc.translated(), npc.translated() );
 }
 
 void Creature::add_msg_player_or_say( const translation &pc, const translation &npc ) const
 {
+    mp_stash_msgid( pc, pc.translated() );
     add_msg_player_or_say( pc.translated(), npc.translated() );
 }
 
 void Creature::add_msg_player_or_say( const game_message_params &params, const translation &pc,
                                       const translation &npc ) const
 {
+    mp_stash_msgid( pc, pc.translated() );
     add_msg_player_or_say( params, pc.translated(), npc.translated() );
 }
 

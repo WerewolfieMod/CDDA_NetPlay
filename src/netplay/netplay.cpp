@@ -14,6 +14,7 @@
 #include "mapdata.h"
 #include "monstergenerator.h"
 #include "mtype.h"
+#include "netplay/netplay_msgcap.h"
 #include "translations.h"
 
 #include <algorithm>
@@ -1682,6 +1683,195 @@ static std::string mp_fill_args( const std::string &fmt,
     return out;
 }
 
+/// Split a printf-style format string into the literal chunks between its
+/// conversions and record which argument each conversion takes. Accepts both
+/// plain ("%s") and positional ("%1$s") forms, as the catalogs use both.
+static void mp_split_format( const std::string &fmt, std::vector<std::string> &chunks,
+                             std::vector<std::size_t> &slots )
+{
+    chunks.clear();
+    slots.clear();
+    std::string cur;
+    std::size_t next = 0;
+    for( std::size_t i = 0; i < fmt.size(); ++i ) {
+        if( fmt[i] != '%' || i + 1 >= fmt.size() ) {
+            cur += fmt[i];
+            continue;
+        }
+        if( fmt[i + 1] == '%' ) {
+            cur += '%';
+            ++i;
+            continue;
+        }
+        std::size_t j = i + 1;
+        std::size_t pos = 0;
+        bool has_pos = false;
+        while( j < fmt.size() && std::isdigit( static_cast<unsigned char>( fmt[j] ) ) ) {
+            pos = pos * 10 + static_cast<std::size_t>( fmt[j] - '0' );
+            has_pos = true;
+            ++j;
+        }
+        if( has_pos && j < fmt.size() && fmt[j] == '$' ) {
+            ++j;
+        } else {
+            has_pos = false;
+            j = i + 1;
+        }
+        while( j < fmt.size() &&
+               ( std::strchr( "-+ #0.", fmt[j] ) != nullptr ||
+                 std::isdigit( static_cast<unsigned char>( fmt[j] ) ) ) ) {
+            ++j;
+        }
+        if( j < fmt.size() && std::strchr( "diuxXofsScgeE", fmt[j] ) != nullptr ) {
+            chunks.push_back( cur );
+            cur.clear();
+            slots.push_back( has_pos && pos > 0 ? pos - 1 : next );
+            ++next;
+            i = j;
+            continue;
+        }
+        cur += fmt[i];
+    }
+    chunks.push_back( cur );
+}
+
+/// Try to match the remaining literal chunks from `c` onward. Backtracking is
+/// needed because an argument may itself contain the text of a later chunk.
+static bool mp_match_from( const std::vector<std::string> &chunks, std::size_t c,
+                           const std::string &instance, std::size_t pos,
+                           std::vector<std::string> &args )
+{
+    const std::string &lit = chunks[c];
+    if( c + 1 == chunks.size() ) {
+        // The trailing literal must close the instance; whatever is left in
+        // between is the last argument.
+        if( instance.size() < pos + lit.size() ) {
+            return false;
+        }
+        const std::size_t tail = instance.size() - lit.size();
+        if( instance.compare( tail, lit.size(), lit ) != 0 ) {
+            return false;
+        }
+        args.push_back( instance.substr( pos, tail - pos ) );
+        return true;
+    }
+    if( lit.empty() ) {
+        // Two conversions next to each other: the first one takes nothing.
+        args.push_back( std::string() );
+        if( mp_match_from( chunks, c + 1, instance, pos, args ) ) {
+            return true;
+        }
+        args.pop_back();
+        return false;
+    }
+    std::size_t at = pos;
+    while( ( at = instance.find( lit, at ) ) != std::string::npos ) {
+        const std::size_t next_pos = at + lit.size();
+        args.push_back( instance.substr( pos, at - pos ) );
+        if( mp_match_from( chunks, c + 1, instance, next_pos, args ) ) {
+            return true;
+        }
+        args.pop_back();
+        at = next_pos;
+    }
+    return false;
+}
+
+/// Recover the arguments of a msgid-language instance by walking the literal
+/// chunks of its format string. Returns false when the instance does not fit
+/// the pattern (the caller then shows the sender's text unchanged).
+static bool mp_match_format( const std::vector<std::string> &chunks, const std::string &instance,
+                             std::vector<std::string> &args )
+{
+    args.clear();
+    if( chunks.empty() ) {
+        return false;
+    }
+    std::size_t pos = 0;
+    if( !chunks.front().empty() ) {
+        if( instance.compare( 0, chunks.front().size(), chunks.front() ) != 0 ) {
+            return false;
+        }
+        pos = chunks.front().size();
+    }
+    return mp_match_from( chunks, 1, instance, pos, args );
+}
+
+/// Rebuild a message the host formatted in its own language, using this
+/// client's catalog: recover the arguments from the msgid-language instance,
+/// translate the msgid and fill the arguments back in. Names of items and
+/// creatures are msgids themselves, so they are translated too.
+static std::string mp_rebuild_message( const std::string &msgid, const std::string &instance )
+{
+    if( msgid.empty() ) {
+        return instance;
+    }
+    std::vector<std::string> chunks;
+    std::vector<std::size_t> slots;
+    mp_split_format( msgid, chunks, slots );
+    if( slots.empty() ) {
+        // No arguments: the translated msgid is the whole line.
+        return to_translation( msgid ).translated();
+    }
+    std::vector<std::string> raw_args;
+    if( !mp_match_format( chunks, instance, raw_args ) ) {
+        return instance;
+    }
+    std::size_t arg_count = 0;
+    for( std::size_t idx : slots ) {
+        arg_count = std::max( arg_count, idx + 1 );
+    }
+    std::vector<std::string> args( arg_count );
+    for( std::size_t k = 0; k < slots.size() && k < raw_args.size(); ++k ) {
+        // Arguments stay exactly as the host rendered them. Names (items,
+        // creatures, terrain) are not plain msgids: they carry a JSON context
+        // ("stone", "name", ...), so a context-less lookup here would show a
+        // wrong word. Numbers and other literals need no translation anyway.
+        args[slots[k]] = raw_args[k];
+    }
+    return mp_fill_args( to_translation( msgid ).translated(), args );
+}
+
+bool capture_msgid_for( const std::string &text, std::string &msgid, std::string &instance )
+{
+    if( netplay_msgcap::noted_empty() ) {
+        return false;
+    }
+    const char *tr = netplay_msgcap::noted_translated();
+    const std::string raw = netplay_msgcap::noted_raw();
+    if( raw.empty() || tr == nullptr ) {
+        return false;
+    }
+    const std::string translated_fmt( tr );
+    std::vector<std::string> chunks;
+    std::vector<std::size_t> slots;
+    mp_split_format( translated_fmt, chunks, slots );
+    if( slots.empty() ) {
+        // No arguments: the line must be exactly the translated msgid.
+        if( text != translated_fmt ) {
+            return false;
+        }
+        msgid = raw;
+        instance = raw;
+        return true;
+    }
+    std::vector<std::string> args;
+    if( !mp_match_format( chunks, text, args ) ) {
+        return false;
+    }
+    std::size_t arg_count = 0;
+    for( std::size_t idx : slots ) {
+        arg_count = std::max( arg_count, idx + 1 );
+    }
+    std::vector<std::string> ordered( arg_count );
+    for( std::size_t k = 0; k < slots.size() && k < args.size(); ++k ) {
+        ordered[slots[k]] = args[k];
+    }
+    msgid = raw;
+    instance = mp_fill_args( raw, ordered );
+    return true;
+}
+
 bool host_send_event_fmt_to_sid( int sid, const std::string &msgid,
                                  const std::vector<std::string> &args, int msg_type )
 {
@@ -1698,7 +1888,19 @@ bool host_send_event_fmt_to_sid( int sid, const std::string &msgid,
 
 std::string format_event_text( const std::string &payload )
 {
-    if( payload.empty() || payload[0] != '\x01' ) {
+    if( payload.empty() ) {
+        return payload;
+    }
+    if( payload[0] == '\x03' ) {
+        // DDA MP v4.0a-166: game message relayed as msgid + msgid-language
+        // instance (see host_relay_character_message).
+        const std::size_t sep = payload.find( '\x1f', 1 );
+        if( sep == std::string::npos ) {
+            return payload.substr( 1 );
+        }
+        return mp_rebuild_message( payload.substr( 1, sep - 1 ), payload.substr( sep + 1 ) );
+    }
+    if( payload[0] != '\x01' ) {
         return payload; // plain, already localized by the sender
     }
     std::vector<std::string> parts;

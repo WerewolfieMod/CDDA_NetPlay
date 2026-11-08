@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #ifndef CATA_SRC_TRANSLATION_H
 #define CATA_SRC_TRANSLATION_H
 
@@ -64,6 +64,27 @@ class translation
          **/
         void deserialize( const JsonValue &jsin );
         void deserialize( const JsonObject &jsobj );
+
+        /**
+         * The untranslated source string (msgid) this object was built from.
+         *
+         * DDA MP v4.0a-166: game messages are normally formatted into the
+         * sender's language and only the result is kept, so a netplay client
+         * in another language cannot re-translate them. The add_msg templates
+         * use these two accessors to remember the msgid together with the
+         * formatted text and hand the msgid to the relay instead.
+         *
+         * Never serialize or save the value returned here - see the comments
+         * on `untranslated` below.
+         */
+        const std::string &msgid() const {
+            return raw;
+        }
+        /// Whether this object actually goes through the translation catalog
+        /// (false for `no_translation` strings).
+        bool translatable() const {
+            return needs_translation;
+        }
 
         /**
          * Returns raw string if no translation is needed, otherwise returns

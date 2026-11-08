@@ -1,4 +1,4 @@
-#include "messages.h"
+﻿#include "messages.h"
 
 #include <algorithm>
 #include <array>
@@ -1069,20 +1069,47 @@ static bool mp_in_host_bubble()
     return here == nullptr || here == &g->mp_host_map();
 }
 
-void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg )
+static netplay_msgcap::captured mp_message_capture( const std::string &msg )
+{
+    netplay_msgcap::captured cap;
+    if( !netplay_msgcap::take( msg, cap ) ) {
+        // Usually the line comes from the `_()` macro, which lost the raw msgid
+        // before this point; recover it from the last translation so the client
+        // can re-create the message in its own language.
+        std::string msgid;
+        std::string instance;
+        if( netplay::capture_msgid_for( msg, msgid, instance ) ) {
+            cap.msgid = std::move( msgid );
+            cap.instance = std::move( instance );
+        }
+    }
+    return cap;
+}
+
+void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg,
+                             const std::string &msgid_in, const std::string &instance_in )
 {
     const map &here = get_map();
-    netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ) );
+    const netplay_msgcap::captured cap = mp_message_capture( msg );
+    const std::string &msgid = !msgid_in.empty() ? msgid_in : cap.msgid;
+    const std::string &instance = !msgid_in.empty() ? instance_in : cap.instance;
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ), msgid,
+                                      instance );
 
     if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( std::move( msg ) );
     }
 }
 
-void add_msg_if_player_sees( const Creature &target, std::string msg )
+void add_msg_if_player_sees( const Creature &target, std::string msg,
+                             const std::string &msgid_in, const std::string &instance_in )
 {
     const map &here = get_map();
-    netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ) );
+    const netplay_msgcap::captured cap = mp_message_capture( msg );
+    const std::string &msgid = !msgid_in.empty() ? msgid_in : cap.msgid;
+    const std::string &instance = !msgid_in.empty() ? instance_in : cap.instance;
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( m_info ), msgid,
+                                      instance );
 
     if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( std::move( msg ) );
@@ -1090,10 +1117,15 @@ void add_msg_if_player_sees( const Creature &target, std::string msg )
 }
 
 void add_msg_if_player_sees( const tripoint_bub_ms &target, const game_message_params &params,
-                             std::string msg )
+                             std::string msg, const std::string &msgid_in,
+                             const std::string &instance_in )
 {
     const map &here = get_map();
-    netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ) );
+    const netplay_msgcap::captured cap = mp_message_capture( msg );
+    const std::string &msgid = !msgid_in.empty() ? msgid_in : cap.msgid;
+    const std::string &instance = !msgid_in.empty() ? instance_in : cap.instance;
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ), msgid,
+                                      instance );
 
     if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( params, std::move( msg ) );
@@ -1101,10 +1133,15 @@ void add_msg_if_player_sees( const tripoint_bub_ms &target, const game_message_p
 }
 
 void add_msg_if_player_sees( const Creature &target, const game_message_params &params,
-                             std::string msg )
+                             std::string msg, const std::string &msgid_in,
+                             const std::string &instance_in )
 {
     const map &here = get_map();
-    netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ) );
+    const netplay_msgcap::captured cap = mp_message_capture( msg );
+    const std::string &msgid = !msgid_in.empty() ? msgid_in : cap.msgid;
+    const std::string &instance = !msgid_in.empty() ? instance_in : cap.instance;
+    netplay::host_relay_sees_message( target, msg, static_cast<int>( params.type ), msgid,
+                                      instance );
 
     if( mp_in_host_bubble() && get_player_view().sees( here, target ) ) {
         Messages::add_msg( params, std::move( msg ) );

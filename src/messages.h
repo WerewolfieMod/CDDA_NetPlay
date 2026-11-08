@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #ifndef CATA_SRC_MESSAGES_H
 #define CATA_SRC_MESSAGES_H
 
@@ -10,6 +10,7 @@
 #include "coords_fwd.h"
 #include "debug.h"
 #include "enums.h"
+#include "netplay/netplay_msgcap.h"
 #include "string_formatter.h"
 #include "translation.h"
 
@@ -86,8 +87,12 @@ inline void add_msg( const game_message_params &params, const char *const msg, A
     return add_msg( params, string_format( msg, std::forward<Args>( args )... ) );
 }
 
-void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg );
-void add_msg_if_player_sees( const Creature &target, std::string msg );
+void add_msg_if_player_sees( const tripoint_bub_ms &target, std::string msg,
+                             const std::string &msgid = std::string(),
+                             const std::string &instance = std::string() );
+void add_msg_if_player_sees( const Creature &target, std::string msg,
+                             const std::string &msgid = std::string(),
+                             const std::string &instance = std::string() );
 template<typename ...Args>
 inline void add_msg_if_player_sees( const tripoint_bub_ms &target, const std::string &msg,
                                     Args &&... args )
@@ -111,23 +116,43 @@ inline void add_msg_if_player_sees( const Creature &target, const char *const ms
 {
     return add_msg_if_player_sees( target, string_format( msg, std::forward<Args>( args )... ) );
 }
+/* DDA MP v4.0a-166: format a "player sees" message and remember its
+ * untranslated source for the netplay relay (the client re-formats the line
+ * with its own catalog). Kept out of the add_msg_if_player_sees templates so
+ * they stay readable. */
+template<typename ...Args>
+inline std::string mp_format_seen_msg( const translation &msg, Args &&... args )
+{
+    if( msg.translatable() && !msg.msgid().empty() ) {
+        std::string instance = string_format( msg.msgid(), args... );
+        std::string text = string_format( msg, std::forward<Args>( args )... );
+        netplay_msgcap::stash( msg.msgid(), std::move( instance ), text );
+        return text;
+    }
+    netplay_msgcap::clear();
+    return string_format( msg, std::forward<Args>( args )... );
+}
 template<typename ...Args>
 inline void add_msg_if_player_sees( const tripoint_bub_ms &target, const translation &msg,
                                     Args &&... args )
 {
-    return add_msg_if_player_sees( target, string_format( msg, std::forward<Args>( args )... ) );
+    return add_msg_if_player_sees( target, mp_format_seen_msg( msg,
+                                   std::forward<Args>( args )... ) );
 }
 template<typename ...Args>
 inline void add_msg_if_player_sees( const Creature &target, const translation &msg,
                                     Args &&... args )
 {
-    return add_msg_if_player_sees( target, string_format( msg, std::forward<Args>( args )... ) );
+    return add_msg_if_player_sees( target, mp_format_seen_msg( msg,
+                                   std::forward<Args>( args )... ) );
 }
 
 void add_msg_if_player_sees( const tripoint_bub_ms &target, const game_message_params &params,
-                             std::string msg );
+                             std::string msg, const std::string &msgid = std::string(),
+                             const std::string &instance = std::string() );
 void add_msg_if_player_sees( const Creature &target, const game_message_params &params,
-                             std::string msg );
+                             std::string msg, const std::string &msgid = std::string(),
+                             const std::string &instance = std::string() );
 template<typename ...Args>
 inline void add_msg_if_player_sees( const tripoint_bub_ms &target,
                                     const game_message_params &params,

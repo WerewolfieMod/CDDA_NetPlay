@@ -414,16 +414,32 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 
 /// The client resolves those itself.
 bool host_send_event_fmt_to_sid( int sid, const std::string &msgid,
                                  const std::vector<std::string> &args, int msg_type = 0 );
+/// DDA MP v4.0a-166: a game message reaches the relay already formatted and in
+/// the sender's language, because `_()` translates before add_msg runs. Every
+/// `_()` call also notes the raw msgid; this checks whether `text` is an
+/// instance of that msgid's translated format, recovers the arguments and
+/// fills `msgid`/`instance` (the msgid with its arguments, untranslated) so the
+/// client can re-create the line in its own language.
+bool capture_msgid_for( const std::string &text, std::string &msgid, std::string &instance );
 /// DDA MP v4.0a-126: relay a Character message to the client driving that
 /// character (session avatar). Returns true when the character belongs to a
 /// session and the text was forwarded instead of going to the host log.
+/// v4.0a-166: when the message came from a translated template, `msgid` and
+/// the msgid-language `instance` are sent as well, so the client formats the
+/// line with its own catalog instead of showing the host's sentence.
 bool host_relay_character_message( const Character *who, const std::string &text,
-                                   int msg_type );
+                                   int msg_type,
+                                   const std::string &msgid = std::string(),
+                                   const std::string &instance = std::string() );
 /// DDA MP v4.0a-136: relay a third-person "player sees X" message to every
 /// session whose avatar can see X (gunshots, NPC actions, world events).
 void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,
-                              int msg_type );
-void host_relay_sees_message( const Creature &target, const std::string &text, int msg_type );
+                              int msg_type,
+                              const std::string &msgid = std::string(),
+                              const std::string &instance = std::string() );
+void host_relay_sees_message( const Creature &target, const std::string &text, int msg_type,
+                              const std::string &msgid = std::string(),
+                              const std::string &instance = std::string() );
 /// DDA MP v4.0a-160: forward every message appended since `before_generation`
 /// to `sid` and remove it from the host's log (a session avatar's action ran,
 /// not the host player's).

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #ifndef CATA_SRC_CREATURE_H
 #define CATA_SRC_CREATURE_H
 
@@ -28,6 +28,7 @@
 #include "enums.h"
 #include "global_vars.h"
 #include "math_parser_diag_value.h"
+#include "netplay/netplay_msgcap.h"
 #include "pimpl.h"
 #include "safe_reference.h"
 #include "string_formatter.h"
@@ -1020,6 +1021,23 @@ class Creature : public viewer
         // add_msg_if_npc( "<npcname> falls off their mount!" );
         // add_msg_if_player_or_npc( "You open the door.", "<npcname> opens the door." );
         //
+        /// DDA MP v4.0a-166: format a translated message and remember its
+        /// untranslated source, so the netplay relay can send the msgid and
+        /// let the client format it in its own language. See netplay_msgcap.h.
+        template<typename ...Args>
+        std::string mp_format_msg( const translation &msg, Args &&... args ) const {
+            if( msg.translatable() && !msg.msgid().empty() ) {
+                // The instance is built from the msgid (not from the translated
+                // string): the client can parse the arguments back out of it no
+                // matter which language the sender runs in.
+                std::string instance = string_format( msg.msgid(), args... );
+                std::string text = string_format( msg.translated(), std::forward<Args>( args )... );
+                netplay_msgcap::stash( msg.msgid(), std::move( instance ), text );
+                return text;
+            }
+            netplay_msgcap::clear();
+            return string_format( msg.translated(), std::forward<Args>( args )... );
+        }
         virtual void add_msg_if_player( const std::string &/*msg*/ ) const {}
         virtual void add_msg_if_player( const game_message_params &/*params*/,
                                         const std::string &/*msg*/ ) const {}
@@ -1035,7 +1053,7 @@ class Creature : public viewer
         }
         template<typename ...Args>
         void add_msg_if_player( const translation &msg, Args &&... args ) const {
-            return add_msg_if_player( string_format( msg.translated(), std::forward<Args>( args )... ) );
+            return add_msg_if_player( mp_format_msg( msg, std::forward<Args>( args )... ) );
         }
         template<typename ...Args>
         void add_msg_if_player( const game_message_params &params, const char *const msg,
@@ -1059,7 +1077,7 @@ class Creature : public viewer
             if( params.type == m_debug && !debug_mode ) {
                 return;
             }
-            return add_msg_if_player( params, string_format( msg.translated(),
+            return add_msg_if_player( params, mp_format_msg( msg,
                                       std::forward<Args>( args )... ) );
         }
 
@@ -1130,7 +1148,7 @@ class Creature : public viewer
         template<typename ...Args>
         void add_msg_player_or_npc( const translation &player_msg, const translation &npc_msg,
                                     const Args &... args ) const {
-            return add_msg_player_or_npc( string_format( player_msg.translated(), args... ),
+            return add_msg_player_or_npc( mp_format_msg( player_msg, args... ),
                                           string_format( npc_msg.translated(), args... ) );
         }
         template<typename ...Args>
@@ -1157,7 +1175,7 @@ class Creature : public viewer
             if( params.type == m_debug && !debug_mode ) {
                 return;
             }
-            return add_msg_player_or_npc( params, string_format( player_msg.translated(), args... ),
+            return add_msg_player_or_npc( params, mp_format_msg( player_msg, args... ),
                                           string_format( npc_msg.translated(), args... ) );
         }
 
@@ -1186,7 +1204,7 @@ class Creature : public viewer
         template<typename ...Args>
         void add_msg_player_or_say( const translation &player_msg, const translation &npc_speech,
                                     const Args &... args ) const {
-            return add_msg_player_or_say( string_format( player_msg.translated(), args... ),
+            return add_msg_player_or_say( mp_format_msg( player_msg, args... ),
                                           string_format( npc_speech.translated(), args... ) );
         }
         template<typename ...Args>
@@ -1213,7 +1231,7 @@ class Creature : public viewer
             if( params.type == m_debug && !debug_mode ) {
                 return;
             }
-            return add_msg_player_or_say( params, string_format( player_msg.translated(), args... ),
+            return add_msg_player_or_say( params, mp_format_msg( player_msg, args... ),
                                           string_format( npc_speech.translated(), args... ) );
         }
 

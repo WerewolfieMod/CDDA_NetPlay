@@ -1,4 +1,4 @@
-#include "character.h"
+﻿#include "character.h"
 
 #include <algorithm>
 #include <array>
@@ -814,11 +814,32 @@ std::string Character::skin_name() const
 }
 
 //message related stuff
+/* DDA MP v4.0a-166: relay a message to the client driving this character.
+ * When the message came from a translated template, the captured msgid and its
+ * msgid-language instance travel with it, so the client can format the line in
+ * its own language instead of showing the host's sentence. */
+static bool mp_relay_message( const Character *who, const std::string &msg, int msg_type )
+{
+    netplay_msgcap::captured cap;
+    if( !netplay_msgcap::take( msg, cap ) ) {
+        // The message came from the `_()` macro (the common case), so the raw
+        // msgid is not in the stash; recover it from the last translation.
+        std::string msgid;
+        std::string instance;
+        if( netplay::capture_msgid_for( msg, msgid, instance ) ) {
+            cap.msgid = std::move( msgid );
+            cap.instance = std::move( instance );
+        }
+    }
+    return netplay::host_relay_character_message( who, msg, msg_type,
+            cap.msgid, cap.instance );
+}
+
 void Character::add_msg_if_player( const std::string &msg ) const
 {
     // DDA MP v4.0a-126: a session avatar's own messages belong to the client
     // driving it, not to the host's log.
-    if( netplay::host_relay_character_message( this, msg, static_cast<int>( m_info ) ) ) {
+    if( mp_relay_message( this, msg, static_cast<int>( m_info ) ) ) {
         return;
     }
     Messages::add_msg( msg );
@@ -827,8 +848,7 @@ void Character::add_msg_if_player( const std::string &msg ) const
 void Character::add_msg_player_or_npc( const std::string &player_msg,
                                        const std::string &/*npc_msg*/ ) const
 {
-    if( netplay::host_relay_character_message( this, player_msg,
-            static_cast<int>( m_info ) ) ) {
+    if( mp_relay_message( this, player_msg, static_cast<int>( m_info ) ) ) {
         return;
     }
     Messages::add_msg( player_msg );
@@ -836,8 +856,7 @@ void Character::add_msg_player_or_npc( const std::string &player_msg,
 
 void Character::add_msg_if_player( const game_message_params &params, const std::string &msg ) const
 {
-    if( netplay::host_relay_character_message( this, msg,
-            static_cast<int>( params.type ) ) ) {
+    if( mp_relay_message( this, msg, static_cast<int>( params.type ) ) ) {
         return;
     }
     Messages::add_msg( params, msg );
@@ -847,8 +866,7 @@ void Character::add_msg_player_or_npc( const game_message_params &params,
                                        const std::string &player_msg,
                                        const std::string &/*npc_msg*/ ) const
 {
-    if( netplay::host_relay_character_message( this, player_msg,
-            static_cast<int>( params.type ) ) ) {
+    if( mp_relay_message( this, player_msg, static_cast<int>( params.type ) ) ) {
         return;
     }
     Messages::add_msg( params, player_msg );
@@ -857,8 +875,7 @@ void Character::add_msg_player_or_npc( const game_message_params &params,
 void Character::add_msg_player_or_say( const std::string &player_msg,
                                        const std::string &/*npc_speech*/ ) const
 {
-    if( netplay::host_relay_character_message( this, player_msg,
-            static_cast<int>( m_info ) ) ) {
+    if( mp_relay_message( this, player_msg, static_cast<int>( m_info ) ) ) {
         return;
     }
     Messages::add_msg( player_msg );
@@ -868,8 +885,7 @@ void Character::add_msg_player_or_say( const game_message_params &params,
                                        const std::string &player_msg,
                                        const std::string &/*npc_speech*/ ) const
 {
-    if( netplay::host_relay_character_message( this, player_msg,
-            static_cast<int>( params.type ) ) ) {
+    if( mp_relay_message( this, player_msg, static_cast<int>( params.type ) ) ) {
         return;
     }
     Messages::add_msg( params, player_msg );
@@ -1965,7 +1981,7 @@ bool Character::uncanny_dodge()
         if( is_u ) {
             add_msg( _( "Time seems to slow down, and you instinctively dodge!" ) );
         } else if( seen ) {
-            add_msg( _( "%s dodges… so fast!" ), this->disp_name() );
+            add_msg( _( "%s dodgesвЂ¦ so fast!" ), this->disp_name() );
 
         }
 
@@ -2844,7 +2860,7 @@ units::volume Character::get_base_volume() const
     // * BV is the body volume in liters
     // * W  is the weight in kilograms
     // * BD is the body density (kg/L), estimated using the Brozek formula:
-    //     BD = 1.097 – 0.00046971 * W + 0.00000056 * W^2 – 0.00012828 * H
+    //     BD = 1.097 вЂ“ 0.00046971 * W + 0.00000056 * W^2 вЂ“ 0.00012828 * H
     // See
     //   https://en.wikipedia.org/wiki/Body_fat_percentage
     //   https://calculator.academy/body-volume-calculator/
@@ -8010,7 +8026,7 @@ int Character::impact( const int force, const tripoint_bub_ms &p )
     } else if( is_avatar() && shock_absorbers ) {
         add_msg( m_bad, _( "You are slammed against %s!" ),
                  target_name, total_dealt );
-        add_msg( m_good, _( "…but your shock absorbers negate the damage!" ) );
+        add_msg( m_good, _( "вЂ¦but your shock absorbers negate the damage!" ) );
     } else if( slam ) {
         // Only print this line if it is a slam and not a landing
         // Non-players should only get this one: player doesn't know how much damage was dealt
@@ -8367,8 +8383,8 @@ void Character::pause()
             effect &e = get_effect( effect_bleed, bp_id );
             e.mod_duration( - benefit );
             add_msg_player_or_npc( m_warning,
-                                   _( "You put pressure on the bleeding wound…" ),
-                                   _( "<npcname> puts pressure on the bleeding wound…" ) );
+                                   _( "You put pressure on the bleeding woundвЂ¦" ),
+                                   _( "<npcname> puts pressure on the bleeding woundвЂ¦" ) );
             practice_proficiency( proficiency_prof_wound_care, 1_turns );
         }
     }

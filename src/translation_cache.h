@@ -8,6 +8,8 @@
 #include "translation_manager.h"
 #endif
 
+#include "netplay/netplay_msgcap.h"
+
 constexpr int INVALID_LANGUAGE_VERSION = 0;
 
 namespace detail
@@ -62,8 +64,13 @@ class local_translation_cache<std::string>
                 cached_arg = arg;
                 cached_translation = _translate_internal( arg );
             }
+            // DDA MP: remember the raw msgid behind the translation, so a
+            // netplay client can re-translate a game message (see
+            // netplay_msgcap.h).
+            netplay_msgcap::note_translation( arg, cached_translation );
             return cached_translation;
 #else
+            netplay_msgcap::note_translation( arg, arg );
             return arg;
 #endif
         }
@@ -90,8 +97,14 @@ class local_translation_cache<const char *>
             }
             // mimic gettext() behavior: return `arg` if no translation is found
             // `same_as_arg` is needed to ensure that the current `arg` is returned (not a cached one)
-            return same_as_arg ? arg : cached_translation;
+            const char *result = same_as_arg ? arg : cached_translation;
+            // DDA MP: remember the raw msgid behind the translation (see
+            // netplay_msgcap.h), so game messages can be re-translated on a
+            // client running in another language.
+            netplay_msgcap::note_translation( arg, result );
+            return result;
 #else
+            netplay_msgcap::note_translation( arg, arg );
             return arg;
 #endif
         }
