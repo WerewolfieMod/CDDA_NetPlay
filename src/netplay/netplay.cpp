@@ -1663,6 +1663,17 @@ std::string fork_text( const char *msgid )
             { "There's already a construction in progress here.",
               "Здесь уже идёт строительство." },
             { "Unknown construction \"%s\".", "Неизвестная конструкция \"%s\"." },
+            { "Co-op help", "Помощь по совместной игре" },
+            { "Co-op <H|h>elp", "Кооператив: <H|h>правка" },
+            { "Up/Down: scroll   Esc: close", "Вверх/Вниз: прокрутка   Esc: закрыть" },
+            { "1. Host: start or load a world as usual, press ESC and pick \"Network: open world for co-op\".\nClients connect to your address on port 25565.\nWhile they play, turn on \"Long wait mode\" in the same menu - the host then passes its turns automatically.",
+              "1. Хост: запустите или загрузите мир как обычно, нажмите ESC и выберите «Сеть: открыть мир для совместной игры».\nКлиенты подключаются к вашему адресу, порт 25565.\nПока они играют, включите там же «Режим долгого ожидания» — хост будет пропускать свои ходы автоматически." },
+            { "2. Client: in the main menu pick \"Join Network World\", enter the host address and a nickname.\nOr start the game with:  cataclysm-tiles.exe --mpclient <host[:port]>",
+              "2. Клиент: в главном меню выберите «Join Network World», введите адрес хоста и имя.\nИли запустите игру с параметром:  cataclysm-tiles.exe --mpclient <адрес[:порт]>" },
+            { "3. Controls: movement and actions use the same keys as in single player.\nThe action menu, inventory, look, aiming/throwing, chat, butchering, construction and sleep work.\nYour journal and the map come from the host.",
+              "3. Управление: движение и действия — те же клавиши, что и в одиночной игре.\nРаботают меню действий, инвентарь, осмотр, прицеливание и бросок, чат, рубка туш, строительство и сон.\nЖурнал и карта приходят с хоста." },
+            { "4. Notes: world time advances only after every player has acted; sleep, crafting and other long activities are exceptions.\nSome actions are not available to clients yet.\nHost and client may use different interface languages - each player reads messages in their own language.",
+              "4. Особенности: время мира идёт только после того, как сделали ход все игроки; сон, крафт и другие долгие занятия — исключение.\nЧасть действий клиентам пока недоступна.\nХост и клиент могут играть на разных языках интерфейса — каждый видит сообщения на своём языке." },
         };
         const auto it = ru.find( msgid );
         if( it != ru.end() ) {

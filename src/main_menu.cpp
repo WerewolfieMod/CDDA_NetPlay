@@ -1,4 +1,4 @@
-#include "main_menu.h"
+﻿#include "main_menu.h"
 
 #include <algorithm>
 #include <array>
@@ -78,6 +78,7 @@ enum class main_menu_opts : int {
     HELP,
     CREDITS,
     JOINMP,
+    HELPMP,
     QUIT,
     NUM_MENU_OPTS,
 };
@@ -471,6 +472,8 @@ void main_menu::init_strings()
     vMenuItems.emplace_back( pgettext( "Main Menu", "<C|c>redits" ) );
     // DDA MP: remote join entry (main menu button, like Minecraft "Connect by IP").
     vMenuItems.emplace_back( pgettext( "Main Menu", "<J|j>oin Network World" ) );
+    // DDA MP: how to play co-op (host and client instructions).
+    vMenuItems.emplace_back( netplay::fork_text( "Co-op <H|h>elp" ) );
 #if !defined(EMSCRIPTEN)
     vMenuItems.emplace_back( pgettext( "Main Menu", "<Q|q>uit" ) );
 #endif
@@ -584,6 +587,16 @@ void main_menu::load_char_templates()
 
 bool main_menu::opening_screen()
 {
+    // DDA MP test hook: show the co-op help window once at start-up, so the
+    // dialog can be captured without driving the menu.
+    if( const char *test_help = std::getenv( "DDA_MP_TEST_COOP_HELP" );
+        test_help != nullptr && test_help[0] != '\0' ) {
+        static bool mp_test_help_shown = false;
+        if( !mp_test_help_shown ) {
+            mp_test_help_shown = true;
+            netplay::show_coop_help();
+        }
+    }
     // set holiday based on local system time
     current_holiday = get_holiday_from_time();
 
@@ -920,6 +933,9 @@ bool main_menu::opening_screen()
                     break;
                 case main_menu_opts::JOINMP:
                     netplay::show_join_dialog();
+                    break;
+                case main_menu_opts::HELPMP:
+                    netplay::show_coop_help();
                     break;
                 case main_menu_opts::MOTD:
                 case main_menu_opts::CREDITS:

@@ -408,6 +408,10 @@ constexpr int EVENT_DEATH = 200;
 /// the untranslated string for languages the fork does not ship.
 std::string fork_text( const char *msgid );
 
+/// DDA MP v4.0a-173: in-game co-op instructions (host and client), a scrollable
+/// window reachable from the main menu and both in-game main menus.
+void show_coop_help();
+
 /// DDA MP v4.0a-170: when the engine is currently working inside a session's
 /// split region, a global add_msg() belongs to that client, not to the host's
 /// log. Routes it (with msgid capture, so it stays localized) and reports true.
