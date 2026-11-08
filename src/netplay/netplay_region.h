@@ -72,6 +72,10 @@ bool host_session_region_split( int sid );
 /// Region id of a session (0 = host region, -1 = no session/avatar).
 int host_session_region( int sid );
 
+/// DDA MP v4.0a-170: session whose split region owns this map, or -1 when the
+/// map is the host's own bubble or not a region map at all.
+int host_session_for_region_map( const map *m );
+
 /// The session avatar npc (defined in netplay_world.cpp, where the binding
 /// table lives). Null when the session is unbound or the avatar is gone.
 npc *host_session_avatar_npc( int sid );

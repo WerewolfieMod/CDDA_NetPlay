@@ -1050,11 +1050,19 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
 
 void add_msg( std::string msg )
 {
+    // DDA MP v4.0a-170: while the engine is inside a session's split region the
+    // message belongs to that client, not to the host's log.
+    if( netplay::host_route_bubble_message( msg, static_cast<int>( m_info ) ) ) {
+        return;
+    }
     Messages::add_msg( std::move( msg ) );
 }
 
 void add_msg( const game_message_params &params, std::string msg )
 {
+    if( netplay::host_route_bubble_message( msg, static_cast<int>( params.type ) ) ) {
+        return;
+    }
     Messages::add_msg( params, std::move( msg ) );
 }
 

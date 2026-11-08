@@ -23,6 +23,7 @@
 #include "avatar.h"
 #include "action.h"
 #include "activity_actor_definitions.h"
+#include "bubble_context.h"
 #include "calendar.h"
 #include "catacharset.h"
 #include "color.h"
@@ -931,6 +932,30 @@ static void host_relay_event_text( int sid, const std::string &text, int msg_typ
     payload += '\x1f';
     payload += instance;
     netplay::host_send_event_to_sid( sid, payload, msg_type );
+}
+
+bool host_route_bubble_message( const std::string &text, int msg_type )
+{
+    if( !host_is_running() ) {
+        return false;
+    }
+    const map *here = current_bubble_context().here;
+    if( here == nullptr ) {
+        return false;
+    }
+    const int sid = host_session_for_region_map( here );
+    if( sid <= 0 ) {
+        // The host's own bubble (or a map no session owns): keep it local.
+        return false;
+    }
+    std::string msgid;
+    std::string instance;
+    if( capture_msgid_for( text, msgid, instance ) ) {
+        host_relay_event_text( sid, text, msg_type, msgid, instance );
+    } else {
+        host_relay_event_text( sid, text, msg_type, std::string(), std::string() );
+    }
+    return true;
 }
 
 void host_relay_sees_message( const tripoint_bub_ms &target, const std::string &text,

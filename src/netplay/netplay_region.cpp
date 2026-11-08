@@ -434,6 +434,20 @@ int host_session_region( int sid )
     return it == mp_session_region.end() ? -1 : it->second;
 }
 
+int host_session_for_region_map( const map *m )
+{
+    if( m == nullptr ) {
+        return -1;
+    }
+    for( const auto &entry : mp_regions ) {
+        const bubble_region &region = entry.second;
+        if( region.owned && region.owned.get() == m ) {
+            return region.sessions.empty() ? -1 : region.sessions.front();
+        }
+    }
+    return -1;
+}
+
 void host_tick_split_regions( const std::function<void( Character & )> &tick )
 {
     if( !host_is_running() || mp_regions.empty() ) {

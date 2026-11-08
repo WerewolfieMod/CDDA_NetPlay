@@ -40,6 +40,7 @@
 #include "weather.h"      // host clock/weather for native lighting
 #include "map.h"         // get_map (client-side pickup selector scratch tile)
 #include "mapbuffer.h"   // synthetic client-side map bubble
+#include "messages.h"    // client journal mirrored into the game's message list
 #include "overmapbuffer.h" // weather/overmap context for map::load
 
 #include "submap.h"      // synthetic client-side map bubble
@@ -2737,6 +2738,12 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             hw.show();
             break;
         }
+        case ACTION_MESSAGES:
+            // DDA MP v4.0a-170: the journal is mirrored into the game's message
+            // list on the client, so show it here instead of messaging the host
+            // (which used to open the HOST's log).
+            Messages::display_messages();
+            break;
         default:
             netplay::client_send_client_action( act );
             break;
@@ -3748,6 +3755,10 @@ void run_view_loop()
         }
         mp_log.push_back( { txt, type, mp_cur_turn } );
         mp_inv_log( "clientlog: " + txt );
+        // DDA MP v4.0a-170: keep the game's own message history in sync, so the
+        // client's "messages" screen (the host's M key) shows the same journal
+        // instead of an empty list.
+        Messages::add_msg( game_message_params( static_cast<game_message_type>( type ) ), txt );
     };
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
