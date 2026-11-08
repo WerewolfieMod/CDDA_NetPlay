@@ -3843,7 +3843,11 @@ class Character : public Creature, public visitable
         item_location create_in_progress_disassembly( item_location target );
 
         bool disassemble();
-        bool disassemble( item_location target, bool interactive = true, bool disassemble_all = false );
+        /// DDA MP v4.0a-171: `silent` skips the interactive confirmations so a
+        /// netplay host can start the disassembly for a client avatar without
+        /// popping dialogs on the host's screen.
+        bool disassemble( item_location target, bool interactive = true, bool disassemble_all = false,
+                          bool silent = false );
         void disassemble_all( bool one_pass ); // Disassemble all items on the tile
         /**
          * Completely disassemble an item, and drop yielded components at its former position.

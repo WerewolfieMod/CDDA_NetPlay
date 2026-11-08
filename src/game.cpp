@@ -2475,6 +2475,10 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action, bool defa
             netplay::host_pump_avatar_keys();
             netplay::host_pump_inventory_actions();
             netplay::host_pump_client_actions();
+            // DDA MP v4.0a-171: intents (craft / recraft / fire / chat /
+            // butcher / construction) must be served during normal play too,
+            // not only while the host dialog is open.
+            netplay::host_pump_intents();
         }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,

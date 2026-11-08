@@ -115,6 +115,12 @@ struct construction {
 const std::vector<construction> &get_constructions();
 
 void place_construction( std::vector<construction_group_str_id> const &groups );
+/// DDA MP v4.0a-171: start a construction for an arbitrary character at a tile
+/// chosen elsewhere (a netplay client's order). Same validation, component and
+/// tool consumption as place_construction(), but without the host-side menus.
+/// Returns true when the construction activity was started.
+bool place_construction_at( const construction_group_str_id &group, Character &who,
+                            const tripoint_bub_ms &pnt );
 void load_construction( const JsonObject &jo, const std::string &src );
 void reset_constructions();
 construction_id construction_menu( bool blueprint );

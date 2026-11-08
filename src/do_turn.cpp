@@ -835,6 +835,7 @@ bool game::do_turn()
             netplay::host_pump_avatar_keys();
             netplay::host_pump_inventory_actions();
             netplay::host_pump_client_actions();
+            netplay::host_pump_intents();
             inp_mngr.pump_events();
             static auto mp_last_wait_snap = std::chrono::steady_clock::now();
             const auto mp_wait_now = std::chrono::steady_clock::now();

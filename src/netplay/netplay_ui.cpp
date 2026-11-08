@@ -41,6 +41,8 @@
 #include "map.h"         // get_map (client-side pickup selector scratch tile)
 #include "mapbuffer.h"   // synthetic client-side map bubble
 #include "messages.h"    // client journal mirrored into the game's message list
+#include "construction.h"        // client-side construction list (data only)
+#include "construction_group.h"  // construction group names
 #include "overmapbuffer.h" // weather/overmap context for map::load
 
 #include "submap.h"      // synthetic client-side map bubble
@@ -2665,6 +2667,57 @@ static void mp_run_client_throw( const item &thrown, const std::string &uid,
     g->mp_anchor_map_on( cli, true );
 }
 
+/* DDA MP v4.0a-171: build something from the client. The construction list is
+ * pure data, so the client can show it without touching the host's map; the
+ * direction is chosen here too, and the host validates the tile and consumes
+ * the components for the session avatar (construction::place_construction_at). */
+static void mp_run_client_construct()
+{
+    std::vector<construction_group_str_id> groups;
+    for( const construction &con : get_constructions() ) {
+        if( !con.on_display || con.is_blacklisted() ) {
+            continue;
+        }
+        if( std::find( groups.begin(), groups.end(), con.group ) == groups.end() ) {
+            groups.push_back( con.group );
+        }
+    }
+    if( groups.empty() ) {
+        return;
+    }
+    std::sort( groups.begin(), groups.end(),
+    []( const construction_group_str_id & a, const construction_group_str_id & b ) {
+        return a->name() < b->name();
+    } );
+    uilist menu;
+    menu.text = netplay::fork_text( "Construct what?" );
+    menu.title = netplay::fork_text( "Construction" );
+    for( const construction_group_str_id &g : groups ) {
+        menu.addentry( g->name() );
+    }
+    menu.query();
+    if( menu.ret < 0 || menu.ret >= static_cast<int>( groups.size() ) ) {
+        return;
+    }
+    const construction_group_str_id chosen = groups[menu.ret];
+    static const int dxs[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+    static const int dys[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+    static const char *arrows[8] = { "\u2191", "\u2197", "\u2192", "\u2198",
+                                     "\u2193", "\u2199", "\u2190", "\u2196" };
+    uilist dir;
+    dir.text = netplay::fork_text( "Construct where?" );
+    dir.title = chosen->name();
+    for( int i = 0; i < 8; i++ ) {
+        dir.addentry( arrows[i] );
+    }
+    dir.query();
+    if( dir.ret < 0 || dir.ret >= 8 ) {
+        return;
+    }
+    netplay::client_send_intent( "construct", 0, { dxs[dir.ret], dys[dir.ret] },
+                                 chosen.str() );
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -2743,6 +2796,16 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             // list on the client, so show it here instead of messaging the host
             // (which used to open the HOST's log).
             Messages::display_messages();
+            break;
+        case ACTION_BUTCHER:
+            // DDA MP v4.0a-171: the host butchers the corpse on the avatar's
+            // tile (dx/dy are reserved for cursor targeting later).
+            netplay::client_send_intent( "butcher", 0, { 0, 0 } );
+            break;
+        case ACTION_CONSTRUCT:
+            // DDA MP v4.0a-171: pick the construction and the direction on the
+            // client; the host validates and starts it.
+            mp_run_client_construct();
             break;
         default:
             netplay::client_send_client_action( act );
@@ -5112,6 +5175,24 @@ void run_view_loop()
                     const std::string action_name( test_action );
                     if( action_name == "smash" ) {
                         netplay::client_send_client_action( ACTION_SMASH );
+                    } else if( action_name == "butcher" ) {
+                        netplay::client_send_intent( "butcher", 0, { 0, 0 } );
+                    } else if( action_name == "construct" ) {
+                        netplay::client_send_intent( "construct", 0, { 1, 0 },
+                                                     "board_up_window" );
+                    } else if( action_name == "disassemble" ) {
+                        // Address the first carried item by its host uid, exactly
+                        // like the inventory item menu does.
+                        for( item *it : get_avatar().inv_dump() ) {
+                            if( it == nullptr ) {
+                                continue;
+                            }
+                            const std::string uid = it->get_var( "mp_uid", std::string() );
+                            if( !uid.empty() ) {
+                                netplay::client_send_inventory_uid( uid, 'D' );
+                                break;
+                            }
+                        }
                     }
                     mp_inv_log( "test: client action " + action_name );
                 }

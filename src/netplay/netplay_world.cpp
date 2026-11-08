@@ -13,6 +13,7 @@
 #include "netplay/netplay_region.h"
 
 #include <array>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -24,7 +25,10 @@
 #include "action.h"
 #include "activity_actor_definitions.h"
 #include "bubble_context.h"
+#include "butchery.h"
 #include "calendar.h"
+#include "construction.h"
+#include "construction_group.h"
 #include "catacharset.h"
 #include "color.h"
 #include "creature.h"
@@ -2797,9 +2801,12 @@ void host_pump_inventory_actions()
             case 'U':   // unload
                 changed = av->unload( loc );
                 break;
-            case 'D':   // disassemble: map-bound, unsafe for an unloaded avatar
-                deny( netplay::fork_text( "Disassembly is not available for netplay clients yet." ) );
+            case 'D': { // disassemble the chosen item (silent: no host dialogs)
+                if( av->disassemble( loc, false, false, true ) ) {
+                    changed = true;
+                }
                 break;
+            }
             case 'm':   // mend
                 av->mend_item( item_location( loc ), false );
                 changed = true;
@@ -3763,6 +3770,44 @@ void host_pump_client_actions()
 /* DDA MP v4.1: known intent ids are demultiplexed into the typed queues by the
  * reader thread. Anything left here has no handler yet; report it once instead
  * of dropping the player's order silently. */
+/* DDA MP v4.0a-171: butcher the corpse on a tile for a session avatar. The
+ * stock game::butcher() drives the host avatar and opens selection menus, so
+ * the netplay host starts the butchery activity directly: the first corpse on
+ * the tile, full butchery, same tool and mood checks as the stock action. */
+static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
+{
+    static const quality_id qual_butcher( "BUTCHER" );
+    static const quality_id qual_cut_fine( "CUT_FINE" );
+    map &here = get_map();
+    item *corpse = nullptr;
+    for( item &it : here.i_at( pos ) ) {
+        if( it.is_corpse() ) {
+            corpse = &it;
+            break;
+        }
+    }
+    if( corpse == nullptr ) {
+        av.add_msg_if_player( m_info, _( "There are no corpses here to butcher." ) );
+        return;
+    }
+    const int factor = av.max_quality( qual_butcher, PICKUP_RANGE );
+    const int factor_d = av.max_quality( qual_cut_fine, PICKUP_RANGE );
+    if( factor == INT_MIN && factor_d == INT_MIN ) {
+        av.add_msg_if_player( m_info, _( "You don't have a butchering tool." ) );
+        return;
+    }
+    if( !av.has_morale_to_craft() ) {
+        av.add_msg_if_player( m_info,
+                              _( "You are not in the mood and the prospect of guts and blood on your hands convinces you to turn away." ) );
+        return;
+    }
+    item_location corpse_loc( map_cursor( pos ), corpse );
+    av.assign_activity( butchery_activity_actor( butchery_data( corpse_loc, butcher_type::FULL ) ) );
+    av_mark_acted( sid );
+    netplay::host_send_hover_to_sid( sid, "" );
+    av_send_session_picture( sid, av.pos_bub(), &av );
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -3797,6 +3842,58 @@ void host_pump_intents()
                 av_send_status( in.sid );
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 mp_forward_new_messages( in.sid, msg_before );
+                g->mp_anchor_map_on( get_avatar() );
+            }
+            continue;
+        }
+        // DDA MP v4.0a-171: butcher the corpse under (or next to) the avatar.
+        if( in.action == "butcher" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                const int dx = in.args.empty() ? 0 : in.args[0];
+                const int dy = in.args.size() < 2 ? 0 : in.args[1];
+                const std::size_t msg_before = Messages::generation();
+                host_butcher_at( in.sid, *av,
+                                 av->pos_bub() + tripoint_rel_ms( dx, dy, 0 ) );
+                mp_forward_new_messages( in.sid, msg_before );
+                av_send_status( in.sid );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-171: construction chosen in the client's own menu.
+        if( in.action == "construct" && !in.data.empty() && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av == nullptr ) {
+                continue;
+            }
+            const construction_group_str_id group( in.data );
+            if( !group.is_valid() ) {
+                netplay::host_send_event_to_sid(
+                    in.sid, string_format( _( "Unknown construction \"%s\"." ), in.data ),
+                    static_cast<int>( m_info ) );
+                continue;
+            }
+            const int dx = in.args[0];
+            const int dy = in.args[1];
+            if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
+                netplay::host_send_event_to_sid(
+                    in.sid, _( "You can't construct there." ), static_cast<int>( m_info ) );
+                continue;
+            }
+            g->mp_anchor_map_on( *av, true );
+            const tripoint_bub_ms pnt = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+            const std::size_t msg_before = Messages::generation();
+            if( place_construction_at( group, *av, pnt ) ) {
+                av_mark_acted( in.sid );
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+            }
+            mp_forward_new_messages( in.sid, msg_before );
+            av_send_status( in.sid );
+            if( !netplay::host_avatar_keys_pending() ) {
                 g->mp_anchor_map_on( get_avatar() );
             }
             continue;

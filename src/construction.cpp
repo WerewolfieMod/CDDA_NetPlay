@@ -1,4 +1,4 @@
-#include "construction.h"
+﻿#include "construction.h"
 
 #include <algorithm>
 #include <array>
@@ -460,7 +460,7 @@ static std::string furniture_qualities_string( const furn_id &fid )
 
 static std::pair<std::map<tripoint_bub_ms, const construction *>, std::vector<const construction *>>
         valid_constructions_near_player( const std::vector<construction_group_str_id> &groups,
-                const temp_crafting_inventory &total_inv, avatar &player_character );
+                const temp_crafting_inventory &total_inv, Character &player_character );
 
 static shared_ptr_fast<game::draw_callback_t> construction_preview_callback(
     const std::map<tripoint_bub_ms, const construction *> &valid,
@@ -1344,7 +1344,7 @@ bool can_construct( const construction &con )
 
 std::pair<std::map<tripoint_bub_ms, const construction *>, std::vector<const construction *>>
         valid_constructions_near_player( const std::vector<construction_group_str_id> &groups,
-                const temp_crafting_inventory &total_inv, avatar &player_character )
+                const temp_crafting_inventory &total_inv, Character &player_character )
 {
     std::pair<std::map<tripoint_bub_ms, const construction *>, std::vector<const construction *>> ret;
     std::map<tripoint_bub_ms, const construction *> &valid = ret.first;
@@ -1462,6 +1462,56 @@ void place_construction( std::vector<construction_group_str_id> const &groups )
     player_character.invalidate_crafting_inventory();
     player_character.invalidate_weight_carried_cache();
     player_character.assign_activity( build_construction_activity_actor( here.get_abs( pnt ) ) );
+}
+
+bool place_construction_at( const construction_group_str_id &group, Character &who,
+                            const tripoint_bub_ms &pnt )
+{
+    map &here = get_map();
+    const temp_crafting_inventory &total_inv = who.crafting_inventory();
+    const std::vector<construction_group_str_id> groups{ group };
+    std::pair<std::map<tripoint_bub_ms, const construction *>, std::vector<const construction *>>
+            valid_pair = valid_constructions_near_player( groups, total_inv, who );
+    const std::map<tripoint_bub_ms, const construction *> &valid = valid_pair.first;
+    if( valid.find( pnt ) == valid.end() ) {
+        if( !valid_pair.second.empty() ) {
+            valid_pair.second.front()->explain_failure( pnt );
+        } else {
+            who.add_msg_if_player( m_info, _( "You can't construct that here." ) );
+        }
+        return false;
+    }
+    if( here.partial_con_at( pnt ) != nullptr ) {
+        who.add_msg_if_player( m_info, _( "There's already a construction in progress here." ) );
+        return false;
+    }
+    std::list<item> used;
+    const construction &con = *valid.find( pnt )->second;
+    partial_con pc;
+    pc.id = con.id;
+    if( who.has_trait( trait_DEBUG_HS ) ) {
+        for( const auto &it : con.requirements->get_components() ) {
+            used.emplace_back( it.front().type );
+        }
+    } else {
+        for( const std::vector<item_comp> &it : con.requirements->get_components() ) {
+            std::list<item> tmp = who.consume_items( it, 1, is_crafting_component,
+                                  return_false<itype_id>, true );
+            if( tmp.empty() ) {
+                return false;
+            }
+            used.splice( used.end(), tmp );
+        }
+    }
+    pc.components = used;
+    here.partial_con_set( pnt, pc );
+    for( const auto &it : con.requirements->get_tools() ) {
+        who.consume_tools( it );
+    }
+    who.invalidate_crafting_inventory();
+    who.invalidate_weight_carried_cache();
+    who.assign_activity( build_construction_activity_actor( here.get_abs( pnt ) ) );
+    return true;
 }
 
 void build_construction_activity_actor::complete_construction( player_activity &act,

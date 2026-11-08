@@ -1655,6 +1655,14 @@ std::string fork_text( const char *msgid )
             { "[%d] Listening on %d", "[%d] Приём подключений на порту %d" },
             { "[Esc] close   [Up/Down] select   [Tab] column   [PgUp/PgDn] page", "[Esc] закрыть   [Вверх/Вниз] выбор   [Tab] столбец   [PgUp/PgDn] страница" },
             { "[x] Not listening", "[x] Сервер не запущен" },
+            { "Construct what?", "Что построить?" },
+            { "Construct where?", "Где строить?" },
+            { "Construction", "Строительство" },
+            { "You can't construct there.", "Здесь нельзя строить." },
+            { "You can't construct that here.", "Здесь это построить нельзя." },
+            { "There's already a construction in progress here.",
+              "Здесь уже идёт строительство." },
+            { "Unknown construction \"%s\".", "Неизвестная конструкция \"%s\"." },
         };
         const auto it = ru.find( msgid );
         if( it != ru.end() ) {

@@ -1,4 +1,4 @@
-#include "crafting.h"
+﻿#include "crafting.h"
 
 #include <algorithm>
 #include <climits>
@@ -5307,7 +5307,7 @@ static int query_disassemble_quantity( int num_dis, const item &obj )
     return popup_input.cancelled() ? 0 : result;
 }
 
-bool Character::disassemble( item_location target, bool interactive, bool disassemble_all )
+bool Character::disassemble( item_location target, bool interactive, bool disassemble_all, bool silent )
 {
     if( !target ) {
         add_msg( _( "Never mind." ) );
@@ -5322,12 +5322,12 @@ bool Character::disassemble( item_location target, bool interactive, bool disass
         return false;
     }
 
-    if( obj.is_favorite &&
+    if( !silent && obj.is_favorite &&
         !query_yn( _( "You're going to disassemble favorited item.\nAre you sure?" ) ) ) {
         return false;
     }
 
-    if( obj.is_worn_by_player() &&
+    if( !silent && obj.is_worn_by_player() &&
         !query_yn( _( "You're going to disassemble worn item.\nAre you sure?" ) ) ) {
         return false;
     }
@@ -5335,7 +5335,7 @@ bool Character::disassemble( item_location target, bool interactive, bool disass
     avatar &player_character = get_avatar();
     const recipe &r = ( obj.typeId() == itype_disassembly ) ? obj.get_making() :
                       recipe_dictionary::get_uncraft( obj.typeId() );
-    if( !obj.is_owned_by( player_character, true ) ) {
+    if( !silent && !obj.is_owned_by( player_character, true ) ) {
         if( !query_yn( _( "Disassembling the %s may anger the people who own it, continue?" ),
                        obj.tname() ) ) {
             return false;
@@ -5370,7 +5370,7 @@ bool Character::disassemble( item_location target, bool interactive, bool disass
         // When disassembling items with charges, prompt the player to specify amount
         int num_dis = 1;
         if( obj.count_by_charges() ) {
-            if( !disassemble_all && obj.charges > 1 ) {
+            if( !silent && !disassemble_all && obj.charges > 1 ) {
                 num_dis = query_disassemble_quantity( num_dis, obj );
                 if( num_dis <= 0 ) {
                     add_msg( _( "Never mind." ) );
