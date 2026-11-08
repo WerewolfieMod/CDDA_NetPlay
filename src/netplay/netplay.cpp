@@ -11,11 +11,15 @@
 // DDA MP v4.0a-165: the client resolves typed event arguments (terrain,
 // furniture, item type, monster type) from its own data on receipt.
 #include "item.h"
+#include "item_factory.h"
 #include "mapdata.h"
 #include "monstergenerator.h"
 #include "mtype.h"
 #include "netplay/netplay_msgcap.h"
 #include "translations.h"
+
+#include <cctype>
+#include <unordered_map>
 
 #include <algorithm>
 #include <atomic>
@@ -1605,11 +1609,63 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )
  * Russian client's log in Russian even when the host runs in English, without
  * shipping a host-localized (and therefore host-language) sentence. */
 
-/// Resolve one typed argument ('\x02' + kind + type id) on the client.
+/* DDA MP v4.0a-167: arguments of engine messages arrive exactly as the sender
+ * rendered them. Item and monster names are translation objects carrying a
+ * JSON context ("stone", ...), so a context-less to_translation() would pick a
+ * wrong word. The client keeps a lazily built index from the untranslated name
+ * (what an English sender writes) to the name in the client's language. */
+static const std::unordered_map<std::string, std::string> &mp_name_index()
+{
+    static std::unordered_map<std::string, std::string> index;
+    static bool built = false;
+    if( built ) {
+        return index;
+    }
+    built = true;
+    const auto add = []( const translation &tr, const std::string &translated ) {
+        const std::string &raw = tr.msgid();
+        if( !raw.empty() && !translated.empty() && raw != translated ) {
+            index.emplace( raw, translated );
+        }
+    };
+    if( item_controller ) {
+        for( const itype *t : item_controller->all() ) {
+            if( t != nullptr ) {
+                add( t->raw_name(), t->nname( 1 ) );
+            }
+        }
+    }
+    for( const mtype &m : MonsterGenerator::generator().get_all_mtypes() ) {
+        add( m.raw_name(), m.nname( 1 ) );
+    }
+    return index;
+}
+
+static std::string mp_translate_name_arg( const std::string &arg )
+{
+    if( arg.empty() ) {
+        return arg;
+    }
+    bool numeric = true;
+    for( const char c : arg ) {
+        if( !std::isdigit( static_cast<unsigned char>( c ) ) &&
+            c != '.' && c != '-' && c != ',' && c != ' ' ) {
+            numeric = false;
+            break;
+        }
+    }
+    if( numeric ) {
+        return arg;
+    }
+    const auto &index = mp_name_index();
+    const auto it = index.find( arg );
+    return it == index.end() ? arg : it->second;
+}
+
 static std::string mp_event_arg( const std::string &raw )
 {
     if( raw.size() < 3 || raw[0] != '\x02' ) {
-        return raw;
+        return mp_translate_name_arg( raw );
     }
     const std::string id = raw.substr( 2 );
     switch( raw[1] ) {
@@ -1823,11 +1879,9 @@ static std::string mp_rebuild_message( const std::string &msgid, const std::stri
     }
     std::vector<std::string> args( arg_count );
     for( std::size_t k = 0; k < slots.size() && k < raw_args.size(); ++k ) {
-        // Arguments stay exactly as the host rendered them. Names (items,
-        // creatures, terrain) are not plain msgids: they carry a JSON context
-        // ("stone", "name", ...), so a context-less lookup here would show a
-        // wrong word. Numbers and other literals need no translation anyway.
-        args[slots[k]] = raw_args[k];
+        // Numbers pass through; item/monster names are mapped to the client's
+        // language through the name index.
+        args[slots[k]] = mp_translate_name_arg( raw_args[k] );
     }
     return mp_fill_args( to_translation( msgid ).translated(), args );
 }

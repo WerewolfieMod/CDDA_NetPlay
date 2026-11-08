@@ -457,6 +457,13 @@ struct mtype {
         translation description;
     public:
 
+        /// DDA MP v4.0a-167: the untranslated name, for the client's name
+        /// index (message arguments arrive in the sender's language). Do not
+        /// use for display: use nname() instead.
+        const translation &raw_name() const {
+            return name;
+        }
+
         // Pet food category this monster is in
         pet_food_data petfood;
     private:

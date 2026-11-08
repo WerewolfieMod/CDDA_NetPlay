@@ -1573,6 +1573,13 @@ struct itype {
         translation name = no_translation( "none" );
 
     public:
+        /// DDA MP v4.0a-167: the untranslated name. Needed by a netplay client
+        /// to build a name index (message arguments arrive in the sender's
+        /// language). Do not use for display: that is what nname() is for.
+        const translation &raw_name() const {
+            return name;
+        }
+
         // Total of item's material portions (materials->second)
         int mat_portion_total = 0;
 
