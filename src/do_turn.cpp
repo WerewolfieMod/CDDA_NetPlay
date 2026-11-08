@@ -870,7 +870,7 @@ bool game::do_turn()
             // action points.
             if( !netplay::long_wait_active() ) {
             werase( mp_wait_win );
-            mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other playersвЂ¦" ) );
+            mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, netplay::fork_text( "Waiting for other players..." ) );
             wnoutrefresh( mp_wait_win );
             }
             netplay::host_draw_long_wait_hint( 1 );

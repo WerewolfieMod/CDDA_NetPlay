@@ -8,14 +8,15 @@
 #include "worldfactory.h" // world_generator (WELCOME world name)
 #endif
 
-// DDA MP v4.0a-165: the client resolves typed event arguments (terrain,
-// furniture, item type, monster type) from its own data on receipt.
+/// DDA MP v4.0a-165: the client resolves typed event arguments (terrain,
+/// furniture, item type, monster type) from its own data on receipt.
 #include "item.h"
 #include "item_factory.h"
 #include "mapdata.h"
 #include "monstergenerator.h"
 #include "mtype.h"
 #include "netplay/netplay_msgcap.h"
+#include "translation_manager.h"
 #include "translations.h"
 
 #include <algorithm>
@@ -1581,6 +1582,86 @@ bool host_send_hover_to_sid( int sid, const std::string &text )
         return false;
     }
     return true;
+}
+
+std::string fork_text( const char *msgid )
+{
+    if( msgid == nullptr ) {
+        return std::string();
+    }
+    const std::string lang = TranslationManager::GetInstance().GetCurrentLanguage();
+    if( lang.rfind( "ru", 0 ) == 0 ) {
+        // The fork's own UI strings, kept here because the game's catalogs are
+        // generated from the upstream sources and have no entries for them.
+        static const std::unordered_map<std::string, std::string> ru = {
+            { "%s connected.", "Игрок %s подключился." },
+            { "%s gives you the %s.", "%s даёт вам %s." },
+            { "< <color_green>Aiming</color> >", "< <color_green>Прицеливание</color> >" },
+            { "< <color_green>Throwing</color> >", "< <color_green>Бросок</color> >" },
+            { "<ENTER>: start listener on port 25565", "<ENTER>: запустить сервер на порту 25565" },
+            { "<ENTER>: stop listener", "<ENTER>: остановить сервер" },
+            { "<UP>/<DOWN>: select   <ENTER>: connect   <ESC>: cancel", "<ВВЕРХ>/<ВНИЗ>: выбор   <ENTER>: подключиться   <ESC>: отмена" },
+            { "Bad avatar profile: %s", "Некорректный профиль персонажа: %s" },
+            { "Cata server", "Сервер Cata" },
+            { "Chat message", "Сообщение в чат" },
+            { "Connection refused: %s", "В подключении отказано: %s" },
+            { "Connection refused: host unreachable.", "В подключении отказано: хост недоступен." },
+            { "Could not connect: the host rejected the connection.", "Не удалось подключиться: хост отклонил соединение." },
+            { "Could not reconnect: the host is unreachable.", "Не удалось переподключиться: хост недоступен." },
+            { "Craft something first.", "Сначала что-нибудь создайте." },
+            { "Disassembly is not available for netplay clients yet.", "Разбор предметов пока недоступен клиентам сетевой игры." },
+            { "Disconnect from server", "Отключиться от сервера" },
+            { "Failed to bind the listener. Port %d may be in use.", "Не удалось занять порт. Возможно, порт %d уже используется." },
+            { "Firing mode: %s", "Режим стрельбы: %s" },
+            { "HP: %d/%d | %s | %s", "ОЗ: %d/%d | %s | %s" },
+            { "Host is not running a game yet.", "Хост ещё не запустил игру." },
+            { "Invalid nickname.", "Недопустимое имя." },
+            { "Invalid target.", "Недопустимая цель." },
+            { "Item hotkeys assigned: %d/%d", "Назначено горячих клавиш: %d/%d" },
+            { "Items: %d", "Предметов: %d" },
+            { "Long wait mode OFF", "Режим долгого ожидания выключен" },
+            { "Long wait mode ON", "Режим долгого ожидания включён" },
+            { "Long wait mode: OFF (pass turns for other players)", "Режим долгого ожидания: ВЫКЛ (пропускать ходы за других игроков)" },
+            { "Long wait mode: ON (pass turns for other players)", "Режим долгого ожидания: ВКЛ (пропускать ходы за других игроков)" },
+            { "Longest side", "Длинная сторона" },
+            { "Network: open world for co-op (port 25565)", "Сеть: открыть мир для совместной игры (порт 25565)" },
+            { "No free tile near the host avatar to spawn in.", "Рядом с персонажем хоста нет свободной клетки для появления." },
+            { "Perception", "Восприятие" },
+            { "Players (%d):", "Игроки (%d):" },
+            { "Protocol: DDA MP 0.1  Port: %d", "Протокол: DDA MP 0.1  Порт: %d" },
+            { "That item moved. Reopen the inventory and try again.", "Этот предмет переместился. Откройте инвентарь заново и повторите." },
+            { "The host address can not be empty.", "Адрес хоста не может быть пустым." },
+            { "The inventory changed. Reopen it and try again.", "Инвентарь изменился. Откройте его заново и повторите." },
+            { "The way is blocked.", "Путь заблокирован." },
+            { "There is no one close enough to give it to.", "Рядом нет никого, кому это можно передать." },
+            { "There's nothing to smash here.", "Здесь нечего ломать." },
+            { "This vehicle has no working controls.", "У этого транспорта нет работающего управления." },
+            { "Unknown recipe.", "Неизвестный рецепт." },
+            { "Volume", "Объём" },
+            { "Waiting for other players...", "Ожидание других игроков…" },
+            { "You are in a vehicle. Use the vehicle controls to get out.", "Вы в транспорте. Чтобы выйти, используйте управление транспортом." },
+            { "You are not wielding a gun.", "Вы не держите огнестрельное оружие." },
+            { "You are not wielding a multi-mode gun.", "Вы не держите оружие с несколькими режимами стрельбы." },
+            { "You can't carry anything more.", "Вы больше не можете ничего нести." },
+            { "You can't drive here.", "Здесь нельзя ехать." },
+            { "You can't read that.", "Вы не можете это читать." },
+            { "You can't throw there.", "Туда нельзя бросить." },
+            { "You can't wield that.", "Вы не можете это взять в руки." },
+            { "You get out of the vehicle.", "Вы выходите из транспорта." },
+            { "You go down the stairs.", "Вы спускаетесь по лестнице." },
+            { "You go up the stairs.", "Вы поднимаетесь по лестнице." },
+            { "You have died. Disconnect and join again to create a new character.", "Вы погибли. Отключитесь и подключитесь снова, чтобы создать нового персонажа." },
+            { "You have no compatible ammo for that.", "У вас нет подходящих патронов." },
+            { "[%d] Listening on %d", "[%d] Приём подключений на порту %d" },
+            { "[Esc] close   [Up/Down] select   [Tab] column   [PgUp/PgDn] page", "[Esc] закрыть   [Вверх/Вниз] выбор   [Tab] столбец   [PgUp/PgDn] страница" },
+            { "[x] Not listening", "[x] Сервер не запущен" },
+        };
+        const auto it = ru.find( msgid );
+        if( it != ru.end() ) {
+            return it->second;
+        }
+    }
+    return msgid;
 }
 
 bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )

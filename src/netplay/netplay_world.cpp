@@ -120,7 +120,7 @@ static std::string status_line_for( const avatar &u )
     const int hp_max = u.get_hp_max();
     const std::string timestr = to_string( calendar::turn );
     const std::string wname = get_weather().weather_id->name.translated();
-    return string_format( _( "HP: %d/%d | %s | %s" ), hp, hp_max, timestr, wname );
+    return string_format( netplay::fork_text( "HP: %d/%d | %s | %s" ), hp, hp_max, timestr, wname );
 }
 
 /* DDA MP v4.0a-165: typed event arguments. The client resolves these from
@@ -1350,7 +1350,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
     map &here = get_map();
     avatar &host = get_avatar();
     if( !here.inbounds( host.pos_bub() ) ) {
-        av_reply_deny( op.sid, _( "Host is not running a game yet." ) );
+        av_reply_deny( op.sid, netplay::fork_text( "Host is not running a game yet." ) );
         return;
     }
 
@@ -1360,7 +1360,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         // Announce the join in the host's message log: "{Name} connected".
         // The list request arrives exactly once per connect, right after
         // the client finished loading the host's world data.
-        add_msg( _( "%s connected." ), op.nick );
+        add_msg( netplay::fork_text( "%s connected." ), op.nick );
 
         // list request: report the avatar owned by the requesting nick. This
         // is also the self-heal point: if the registry's npc id went stale
@@ -1425,7 +1425,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         // create: one avatar per nick; a client that owns a live avatar must
         // resume it instead of recreating.
         if( op.nick.empty() || op.nick.size() > 40 ) {
-            av_reply_deny( op.sid, _( "Invalid nickname." ) );
+            av_reply_deny( op.sid, netplay::fork_text( "Invalid nickname." ) );
             return;
         }
         for( const av_rec &rec : recs ) {
@@ -1459,7 +1459,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             }
         } catch( const JsonError &e ) {
             npc_ptr = nullptr;
-            av_reply_deny( op.sid, string_format( _( "Bad avatar profile: %s" ), e.what() ) );
+            av_reply_deny( op.sid, string_format( netplay::fork_text( "Bad avatar profile: %s" ), e.what() ) );
             return;
         }
         // find a free passable tile on a ring around the host avatar
@@ -1483,7 +1483,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             }
         }
         if( !ok ) {
-            av_reply_deny( op.sid, _( "No free tile near the host avatar to spawn in." ) );
+            av_reply_deny( op.sid, netplay::fork_text( "No free tile near the host avatar to spawn in." ) );
             return;
         }
         character_id new_id = g->assign_npc_id();
@@ -1840,7 +1840,7 @@ void host_pump_avatar_keys()
             if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
         !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
-                netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other playersвЂ¦" ) );
+                netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
             } else {
                 netplay::host_send_hover_to_sid( sk.sid, "" );
             }
@@ -1849,7 +1849,7 @@ void host_pump_avatar_keys()
         }
         if( npc_ptr->in_vehicle ) {
             netplay::host_send_event_to_sid(
-                sk.sid, _( "You are in a vehicle. Use the vehicle controls to get out." ),
+                sk.sid, netplay::fork_text( "You are in a vehicle. Use the vehicle controls to get out." ),
                 static_cast<int>( m_info ) );
             break;
         }
@@ -1868,7 +1868,7 @@ void host_pump_avatar_keys()
         !netplay::long_wait_active() ) {
                     if( !av_waiting_for_turn[sk.sid] ) {
                         av_waiting_for_turn[sk.sid] = true;
-                        netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other playersвЂ¦" ) );
+                        netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
                     }
                     av_mark_acted( sk.sid );
                     break;
@@ -1906,7 +1906,7 @@ void host_pump_avatar_keys()
                     if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
         !netplay::long_wait_active() ) {
                         av_waiting_for_turn[sk.sid] = true;
-                        netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other playersвЂ¦" ) );
+                        netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
                     } else {
                         netplay::host_send_hover_to_sid( sk.sid, "" );
                     }
@@ -1939,7 +1939,7 @@ void host_pump_avatar_keys()
                     if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) &&
         !netplay::long_wait_active() ) {
                         av_waiting_for_turn[sk.sid] = true;
-                        netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other playersвЂ¦" ) );
+                        netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
                     } else {
                         netplay::host_send_hover_to_sid( sk.sid, "" );
                     }
@@ -1980,7 +1980,7 @@ void host_pump_avatar_keys()
                     !netplay::long_wait_active() &&
                     !av_waiting_for_turn[sk.sid] ) {
                     av_waiting_for_turn[sk.sid] = true;
-                    netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other playersвЂ¦" ) );
+                    netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
                 }
                 // No action point left for this order: the player is done for
                 // this round. Do not block the host's turn on an exhausted
@@ -2042,7 +2042,7 @@ void host_pump_avatar_keys()
             if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
         !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
-                netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other playersвЂ¦" ) );
+                netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
             } else {
                 netplay::host_send_hover_to_sid( sk.sid, "" );
             }
@@ -2574,7 +2574,7 @@ void host_pump_inventory_actions()
             // The row list the client acted on is stale; applying the index
             // could hit a different item.
             netplay::host_send_event_to_sid(
-                sid, _( "The inventory changed. Reopen it and try again." ),
+                sid, netplay::fork_text( "The inventory changed. Reopen it and try again." ),
                 static_cast<int>( m_info ) );
             continue;
         }
@@ -2610,7 +2610,7 @@ void host_pump_inventory_actions()
             }
             if( !loc ) {
                 netplay::host_send_event_to_sid(
-                    sid, _( "That item moved. Reopen the inventory and try again." ),
+                    sid, netplay::fork_text( "That item moved. Reopen the inventory and try again." ),
                     static_cast<int>( m_info ) );
                 continue;
             }
@@ -2728,7 +2728,7 @@ void host_pump_inventory_actions()
                     }
                 }
                 if( target == nullptr ) {
-                    deny( _( "There is no one close enough to give it to." ) );
+                    deny( netplay::fork_text( "There is no one close enough to give it to." ) );
                     break;
                 }
                 const std::string gift_name = loc->tname();
@@ -2747,7 +2747,7 @@ void host_pump_inventory_actions()
                         static_cast<int>( m_good ) );
                     av_send_status( target_sid );
                 } else {
-                    add_msg( m_good, _( "%s gives you the %s." ), av->get_name(), gift_name );
+                    add_msg( m_good, netplay::fork_text( "%s gives you the %s." ), av->get_name(), gift_name );
                 }
                 changed = true;
                 break;
@@ -2773,7 +2773,7 @@ void host_pump_inventory_actions()
                 changed = av->unload( loc );
                 break;
             case 'D':   // disassemble: map-bound, unsafe for an unloaded avatar
-                deny( _( "Disassembly is not available for netplay clients yet." ) );
+                deny( netplay::fork_text( "Disassembly is not available for netplay clients yet." ) );
                 break;
             case 'm':   // mend
                 av->mend_item( item_location( loc ), false );
@@ -2785,7 +2785,7 @@ void host_pump_inventory_actions()
             case 'r': { // reload
                 item::reload_option opt = av->select_ammo( loc, false );
                 if( !opt ) {
-                    deny( _( "You have no compatible ammo for that." ) );
+                    deny( netplay::fork_text( "You have no compatible ammo for that." ) );
                     break;
                 }
                 av->assign_activity( reload_activity_actor( std::move( opt ) ) );
@@ -2795,7 +2795,7 @@ void host_pump_inventory_actions()
             case 'p': { // part reload (do not consider empty magazines)
                 item::reload_option opt = av->select_ammo( loc, false, false );
                 if( !opt ) {
-                    deny( _( "You have no compatible ammo for that." ) );
+                    deny( netplay::fork_text( "You have no compatible ammo for that." ) );
                     break;
                 }
                 av->assign_activity( reload_activity_actor( std::move( opt ) ) );
@@ -2829,7 +2829,7 @@ void host_pump_inventory_actions()
                         deny( reason );
                     }
                     if( fail_messages.empty() ) {
-                        deny( _( "You can't read that." ) );
+                        deny( netplay::fork_text( "You can't read that." ) );
                     }
                     break;
                 }
@@ -2841,7 +2841,7 @@ void host_pump_inventory_actions()
             }
             case 't': { // throw at a tile offset chosen on the client
                 if( targets.size() < 2 ) {
-                    deny( _( "Invalid target." ) );
+                    deny( netplay::fork_text( "Invalid target." ) );
                     break;
                 }
                 if( av->is_worn( *loc ) ) {
@@ -2852,7 +2852,7 @@ void host_pump_inventory_actions()
                     }
                 }
                 if( !av->is_wielding( *loc ) && !av->wield( loc ) ) {
-                    deny( _( "You can't wield that." ) );
+                    deny( netplay::fork_text( "You can't wield that." ) );
                     break;
                 }
                 item_location weapon = av->get_wielded_item();
@@ -2864,7 +2864,7 @@ void host_pump_inventory_actions()
                 const tripoint_bub_ms target( from.x() + targets[0],
                                               from.y() + targets[1], from.z() );
                 if( !get_map().inbounds( target ) ) {
-                    deny( _( "You can't throw there." ) );
+                    deny( netplay::fork_text( "You can't throw there." ) );
                     break;
                 }
                 item thrown = *weapon;
@@ -2951,7 +2951,7 @@ void host_pump_inventory_actions()
         }
         if( generation != av_inv_gen[sid] ) {
             netplay::host_send_event_to_sid(
-                sid, _( "The inventory changed. Reopen it and try again." ),
+                sid, netplay::fork_text( "The inventory changed. Reopen it and try again." ),
                 static_cast<int>( m_info ) );
             continue;
         }
@@ -3259,7 +3259,7 @@ void host_pump_client_actions()
                 const tripoint_bub_ms dest = pos + tripoint_rel_ms( 0, 0, dz );
                 if( !here.inbounds( dest ) || !here.passable( dest ) ) {
                     netplay::host_send_event_to_sid(
-                        sid, _( "The way is blocked." ), static_cast<int>( m_info ) );
+                        sid, netplay::fork_text( "The way is blocked." ), static_cast<int>( m_info ) );
                     break;
                 }
                 tripoint_abs_ms new_abs = av->pos_abs();
@@ -3274,12 +3274,12 @@ void host_pump_client_actions()
                 av->set_moves( pool_it->second );
                 av_mark_acted( sid );
                 netplay::host_send_event_to_sid(
-                    sid, dz > 0 ? _( "You go up the stairs." ) : _( "You go down the stairs." ),
+                    sid, dz > 0 ? netplay::fork_text( "You go up the stairs." ) : netplay::fork_text( "You go down the stairs." ),
                     static_cast<int>( m_info ) );
                 if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&
                     !netplay::long_wait_active() ) {
                     av_waiting_for_turn[sid] = true;
-                    netplay::host_send_hover_to_sid( sid, _( "Waiting for other playersвЂ¦" ) );
+                    netplay::host_send_hover_to_sid( sid, netplay::fork_text( "Waiting for other players..." ) );
                 } else {
                     netplay::host_send_hover_to_sid( sid, "" );
                 }
@@ -3297,7 +3297,7 @@ void host_pump_client_actions()
                 const optional_vpart_position vp = here.veh_at( pos );
                 if( !vp ) {
                     netplay::host_send_event_to_sid(
-                        sid, _( "You can't drive here." ), static_cast<int>( m_info ) );
+                        sid, netplay::fork_text( "You can't drive here." ), static_cast<int>( m_info ) );
                     break;
                 }
                 if( av->controlling_vehicle ) {
@@ -3322,7 +3322,7 @@ void host_pump_client_actions()
                         }
                     }
                     netplay::host_send_event_to_sid(
-                        sid, _( "You get out of the vehicle." ), static_cast<int>( m_info ) );
+                        sid, netplay::fork_text( "You get out of the vehicle." ), static_cast<int>( m_info ) );
                     changed = true;
                     break;
                 }
@@ -3330,7 +3330,7 @@ void host_pump_client_actions()
                                          vp->mount_pos(), "CONTROLS" );
                 if( controls < 0 ) {
                     netplay::host_send_event_to_sid(
-                        sid, _( "This vehicle has no working controls." ),
+                        sid, netplay::fork_text( "This vehicle has no working controls." ),
                         static_cast<int>( m_info ) );
                     break;
                 }
@@ -3361,13 +3361,13 @@ void host_pump_client_actions()
                 if( gun && gun->is_gun() && gun->gun_all_modes().size() > 1 ) {
                     gun->gun_cycle_mode();
                     netplay::host_send_event_to_sid(
-                        sid, string_format( _( "Firing mode: %s" ),
+                        sid, string_format( netplay::fork_text( "Firing mode: %s" ),
                                             gun->gun_current_mode()->tname() ),
                         static_cast<int>( m_info ) );
                     changed = true;
                 } else {
                     netplay::host_send_event_to_sid(
-                        sid, _( "You are not wielding a multi-mode gun." ),
+                        sid, netplay::fork_text( "You are not wielding a multi-mode gun." ),
                         static_cast<int>( m_info ) );
                 }
                 break;
@@ -3394,7 +3394,7 @@ void host_pump_client_actions()
                 }
                 if( !target ) {
                     netplay::host_send_event_to_sid(
-                        sid, _( "There's nothing to smash here." ), static_cast<int>( m_info ) );
+                        sid, netplay::fork_text( "There's nothing to smash here." ), static_cast<int>( m_info ) );
                     break;
                 }
                 const std::size_t msg_before = Messages::generation();
@@ -3427,7 +3427,7 @@ void host_pump_client_actions()
                 if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&
                     !netplay::long_wait_active() ) {
                     av_waiting_for_turn[sid] = true;
-                    netplay::host_send_hover_to_sid( sid, _( "Waiting for other playersвЂ¦" ) );
+                    netplay::host_send_hover_to_sid( sid, netplay::fork_text( "Waiting for other players..." ) );
                 } else {
                     netplay::host_send_hover_to_sid( sid, "" );
                 }
@@ -3679,7 +3679,7 @@ void host_pump_client_actions()
         }
         if( what.empty() ) {
             netplay::host_send_event_to_sid(
-                psid, _( "You can't carry anything more." ), static_cast<int>( m_info ) );
+                psid, netplay::fork_text( "You can't carry anything more." ), static_cast<int>( m_info ) );
             continue;
         }
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
@@ -3758,7 +3758,7 @@ void host_pump_intents()
             }
             if( !rid.is_valid() ) {
                 netplay::host_send_event_to_sid(
-                    in.sid, _( "Unknown recipe." ), static_cast<int>( m_info ) );
+                    in.sid, netplay::fork_text( "Unknown recipe." ), static_cast<int>( m_info ) );
             } else {
                 const int batch = in.args.empty() ? 1 : std::max( 1, in.args[0] );
                 g->mp_anchor_map_on( *av, true );
@@ -3782,7 +3782,7 @@ void host_pump_intents()
             if( av != nullptr ) {
                 if( av->lastrecipe.is_null() ) {
                     netplay::host_send_event_to_sid(
-                        in.sid, _( "Craft something first." ), static_cast<int>( m_info ) );
+                        in.sid, netplay::fork_text( "Craft something first." ), static_cast<int>( m_info ) );
                 } else {
                     const int batch = std::max( 1, av->last_batch );
                     g->mp_anchor_map_on( *av, true );
@@ -3824,7 +3824,7 @@ void host_pump_intents()
                         !netplay::long_wait_active() ) {
                         av_waiting_for_turn[in.sid] = true;
                         netplay::host_send_hover_to_sid( in.sid,
-                                                         _( "Waiting for other playersвЂ¦" ) );
+                                                         netplay::fork_text( "Waiting for other players..." ) );
                     } else {
                         netplay::host_send_hover_to_sid( in.sid, "" );
                     }
@@ -3832,7 +3832,7 @@ void host_pump_intents()
                     mp_forward_new_messages( in.sid, msg_before );
                 } else {
                     netplay::host_send_event_to_sid(
-                        in.sid, _( "You are not wielding a gun." ),
+                        in.sid, netplay::fork_text( "You are not wielding a gun." ),
                         static_cast<int>( m_info ) );
                 }
                 g->mp_anchor_map_on( get_avatar() );
@@ -3943,7 +3943,7 @@ void host_note_world_turn()
                 mp_death_notified[sid] = true;
                 netplay::host_send_event_to_sid(
                     sid,
-                    _( "You have died. Disconnect and join again to create a new character." ),
+                    netplay::fork_text( "You have died. Disconnect and join again to create a new character." ),
                     netplay::EVENT_DEATH );
             }
         }

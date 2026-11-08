@@ -403,6 +403,11 @@ bool host_send_panel_layout_to_sid( int sid, const std::string &json );
 /// offers to return to the main menu. Values 0..255 fit the wire byte.
 constexpr int EVENT_DEATH = 200;
 
+/// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
+/// therefore never made it into the game's translation catalogs. Falls back to
+/// the untranslated string for languages the fork does not ship.
+std::string fork_text( const char *msgid );
+
 /// DDA MP v4.0a-11: send one event line to the client's message log.
 bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 );
 /// DDA MP v4.0a-165: send a formatted event line as msgid + arguments. The

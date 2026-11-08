@@ -122,9 +122,9 @@ static bool mp_native_avatar_ready = false;
 std::string describe_endpoint()
 {
     if( host_is_running() ) {
-        return string_format( _( "[%d] Listening on %d" ), host_session_count(), host_listen_port() );
+        return string_format( netplay::fork_text( "[%d] Listening on %d" ), host_session_count(), host_listen_port() );
     }
-    return _( "[x] Not listening" );
+    return netplay::fork_text( "[x] Not listening" );
 }
 
 /* ------------------------------------------------------------------ */
@@ -165,21 +165,21 @@ void show_host_dialog()
 
         werase( win );
         draw_border( win, c_white, _( "Open world to network" ) );
-        mvwprintw( win, point( 2, 2 ), _( "Protocol: DDA MP 0.1  Port: %d" ), DEFAULT_PORT );
+        mvwprintw( win, point( 2, 2 ), string_format( netplay::fork_text( "Protocol: DDA MP 0.1  Port: %d" ), DEFAULT_PORT ) );
         mvwprintw( win, point( 2, 3 ), describe_endpoint() );
         if( !host_is_running() ) {
             mvwprintw( win, point( 2, 4 ),
-                       _( "<ENTER>: start listener on port 25565" ) );
+                       netplay::fork_text( "<ENTER>: start listener on port 25565" ) );
         } else {
             mvwprintw( win, point( 2, 4 ),
-                       _( "<ENTER>: stop listener" ) );
+                       netplay::fork_text( "<ENTER>: stop listener" ) );
             const std::vector<std::string> names = host_session_names();
             int line = 5;
             if( names.empty() ) {
                 mvwprintw( win, point( 2, line ), _( "No players connected yet." ) );
                 line++;
             } else {
-                mvwprintw( win, point( 2, line ), _( "Players (%d):" ), static_cast<int>( names.size() ) );
+                mvwprintw( win, point( 2, line ), string_format( netplay::fork_text( "Players (%d):" ), static_cast<int>( names.size() ) ) );
                 line++;
                 for( const std::string &n : names ) {
                     if( line > height - 4 ) {
@@ -201,7 +201,7 @@ void show_host_dialog()
             if( !host_is_running() ) {
                 if( netplay::host_start( netplay::DEFAULT_PORT ) ) {
                 } else {
-                    popup( _( "Failed to bind the listener. Port %d may be in use." ), DEFAULT_PORT );
+                    popup( string_format( netplay::fork_text( "Failed to bind the listener. Port %d may be in use." ), DEFAULT_PORT ) );
                 }
             } else {
                 netplay::host_stop();
@@ -558,7 +558,7 @@ static bool join_fields_dialog( std::string &addr, std::string &nick )
         mvwprintw( win, point( 2, 7 ), "%s",
                    sel == SEL_CONNECT ? "> [ Connect ] <" : "  [ Connect ]" );
         mvwprintw( win, point( 2, height - 2 ),
-                   _( "<UP>/<DOWN>: select   <ENTER>: connect   <ESC>: cancel" ) );
+                   netplay::fork_text( "<UP>/<DOWN>: select   <ENTER>: connect   <ESC>: cancel" ) );
 
         wnoutrefresh( win );
 
@@ -578,7 +578,7 @@ static bool join_fields_dialog( std::string &addr, std::string &nick )
         }
         if( action == "TEXT.CONFIRM" ) {
             if( fields[0].empty() ) {
-                popup( _( "The host address can not be empty." ) );
+                popup( netplay::fork_text( "The host address can not be empty." ) );
                 continue;
             }
             addr = fields[0];
@@ -628,7 +628,7 @@ void show_join_dialog()
     join_save_prefs( addr, nick );
 
     if( !netplay::client_connect( addr ) ) {
-        popup( _( "Could not connect: the host rejected the connection." ) );
+        popup( netplay::fork_text( "Could not connect: the host rejected the connection." ) );
         return;
     }
 
@@ -639,9 +639,9 @@ void show_join_dialog()
     if( !client_is_connected() ) {
         const std::string reason = client_deny_reason();
         if( reason.empty() ) {
-            popup( _( "Connection refused: host unreachable." ) );
+            popup( netplay::fork_text( "Connection refused: host unreachable." ) );
         } else {
-            popup( _( "Connection refused: %s" ), reason );
+            popup( string_format( netplay::fork_text( "Connection refused: %s" ), reason ) );
         }
         return;
     }
@@ -924,7 +924,7 @@ std::vector<std::string> mp_sheet_lines( const mp_sheet_data &d )
     out.push_back( string_format( "%s %d", _( "Strength" ), d.str ) );
     out.push_back( string_format( "%s %d", _( "Dexterity" ), d.dex ) );
     out.push_back( string_format( "%s %d", _( "Intelligence" ), d.intel ) );
-    out.push_back( string_format( "%s %d", _( "Perception" ), d.per ) );
+    out.push_back( string_format( "%s %d", netplay::fork_text( "Perception" ), d.per ) );
     out.push_back( string_format( "%s %d", _( "Speed" ), d.speed ) );
     out.push_back( string_format( "%s %d", _( "Moves" ), d.moves ) );
     out.emplace_back();
@@ -1116,9 +1116,9 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
     dl->AddText( ImVec2( ix + pad, h1 ), col_title, _( "Inventory" ) );
     {
         const std::string hint = ( pkt.header.hotkeys_total > 0 ) ?
-                                 string_format( _( "Item hotkeys assigned: %d/%d" ),
+                                 string_format( netplay::fork_text( "Item hotkeys assigned: %d/%d" ),
                                                 pkt.header.hotkeys_assigned, pkt.header.hotkeys_total ) :
-                                 string_format( _( "Items: %d" ), static_cast<int>( items.size() ) );
+                                 string_format( netplay::fork_text( "Items: %d" ), static_cast<int>( items.size() ) );
         dl->AddText( ImVec2( ix + pad, h1 + lh ), col_dim, hint.c_str() );
     }
     {
@@ -1254,10 +1254,10 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
             if( is_sel ) {
                 // Inline details, like the host expands the highlighted entry.
                 std::string d1 = string_format( "%s %s   %s %s", _( "Weight" ),
-                                                mp_fmt_kg( e->weight_g ).c_str(), _( "Volume" ),
+                                                mp_fmt_kg( e->weight_g ).c_str(), netplay::fork_text( "Volume" ),
                                                 mp_fmt_l( e->volume_ml ).c_str() );
                 if( e->side_mm > 0 ) {
-                    d1 += "   " + string_format( "%s %s", _( "Longest side" ),
+                    d1 += "   " + string_format( "%s %s", netplay::fork_text( "Longest side" ),
                                                  mp_fmt_cm( e->side_mm ).c_str() );
                 }
                 std::string d2 = e->category;
@@ -1292,7 +1292,7 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
     dl->AddLine( ImVec2( ix + pad, fy - lh * 0.3f ), ImVec2( ix + iw - pad, fy - lh * 0.3f ),
                  IM_COL32( 70, 80, 75, 255 ) );
     dl->AddText( ImVec2( ix + pad, fy ), col_dim,
-                 _( "[Esc] close   [Up/Down] select   [Tab] column   [PgUp/PgDn] page" ) );
+                 netplay::fork_text( "[Esc] close   [Up/Down] select   [Tab] column   [PgUp/PgDn] page" ).c_str() );
     if( chosen != nullptr ) {
         const std::string right = string_format( "%s: %s", _( "Category" ), chosen->category );
         const float rw = ImGui::CalcTextSize( right.c_str() ).x;
@@ -2468,8 +2468,8 @@ static void mp_draw_cursor_info( const snapshot &snap )
     catacurses::window win = mp_info_win;
     werase( win );
     draw_border( win );
-    const char *title = mp_throw_active ? _( "< <color_green>Throwing</color> >" ) :
-                        mp_cursor == mp_cursor_mode::fire ? _( "< <color_green>Aiming</color> >" ) :
+    const std::string title = mp_throw_active ? netplay::fork_text( "< <color_green>Throwing</color> >" ) :
+                        mp_cursor == mp_cursor_mode::fire ? netplay::fork_text( "< <color_green>Aiming</color> >" ) :
                         _( "< <color_green>Look around</color> >" );
     center_print( win, 0, c_white, title );
     {
@@ -2954,12 +2954,12 @@ static int mp_client_main_menu()
     if( netplay::client_avatar_bind_state() == 2 ) {
         entries.emplace_back( MP_ENTRY_LONG_WAIT, true, 'L',
                               netplay::long_wait_active() ?
-                              _( "Long wait mode: ON (pass turns for other players)" ) :
-                              _( "Long wait mode: OFF (pass turns for other players)" ) );
+                              netplay::fork_text( "Long wait mode: ON (pass turns for other players)" ) :
+                              netplay::fork_text( "Long wait mode: OFF (pass turns for other players)" ) );
     }
 
     entries.emplace_back( MP_ENTRY_DISCONNECT, true, 'Q',
-                          _( "Disconnect from server" ) );
+                          netplay::fork_text( "Disconnect from server" ) );
 
     uilist smenu;
     smenu.settext( _( "MAIN MENU" ) );
@@ -4342,7 +4342,7 @@ void run_view_loop()
                 }
                 if( mp_ascii_debug ) {
                     werase( win );
-                    draw_border( win, c_white, _( "Cata server" ) );
+                    draw_border( win, c_white, netplay::fork_text( "Cata server" ) );
 
                     for( int y = 0; y < snap.height; y++ ) {
                         for( int x = 0; x < snap.width; x++ ) {
@@ -5331,7 +5331,7 @@ void run_view_loop()
                 if( mp_ch == 'T' ) {
                     // DDA MP v4.0a-137: text chat to every player.
                     string_input_popup pop;
-                    pop.title( _( "Chat message" ) );
+                    pop.title( netplay::fork_text( "Chat message" ) );
                     pop.max_length( 200 );
                     pop.width( 60 );
                     std::string msg;
@@ -5486,16 +5486,16 @@ void run_view_loop()
             break;
         }
         if( !client_connect( addr ) ) {
-            popup( _( "Could not reconnect: the host is unreachable." ) );
+            popup( netplay::fork_text( "Could not reconnect: the host is unreachable." ) );
             break;
         }
         fat_client_load_data();
         if( !client_is_connected() ) {
             const std::string reason = client_deny_reason();
             if( reason.empty() ) {
-                popup( _( "Connection refused: host unreachable." ) );
+                popup( netplay::fork_text( "Connection refused: host unreachable." ) );
             } else {
-                popup( _( "Connection refused: %s" ), reason );
+                popup( string_format( netplay::fork_text( "Connection refused: %s" ), reason ) );
             }
             break;
         }
