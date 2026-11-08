@@ -3738,11 +3738,16 @@ void run_view_loop()
     static mp_sheet_data mp_prev;
     static int mp_cur_turn = 0;
     auto mp_log_add = []( const std::string & s, int type ) {
+        // The host formats its event lines in ITS language. Translate the
+        // plain ones again with the client's catalog, so a Russian client
+        // does not show the host's English log entries. Formatted strings
+        // with names/args are not msgids and remain as sent.
+        const std::string txt = to_translation( s ).translated();
         if( mp_log.size() >= 200 ) {
             mp_log.erase( mp_log.begin() );
         }
-        mp_log.push_back( { s, type, mp_cur_turn } );
-        mp_inv_log( "clientlog: " + s );
+        mp_log.push_back( { txt, type, mp_cur_turn } );
+        mp_inv_log( "clientlog: " + txt );
     };
     static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
@@ -4064,8 +4069,13 @@ void run_view_loop()
             {
                 std::string mp_hint;
                 if( netplay::client_take_hover( mp_hint ) ) {
-                    mp_hint_text = mp_hint;
-                    netplay::client_status_hint( mp_hint );
+                    // Translate the host's hover line into the client's
+                    // language (e.g. the host's English "Waiting for other
+                    // players..."). The host long-wait case is suppressed on
+                    // the host side entirely.
+                    const std::string mp_hint_local = to_translation( mp_hint ).translated();
+                    mp_hint_text = mp_hint_local;
+                    netplay::client_status_hint( mp_hint_local );
                 }
                 std::string mp_sheet;
                 if( netplay::client_sheet( mp_sheet ) ) {

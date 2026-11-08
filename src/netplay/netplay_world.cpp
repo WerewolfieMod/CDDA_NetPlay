@@ -1763,7 +1763,8 @@ void host_pump_avatar_keys()
             av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
             npc_ptr->set_moves( av_move_pool[sk.sid] );
             av_mark_acted( sk.sid );
-            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) ) {
+            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
+        !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
                 netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
             } else {
@@ -1789,7 +1790,8 @@ void host_pump_avatar_keys()
                 if( pool_it == av_move_pool.end() ) {
                     pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
                 }
-                if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) ) {
+                if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) &&
+        !netplay::long_wait_active() ) {
                     if( !av_waiting_for_turn[sk.sid] ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
@@ -1828,7 +1830,8 @@ void host_pump_avatar_keys()
                     av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
                     npc_ptr->set_moves( av_move_pool[sk.sid] );
                     av_mark_acted( sk.sid );
-                    if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) ) {
+                    if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
+        !netplay::long_wait_active() ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                     } else {
@@ -1860,7 +1863,8 @@ void host_pump_avatar_keys()
                     av_mark_acted( sk.sid );
                     netplay::host_send_event_to_sid(
                         sk.sid, _( "You open the door." ), static_cast<int>( m_info ) );
-                    if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) ) {
+                    if( pool_it->second <= 0 && !netplay::host_session_afk( sk.sid ) &&
+        !netplay::long_wait_active() ) {
                         av_waiting_for_turn[sk.sid] = true;
                         netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
                     } else {
@@ -1900,6 +1904,7 @@ void host_pump_avatar_keys()
                 // ignored and then happened by itself"). The player presses
                 // again when the host's turn starts a new round.
                 if( !netplay::host_session_afk( sk.sid ) &&
+                    !netplay::long_wait_active() &&
                     !av_waiting_for_turn[sk.sid] ) {
                     av_waiting_for_turn[sk.sid] = true;
                     netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
@@ -1961,7 +1966,8 @@ void host_pump_avatar_keys()
             // parity: this bind acted since the last world turn
             av_mark_acted( sk.sid );
             // The step went through; tell the client whether its round is over.
-            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) ) {
+            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
+        !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
                 netplay::host_send_hover_to_sid( sk.sid, _( "Waiting for other players…" ) );
             } else {
@@ -3196,7 +3202,8 @@ void host_pump_client_actions()
                 netplay::host_send_event_to_sid(
                     sid, dz > 0 ? _( "You go up the stairs." ) : _( "You go down the stairs." ),
                     static_cast<int>( m_info ) );
-                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) ) {
+                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&
+                    !netplay::long_wait_active() ) {
                     av_waiting_for_turn[sid] = true;
                     netplay::host_send_hover_to_sid( sid, _( "Waiting for other players…" ) );
                 } else {
@@ -3345,7 +3352,8 @@ void host_pump_client_actions()
                                             here.name( *target ) ),
                         static_cast<int>( m_info ) );
                 }
-                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) ) {
+                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&
+                    !netplay::long_wait_active() ) {
                     av_waiting_for_turn[sid] = true;
                     netplay::host_send_hover_to_sid( sid, _( "Waiting for other players…" ) );
                 } else {
@@ -3740,7 +3748,8 @@ void host_pump_intents()
                     av_move_pool[in.sid] = std::max( 0, av->get_moves() );
                     av->set_moves( av_move_pool[in.sid] );
                     av_mark_acted( in.sid );
-                    if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) ) {
+                    if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) &&
+                        !netplay::long_wait_active() ) {
                         av_waiting_for_turn[in.sid] = true;
                         netplay::host_send_hover_to_sid( in.sid,
                                                          _( "Waiting for other players…" ) );

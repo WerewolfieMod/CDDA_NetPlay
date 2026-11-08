@@ -868,9 +868,11 @@ bool game::do_turn()
             ui_manager::redraw();
             // Show the waiting hint while the clients spend their remaining
             // action points.
+            if( !netplay::long_wait_active() ) {
             werase( mp_wait_win );
             mvwprintz( mp_wait_win, point( 0, 0 ), c_yellow, _( "Waiting for other playersвЂ¦" ) );
             wnoutrefresh( mp_wait_win );
+            }
             netplay::host_draw_long_wait_hint( 1 );
             refresh_display();
             std::this_thread::sleep_for( std::chrono::milliseconds( 16 ) );
