@@ -4201,7 +4201,7 @@ void run_view_loop()
                     if( mp_ev_type == netplay::EVENT_DEATH ) {
                         mp_dead = true;
                     }
-                    mp_log_add( mp_ev_text, mp_ev_type );
+                    mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
                     popup( _( "You have died. Return to the main menu and join again "

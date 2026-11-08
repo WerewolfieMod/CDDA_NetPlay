@@ -123,6 +123,30 @@ static std::string status_line_for( const avatar &u )
     return string_format( _( "HP: %d/%d | %s | %s" ), hp, hp_max, timestr, wname );
 }
 
+/* DDA MP v4.0a-165: typed event arguments. The client resolves these from
+ * its own data pack, so its log reads in the client's language even when the
+ * host formats its messages in another one. */
+static std::string mp_ter_arg( map &here, const tripoint_bub_ms &p )
+{
+    if( here.has_furn( p ) ) {
+        return std::string( "\x02" "F" ) + here.furn( p ).id().str();
+    }
+    return std::string( "\x02" "T" ) + here.ter( p ).id().str();
+}
+
+static std::string mp_creature_arg( const Creature *cr )
+{
+    if( const monster *mon = dynamic_cast<const monster *>( cr ) ) {
+        return std::string( "\x02" "M" ) + mon->type->id.str();
+    }
+    return cr->disp_name(); // avatar/NPC names are proper nouns
+}
+
+static std::string mp_item_arg( const item &it )
+{
+    return std::string( "\x02" "I" ) + it.typeId().str();
+}
+
 #if defined(TILES)
 /* DDA MP v3.7: authoritative light. mine_tiles previously sampled the
  * renderer's last-uploaded smooth-lighting texels, which lag this turn's
@@ -1799,7 +1823,6 @@ void host_pump_avatar_keys()
                     av_mark_acted( sk.sid );
                     break;
                 }
-                const std::string target_name = cr->disp_name();
                 const int hp_before = cr->get_hp();
                 bool attacked = false;
                 if( monster *mon = dynamic_cast<monster *>( cr ) ) {
@@ -1813,18 +1836,18 @@ void host_pump_avatar_keys()
                 if( attacked ) {
                     const int hp_after = cr->is_dead_state() ? 0 : cr->get_hp();
                     if( cr->is_dead_state() ) {
-                        netplay::host_send_event_to_sid(
-                            sk.sid, string_format( _( "You kill the %s!" ), target_name ),
+                        netplay::host_send_event_fmt_to_sid(
+                            sk.sid, "The %s dies!", { mp_creature_arg( cr ) },
                             static_cast<int>( m_good ) );
                     } else if( hp_after < hp_before ) {
-                        netplay::host_send_event_to_sid(
-                            sk.sid,
-                            string_format( _( "You hit the %s for %d damage." ),
-                                           target_name, hp_before - hp_after ),
+                        netplay::host_send_event_fmt_to_sid(
+                            sk.sid, "You hit %1$s for %2$d damage.",
+                            { mp_creature_arg( cr ),
+                              std::to_string( hp_before - hp_after ) },
                             static_cast<int>( m_good ) );
                     } else {
-                        netplay::host_send_event_to_sid(
-                            sk.sid, string_format( _( "You miss the %s." ), target_name ),
+                        netplay::host_send_event_fmt_to_sid(
+                            sk.sid, "You miss.", {},
                             static_cast<int>( m_info ) );
                     }
                     av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
@@ -1839,8 +1862,8 @@ void host_pump_avatar_keys()
                     }
                     av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
                 } else {
-                    netplay::host_send_event_to_sid(
-                        sk.sid, string_format( _( "You bump into %s." ), target_name ),
+                    netplay::host_send_event_fmt_to_sid(
+                        sk.sid, "You bump into the %s!", { mp_creature_arg( cr ) },
                         static_cast<int>( m_info ) );
                 }
                 break;
@@ -1934,9 +1957,9 @@ void host_pump_avatar_keys()
             // client only when the destination tile is slower than the tile it
             // left ("Moving onto this %s is slow!"), never for leaving it.
             if( here.move_cost( dst ) > here.move_cost( mp_from ) ) {
-                netplay::host_send_event_to_sid(
-                    sk.sid, string_format( _( "Moving onto this %s is slow!" ),
-                                           here.name( dst ) ),
+                netplay::host_send_event_fmt_to_sid(
+                    sk.sid, "Moving onto this %s is slow!",
+                    { mp_ter_arg( here, dst ) },
                     static_cast<int>( m_warning ) );            }
             // DDA MP: this noise came from another player's avatar — the
             // host's "?" placement must check whether it sees the avatar,
@@ -2659,17 +2682,18 @@ void host_pump_inventory_actions()
                     break;
                 }
                 const std::string gift_name = loc->tname();
+                const std::string gift_arg = mp_item_arg( *loc );
                 item gift = *loc;
                 loc.remove_item();
                 target->i_add_or_drop( gift );
-                netplay::host_send_event_to_sid(
-                    sid, string_format( _( "You give the %s to %s." ), gift_name,
-                                        target->get_name() ),
+                netplay::host_send_event_fmt_to_sid(
+                    sid, "You give %1$s a %2$s.",
+                    { target->get_name(), gift_arg },
                     static_cast<int>( m_good ) );
                 if( target_sid > 0 ) {
-                    netplay::host_send_event_to_sid(
-                        target_sid, string_format( _( "%s gives you the %s." ),
-                                                   av->get_name(), gift_name ),
+                    netplay::host_send_event_fmt_to_sid(
+                        target_sid, "%1$s gives you a %2$s.",
+                        { av->get_name(), gift_arg },
                         static_cast<int>( m_good ) );
                     av_send_status( target_sid );
                 } else {
@@ -3262,9 +3286,8 @@ void host_pump_client_actions()
                 }
                 here.board_vehicle( pos, av );
                 av->controlling_vehicle = true;
-                netplay::host_send_event_to_sid(
-                    sid, string_format( _( "You take control of the %s." ),
-                                        vp->vehicle().name ),
+                netplay::host_send_event_fmt_to_sid(
+                    sid, "You take control of the %s.", { vp->vehicle().name },
                     static_cast<int>( m_info ) );
                 changed = true;
                 break;
@@ -3343,13 +3366,12 @@ void host_pump_client_actions()
                 pool_it->second = std::max( 0, av->get_moves() );
                 av_mark_acted( sid );
                 if( br.did_bash && br.success ) {
-                    netplay::host_send_event_to_sid(
-                        sid, string_format( _( "You smash the %s!" ), here.name( *target ) ),
+                    netplay::host_send_event_fmt_to_sid(
+                        sid, "You smash the %s.", { mp_ter_arg( here, *target ) },
                         static_cast<int>( m_good ) );
                 } else if( br.did_bash ) {
-                    netplay::host_send_event_to_sid(
-                        sid, string_format( _( "You hit the %s, but it holds." ),
-                                            here.name( *target ) ),
+                    netplay::host_send_event_fmt_to_sid(
+                        sid, "You hit %s", { mp_ter_arg( here, *target ) },
                         static_cast<int>( m_info ) );
                 }
                 if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&

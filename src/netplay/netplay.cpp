@@ -8,8 +8,17 @@
 #include "worldfactory.h" // world_generator (WELCOME world name)
 #endif
 
+// DDA MP v4.0a-165: the client resolves typed event arguments (terrain,
+// furniture, item type, monster type) from its own data on receipt.
+#include "item.h"
+#include "mapdata.h"
+#include "monstergenerator.h"
+#include "mtype.h"
+#include "translations.h"
+
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <csignal>
@@ -1587,6 +1596,128 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )
         return false;
     }
     return true;
+}
+
+/* DDA MP v4.0a-165: formatted events. The host sends the untranslated msgid
+ * plus its arguments; the client translates the msgid with its own catalog
+ * and resolves typed name arguments from local game data. This keeps a
+ * Russian client's log in Russian even when the host runs in English, without
+ * shipping a host-localized (and therefore host-language) sentence. */
+
+/// Resolve one typed argument ('\x02' + kind + type id) on the client.
+static std::string mp_event_arg( const std::string &raw )
+{
+    if( raw.size() < 3 || raw[0] != '\x02' ) {
+        return raw;
+    }
+    const std::string id = raw.substr( 2 );
+    switch( raw[1] ) {
+        case 'T': {
+            const ter_str_id ter( id );
+            return ter.is_valid() ? ter->name() : id;
+        }
+        case 'F': {
+            const furn_str_id furn( id );
+            return furn.is_valid() ? furn->name() : id;
+        }
+        case 'I':
+            return item::nname( itype_id( id ) );
+        case 'M': {
+            const mtype_id mon( id );
+            return mon.is_valid() ? mon->nname() : id;
+        }
+        default:
+            return raw;
+    }
+}
+
+/// Substitute the arguments into a translated format string. Accepts both
+/// plain ("%s") and positional ("%1$s") conversions, as the translation
+/// catalogs use both.
+static std::string mp_fill_args( const std::string &fmt,
+                                 const std::vector<std::string> &args )
+{
+    std::string out;
+    std::size_t next = 0;
+    for( std::size_t i = 0; i < fmt.size(); ++i ) {
+        if( fmt[i] != '%' || i + 1 >= fmt.size() ) {
+            out += fmt[i];
+            continue;
+        }
+        if( fmt[i + 1] == '%' ) {
+            out += '%';
+            ++i;
+            continue;
+        }
+        std::size_t j = i + 1;
+        std::size_t pos = 0;
+        bool has_pos = false;
+        while( j < fmt.size() && std::isdigit( static_cast<unsigned char>( fmt[j] ) ) ) {
+            pos = pos * 10 + static_cast<std::size_t>( fmt[j] - '0' );
+            has_pos = true;
+            ++j;
+        }
+        if( has_pos && j < fmt.size() && fmt[j] == '$' ) {
+            ++j;
+        } else {
+            has_pos = false;
+            j = i + 1;
+        }
+        // flags, width and precision
+        while( j < fmt.size() &&
+               ( std::strchr( "-+ #0.", fmt[j] ) != nullptr ||
+                 std::isdigit( static_cast<unsigned char>( fmt[j] ) ) ) ) {
+            ++j;
+        }
+        if( j < fmt.size() && std::strchr( "diuxXofsScgeE", fmt[j] ) != nullptr ) {
+            const std::size_t idx = has_pos ? ( pos == 0 ? 0 : pos - 1 ) : next++;
+            if( idx < args.size() ) {
+                out += args[idx];
+            }
+            i = j;
+            continue;
+        }
+        out += fmt[i];
+    }
+    return out;
+}
+
+bool host_send_event_fmt_to_sid( int sid, const std::string &msgid,
+                                 const std::vector<std::string> &args, int msg_type )
+{
+    std::string payload;
+    payload.reserve( 64 );
+    payload += '\x01';
+    payload += msgid;
+    for( const std::string &a : args ) {
+        payload += '\x1f';
+        payload += a;
+    }
+    return host_send_event_to_sid( sid, payload, msg_type );
+}
+
+std::string format_event_text( const std::string &payload )
+{
+    if( payload.empty() || payload[0] != '\x01' ) {
+        return payload; // plain, already localized by the sender
+    }
+    std::vector<std::string> parts;
+    std::size_t start = 1;
+    while( true ) {
+        const std::size_t sep = payload.find( '\x1f', start );
+        if( sep == std::string::npos ) {
+            parts.push_back( payload.substr( start ) );
+            break;
+        }
+        parts.push_back( payload.substr( start, sep - start ) );
+        start = sep + 1;
+    }
+    std::vector<std::string> args;
+    args.reserve( parts.size() - 1 );
+    for( std::size_t i = 1; i < parts.size(); ++i ) {
+        args.push_back( mp_event_arg( parts[i] ) );
+    }
+    return mp_fill_args( to_translation( parts[0] ).translated(), args );
 }
 
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )

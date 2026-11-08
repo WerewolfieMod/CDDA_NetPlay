@@ -405,6 +405,15 @@ constexpr int EVENT_DEATH = 200;
 
 /// DDA MP v4.0a-11: send one event line to the client's message log.
 bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 );
+/// DDA MP v4.0a-165: send a formatted event line as msgid + arguments. The
+/// client formats it with ITS translation catalog, so a Russian client reads
+/// the host's messages in Russian even when the host runs in English.
+/// An argument may name a data object by type id instead of shipping the
+/// host's already-localized text: prefix it with '\x02' and one of
+///   'T' terrain id, 'F' furniture id, 'I' item type id, 'M' monster type id.
+/// The client resolves those itself.
+bool host_send_event_fmt_to_sid( int sid, const std::string &msgid,
+                                 const std::vector<std::string> &args, int msg_type = 0 );
 /// DDA MP v4.0a-126: relay a Character message to the client driving that
 /// character (session avatar). Returns true when the character belongs to a
 /// session and the text was forwarded instead of going to the host log.
@@ -671,6 +680,10 @@ bool client_sidebar( sidebar_frame &out );
 bool client_panel_layout( std::string &out );
 /// DDA MP v4.0a-11: pop one event line sent by the host (false when empty).
 bool client_take_event( std::string &out, int &msg_type );
+/// DDA MP v4.0a-165: turn an event payload into a line in the local language
+/// (msgid translated with this client's catalog, typed name arguments
+/// resolved from local game data). Plain text passes through unchanged.
+std::string format_event_text( const std::string &payload );
 /// DDA MP v4.0a-12: latest overmap minimap block (copied per call).
 bool client_minimap( minimap_frame &out );
 /// DDA MP v4.0a-14: latest inventory listing (copied per call).
