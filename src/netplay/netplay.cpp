@@ -1666,6 +1666,7 @@ std::string fork_text( const char *msgid )
             { "Co-op help", "Помощь по совместной игре" },
             { "Co-op <H|h>elp", "Кооператив: <H|h>правка" },
             { "Help the busy player", "Помочь занятому игроку" },
+            { "Stop helping?", "Прекратить помощь?" },
             { "butchering", "разделка туши" },
             { "crafting", "изготовление" },
             { "disassembly", "разбор" },

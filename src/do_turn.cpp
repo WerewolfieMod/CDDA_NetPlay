@@ -692,44 +692,18 @@ bool game::do_turn()
         sfx::do_hearing_loss();
     }
 
-    // DDA MP v4.0a-163: a host in long wait auto-passes its own turn. Without
-    // this it sat in the input loop waiting for a key, so do_turn never
-    // reached the world turn even though the clients had finished their
-    // orders (the client's minimap and log then froze).
-    if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
-        netplay::host_any_active_client() &&
-        netplay::long_wait_active() && !u.has_effect( effect_sleep ) ) {
-        u.set_moves( 0 );
-        if( netplay::mp_diag_enabled() ) {
-            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                std::fprintf( f, "lw: start autopass\n" );
-                std::fclose( f );
-            }
-        }
-    }
+    // DDA MP v4.0a-163/175: a host in long wait auto-passes its own turn, but
+    // ONLY when the player pressed nothing. The input pass below still runs
+    // (with the short host poll) so ESC and every other key keep working.
+    const bool mp_lw_autopass = netplay::host_is_running() &&
+                                netplay::host_session_count() > 0 &&
+                                netplay::host_any_active_client() &&
+                                netplay::long_wait_active() && !u.has_effect( effect_sleep );
 
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
         if( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
             while( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
-                // DDA MP v4.0a-163: the host's long wait must also end an
-                // input pass that is already in progress. The long wait can be
-                // switched on while this loop is polling, so checking only at
-                // the start of do_turn left the host sitting here forever and
-                // the world never reached its turn.
-                if( netplay::host_is_running() && netplay::host_session_count() > 0 &&
-                    netplay::host_any_active_client() &&
-                    netplay::long_wait_active() ) {
-                    u.set_moves( 0 );
-                    if( netplay::mp_diag_enabled() ) {
-                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                            std::fprintf( f, "lw: loop autopass\n" );
-                            std::fclose( f );
-                        }
-                    }
-                    break;
-                }
-
                 // handle_action() may cause map updates, creatures to die
                 m.process_falling();
                 cleanup_dead();
@@ -754,10 +728,21 @@ bool game::do_turn()
                     queue_screenshot = false;
                 }
 
-                if( handle_action() ) {
+                const bool mp_acted = handle_action();
+                if( mp_acted ) {
                     ++moves_since_last_save;
                     u.action_taken();
                     netplay::host_mark_input_done();
+                } else if( mp_lw_autopass ) {
+                    // DDA MP v4.0a-175: nothing was pressed - pass the turn.
+                    u.set_moves( 0 );
+                    if( netplay::mp_diag_enabled() ) {
+                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "lw: autopass (no key)\n" );
+                            std::fclose( f );
+                        }
+                    }
+                    break;
                 }
 
                 if( is_game_over() ) {
@@ -855,10 +840,19 @@ bool game::do_turn()
             // A host with no action points still has to give input for this
             // round; poll its keyboard here, since the normal input pass ran.
             const auto mp_wait_key_now = std::chrono::steady_clock::now();
-            if( !netplay::host_input_done() &&
-                mp_wait_key_now - mp_host_key_poll > std::chrono::milliseconds( 100 ) ) {
+            if( mp_wait_key_now - mp_host_key_poll > std::chrono::milliseconds( 100 ) ) {
                 mp_host_key_poll = mp_wait_key_now;
-                if( handle_key_blocking_activity() ) {
+                // DDA MP v4.0a-175: in long wait the host auto-passes, but its
+                // keyboard must keep working - ESC opens the main menu so the
+                // mode can be switched off again.
+                if( netplay::long_wait_active() ) {
+                    if( handle_action() ) {
+                        ++moves_since_last_save;
+                        u.action_taken();
+                        netplay::host_mark_input_done();
+                    }
+                } else if( !netplay::host_input_done() &&
+                           handle_key_blocking_activity() ) {
                     netplay::host_mark_input_done();
                 }
             }

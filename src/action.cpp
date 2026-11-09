@@ -1084,6 +1084,10 @@ action_id handle_action_menu( map &here )
         // DDA MP v4.0a-174: custom entries are resolved before the category
         // handling (their ids also live above NUM_ACTIONS).
         if( selection == MP_ACTION_HELP_NEARBY ) {
+            if( netplay::is_helping_anyone( &get_avatar() ) &&
+                !query_yn( netplay::fork_text( "Stop helping?" ) ) ) {
+                return ACTION_NULL;
+            }
             netplay::host_help_nearby( get_avatar() );
             return ACTION_NULL;
         }

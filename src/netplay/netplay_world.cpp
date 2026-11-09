@@ -145,7 +145,12 @@ static std::string mp_creature_arg( const Creature *cr )
     if( const monster *mon = dynamic_cast<const monster *>( cr ) ) {
         return std::string( "\x02" "M" ) + mon->type->id.str();
     }
-    return cr->disp_name(); // avatar/NPC names are proper nouns
+    // The host's own avatar answers disp_name() with "Вы"/"You"; another player
+    // bumping into it must see the character's name instead.
+    if( const avatar *av = dynamic_cast<const avatar *>( cr ) ) {
+        return av->get_name();
+    }
+    return cr->disp_name(); // NPC names are proper nouns
 }
 
 static std::string mp_item_arg( const item &it )
@@ -3945,6 +3950,30 @@ static std::string mp_help_activity_name( const player_activity &act )
     return fork_text( "crafting" );
 }
 
+/* DDA MP v4.0a-175: the helper sees the target's progress at the top like the
+ * busy player does. Percent comes from the craft item's counter or, for the
+ * time-based activities, from the remaining moves. */
+static std::string mp_activity_progress( const Character &who )
+{
+    const player_activity &act = who.activity;
+    if( !act ) {
+        return std::string();
+    }
+    const std::string id = act.id().str();
+    const std::string name = mp_help_activity_name( act );
+    int pct = -1;
+    if( id == "ACT_CRAFT" && !act.targets.empty() && act.targets.front() ) {
+        pct = act.targets.front()->item_counter / 100000; // 1e7 -> percent
+    } else if( act.moves_total > 0 && act.moves_total < 100000000 ) {
+        pct = 100 - static_cast<int>( static_cast<long long>( act.moves_left ) * 100 /
+                                      act.moves_total );
+    }
+    if( pct < 0 ) {
+        return name;
+    }
+    return string_format( "%s: %d%%", name, std::clamp( pct, 0, 100 ) );
+}
+
 static skill_id mp_help_skill( const player_activity &act )
 {
     static const skill_id survival( "survival" );
@@ -4022,6 +4051,13 @@ static void host_pump_help()
                     m_info, string_format( fork_text( "%s stops helping you." ),
                                            helper->get_name() ) );
             }
+            // Clear the helper's top progress line.
+            for( int sid : host_session_ids() ) {
+                if( helper != nullptr && av_session_npc( sid ) == helper ) {
+                    netplay::host_send_hover_to_sid( sid, "" );
+                    break;
+                }
+            }
             it = mp_help_pairs.erase( it );
             continue;
         }
@@ -4043,6 +4079,14 @@ static void host_pump_help()
         if( mp_help_tick % 2 == 0 ) {
             target->practice( skill, 1 );
             helper->practice( skill, 1 );
+        }
+        // DDA MP v4.0a-175: show the progressing task at the top on the helper's
+        // screen, exactly like the busy player sees it.
+        for( int sid : host_session_ids() ) {
+            if( av_session_npc( sid ) == helper ) {
+                netplay::host_send_hover_to_sid( sid, mp_activity_progress( *target ) );
+                break;
+            }
         }
         ++it;
     }

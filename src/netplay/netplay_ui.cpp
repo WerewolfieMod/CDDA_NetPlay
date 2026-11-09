@@ -2802,6 +2802,9 @@ static void mp_run_client_construct()
 /* DDA MP v4.0a-174: custom action-menu id for "help the busy player". It is
  * higher than NUM_ACTIONS but handled before the category checks. */
 static constexpr int MP_ACTION_HELP_NEARBY = 91000;
+/// Whether this client believes it is currently helping (drives the stop
+/// confirmation; cleared when the host reports the help ended).
+static bool mp_client_helping = false;
 
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
@@ -2812,8 +2815,14 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         return;
     }
     if( act == MP_ACTION_HELP_NEARBY ) {
-        // DDA MP v4.0a-174: the host finds the busy player next to us.
+        // DDA MP v4.0a-174/175: the host finds the busy player next to us; a
+        // second press asks for confirmation first, like cancelling an activity.
+        if( mp_client_helping &&
+            !query_yn( netplay::fork_text( "Stop helping?" ) ) ) {
+            return;
+        }
         netplay::client_send_intent( "help", 0, {} );
+        mp_client_helping = !mp_client_helping;
         return;
     }
     switch( static_cast<action_id>( act ) ) {
@@ -3059,6 +3068,10 @@ static int mp_client_action_menu()
         smenu.entries = entries;
         smenu.query();
         const int selection = smenu.ret;
+
+        // DDA MP v4.0a-175: repaint after a menu closes. The client view loop
+        // otherwise leaves the parent list visible under the next submenu.
+        ui_manager::redraw();
 
         // DDA MP v4.0a-174: custom entries are resolved before the category
         // handling below (their ids also live above NUM_ACTIONS).
