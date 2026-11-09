@@ -403,6 +403,10 @@ bool host_send_panel_layout_to_sid( int sid, const std::string &json );
 /// DDA MP v4.0a-134: event type for "your avatar died"; the client logs it and
 /// offers to return to the main menu. Values 0..255 fit the wire byte.
 constexpr int EVENT_DEATH = 200;
+/// DDA MP v4.0a-176: stepping into another player opens the interaction menu.
+/// Text payload: "<name>\x1f<activity msgid, empty when idle>"; the client
+/// translates the msgid with fork_text().
+constexpr int EVENT_PLAYER = 201;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

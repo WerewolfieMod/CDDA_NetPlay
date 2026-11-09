@@ -924,6 +924,28 @@ npc *host_session_avatar_npc( int sid )
     return av_session_npc( sid );
 }
 
+/// DDA MP v4.0a-176: true when `cr` is a player character (the host avatar or
+/// a session avatar), as opposed to a common NPC or a monster.
+static bool mp_is_player_creature( const Creature *cr )
+{
+    if( cr == nullptr ) {
+        return false;
+    }
+    if( cr->is_avatar() ) {
+        return true;
+    }
+    for( int sid : host_session_ids() ) {
+        if( av_session_npc( sid ) == cr ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Defined with the co-op assistance block below; used by the key handler.
+static bool mp_helpable_activity( const player_activity &act );
+static std::string mp_help_activity_msgid( const player_activity &act );
+
 /* DDA MP v4.0a-166: one session event line. When the message came from a
  * translated template it carries the untranslated msgid plus the msgid-language
  * instance; the client re-formats the line with its own catalog (see
@@ -1963,6 +1985,20 @@ void host_pump_avatar_keys()
         {
             Creature *cr = get_creature_tracker().creature_at( dst );
             if( cr != nullptr && cr != npc_ptr.get() ) {
+                // DDA MP v4.0a-176: stepping into another player opens the
+                // interaction menu on the client instead of attacking.
+                if( mp_is_player_creature( cr ) ) {
+                    std::string payload = cr->get_name();
+                    payload += '\x1f';
+                    const Character *who = dynamic_cast<const Character *>( cr );
+                    if( who != nullptr && mp_helpable_activity( who->activity ) ) {
+                        payload += mp_help_activity_msgid( who->activity );
+                    }
+                    netplay::host_send_event_to_sid( sk.sid, payload,
+                                                     netplay::EVENT_PLAYER );
+                    av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+                    break;
+                }
                 auto pool_it = av_move_pool.find( sk.sid );
                 if( pool_it == av_move_pool.end() ) {
                     pool_it = av_move_pool.insert( { sk.sid, npc_ptr->get_speed() } ).first;
@@ -3935,19 +3971,24 @@ static bool mp_helpable_activity( const player_activity &act )
            id == "ACT_DISASSEMBLE" || id == "ACT_BUILD";
 }
 
-static std::string mp_help_activity_name( const player_activity &act )
+static std::string mp_help_activity_msgid( const player_activity &act )
 {
     const std::string id = act.id().str();
     if( id == "ACT_BUTCHER" || id == "ACT_BUTCHER_FULL" ) {
-        return fork_text( "butchering" );
+        return "butchering";
     }
     if( id == "ACT_DISASSEMBLE" ) {
-        return fork_text( "disassembly" );
+        return "disassembly";
     }
     if( id == "ACT_BUILD" ) {
-        return fork_text( "construction" );
+        return "construction";
     }
-    return fork_text( "crafting" );
+    return "crafting";
+}
+
+static std::string mp_help_activity_name( const player_activity &act )
+{
+    return fork_text( mp_help_activity_msgid( act ).c_str() );
 }
 
 /* DDA MP v4.0a-175: the helper sees the target's progress at the top like the

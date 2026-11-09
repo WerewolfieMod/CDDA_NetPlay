@@ -2806,6 +2806,37 @@ static constexpr int MP_ACTION_HELP_NEARBY = 91000;
 /// confirmation; cleared when the host reports the help ended).
 static bool mp_client_helping = false;
 
+/* DDA MP v4.0a-176: walking into another player shows the interaction menu
+ * instead of attacking, like walking into an NPC in single player. */
+static void mp_run_player_interact( const std::string &name, const std::string &activity )
+{
+    uilist menu;
+    menu.text = string_format( netplay::fork_text( "Player: %s" ), name );
+    int help_idx = -1;
+    if( !activity.empty() ) {
+        help_idx = 0;
+        menu.addentry( string_format( netplay::fork_text( "Help: %s" ),
+                                      netplay::fork_text( activity.c_str() ) ) );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "interact open: %s activity=%s", name, activity ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( string_format( "interact: %s activity=%s ret=%d", name, activity, menu.ret ) );
+    if( help_idx >= 0 && menu.ret == help_idx ) {
+        // Already helping (this or another player): the host's help command
+        // stops the assistance, so ask first, exactly like the action menu.
+        if( mp_client_helping &&
+            !query_yn( netplay::fork_text( "Stop helping?" ) ) ) {
+            return;
+        }
+        netplay::client_send_intent( "help", 0, {} );
+        mp_client_helping = !mp_client_helping;
+    }
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -4394,6 +4425,18 @@ void run_view_loop()
                     if( mp_ev_type == netplay::EVENT_DEATH ) {
                         mp_dead = true;
                     }
+                    // DDA MP v4.0a-176: the host reports that our avatar walked
+                    // into another player. Open the interaction menu instead of
+                    // logging the payload as a message.
+                    if( mp_ev_type == netplay::EVENT_PLAYER ) {
+                        const std::string::size_type sep = mp_ev_text.find( '\x1f' );
+                        const std::string p_name = sep == std::string::npos
+                                                   ? mp_ev_text : mp_ev_text.substr( 0, sep );
+                        const std::string p_act = sep == std::string::npos
+                                                  ? std::string() : mp_ev_text.substr( sep + 1 );
+                        mp_run_player_interact( p_name, p_act );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -4451,6 +4494,35 @@ void run_view_loop()
                 mp_draw_native_sidebar_bg();
             }
             ui_manager::redraw();
+
+            // DDA MP test hook: walk N times without touching the OS window.
+            // It uses the same client_send_keys path as a real key, so the
+            // desktop focus never has to be stolen for automated runs. Kept
+            // outside the "new snapshot" branch: while the host round gate
+            // waits for this client's order it publishes no new pictures, and
+            // a hook inside that branch could never send the order it waits
+            // for.
+            if( const char *test_move = std::getenv( "DDA_MP_TEST_CLIENT_MOVE" );
+                test_move != nullptr && test_move[0] != '\0' ) {
+                static int mp_test_moves_left = std::atoi( test_move );
+                static const int mp_test_move_code = []() {
+                    const char *dir = std::getenv( "DDA_MP_TEST_CLIENT_MOVE_DIR" );
+                    const int code = dir != nullptr && dir[0] != '\0' ? std::atoi( dir ) : 2;
+                    return code == 1 || code == 3 || code == 4 ? code : 2;
+                }();
+                static auto mp_test_last_move =
+                    std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+                const auto mp_test_now = std::chrono::steady_clock::now();
+                if( mp_test_moves_left > 0 &&
+                    mp_test_now - mp_test_last_move > std::chrono::seconds( 2 ) ) {
+                    mp_test_last_move = mp_test_now;
+                    --mp_test_moves_left;
+                    key_event test_ke;
+                    test_ke.code = static_cast<uint32_t>( mp_test_move_code );
+                    client_send_keys( { test_ke } );
+                    mp_tlog( string_format( "test: synthetic step %d", mp_test_move_code ) );
+                }
+            }
 
             bool mp_canvas_ok = false;
             snapshot snap;
@@ -5207,31 +5279,6 @@ void run_view_loop()
                 }
             }
 
-            // DDA MP test hook: walk right N times without touching the OS
-            // window. It uses the same client_send_keys path as a real key, so
-            // the desktop focus never has to be stolen for automated runs.
-            if( const char *test_move = std::getenv( "DDA_MP_TEST_CLIENT_MOVE" );
-                test_move != nullptr && test_move[0] != '\0' ) {
-                static int mp_test_moves_left = std::atoi( test_move );
-                static const int mp_test_move_code = []() {
-                    const char *dir = std::getenv( "DDA_MP_TEST_CLIENT_MOVE_DIR" );
-                    const int code = dir != nullptr && dir[0] != '\0' ? std::atoi( dir ) : 2;
-                    return code == 1 || code == 3 || code == 4 ? code : 2;
-                }();
-                static auto mp_test_last_move =
-                    std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
-                ctxt.set_timeout( 100 );
-                const auto mp_test_now = std::chrono::steady_clock::now();
-                if( mp_test_moves_left > 0 &&
-                    mp_test_now - mp_test_last_move > std::chrono::seconds( 2 ) ) {
-                    mp_test_last_move = mp_test_now;
-                    --mp_test_moves_left;
-                    key_event test_ke;
-                    test_ke.code = static_cast<uint32_t>( mp_test_move_code );
-                    client_send_keys( { test_ke } );
-                    mp_tlog( string_format( "test: synthetic step %d", mp_test_move_code ) );
-                }
-            }
             // DDA MP test hook: open the look cursor after the first picture so
             // an automated run can verify the reticle/info panel rendering.
             if( const char *test_look = std::getenv( "DDA_MP_TEST_CLIENT_LOOK" );
