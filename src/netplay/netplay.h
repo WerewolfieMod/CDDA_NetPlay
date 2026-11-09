@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "coords_fwd.h"
+#include "type_id.h"
 
 class Character;
 class Creature;
@@ -411,6 +412,20 @@ std::string fork_text( const char *msgid );
 /// DDA MP v4.0a-173: in-game co-op instructions (host and client), a scrollable
 /// window reachable from the main menu and both in-game main menus.
 void show_coop_help();
+
+/// DDA MP v4.0a-174: co-op assistance. A player next to another player who is
+/// busy with a long activity can opt in to help; the activity speeds up with
+/// the helper's skill and both gain experience. Returns true when a helper was
+/// added or removed.
+bool host_help_nearby( Character &helper );
+/// True when `helper` is currently assisting `target`.
+bool is_helping( const Character *helper, const Character *target );
+/// True when `helper` is assisting anyone (used by the round gate: a player
+/// who is busy helping has already given their order for this round).
+bool is_helping_anyone( const Character *helper );
+/// Speed multiplier for `target`'s activity: 1.0 without helpers, higher with
+/// a skilled helper (capped).
+float help_speed_factor( const Character &target, const skill_id &skill );
 
 /// DDA MP v4.0a-170: when the engine is currently working inside a session's
 /// split region, a global add_msg() belongs to that client, not to the host's

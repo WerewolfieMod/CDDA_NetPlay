@@ -52,6 +52,7 @@
 #include "npc.h"
 #include "output.h"
 #include "ranged.h"
+#include "recipe.h"
 #include "panels.h"
 #include "projectile.h"
 #include "messages.h"
@@ -1617,6 +1618,11 @@ static bool av_all_acted()
         if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
             continue;
         }
+        // DDA MP v4.0a-174: a player who is helping another player has already
+        // given their order for this round; do not wait for a step from them.
+        if( netplay::is_helping_anyone( npc_ptr ) ) {
+            continue;
+        }
         const auto it = av_acted_since_tick.find( entry.first );
         if( it == av_acted_since_tick.end() || !it->second ) {
             // DDA MP v4.0a-152: do not let an idle client freeze the host.
@@ -1665,6 +1671,36 @@ void host_pump_avatar_keys()
                         }
                     }
                     break;
+                }
+            }
+        }
+    }
+    // DDA MP test hook: put the HOST avatar to work on a corpse, so a client
+    // that walks up can help with the butchery.
+    if( const char *test_busy = std::getenv( "DDA_MP_TEST_HOST_BUSY" );
+        test_busy != nullptr && test_busy[0] != '\0' ) {
+        static bool mp_test_busy_done = false;
+        if( !mp_test_busy_done && !host_session_ids().empty() ) {
+            mp_test_busy_done = true;
+            avatar &host_u = get_avatar();
+            item knife( itype_id( "knife_combat" ), calendar::turn );
+            host_u.i_add( knife );
+            map &here = get_map();
+            here.add_item( host_u.pos_bub(), item::make_corpse( mtype_id( "mon_zombie" ) ) );
+            for( item &it : here.i_at( host_u.pos_bub() ) ) {
+                if( it.is_corpse() ) {
+                    item_location loc( map_cursor( host_u.pos_bub() ), &it );
+                    host_u.assign_activity(
+                        butchery_activity_actor( butchery_data( loc, butcher_type::FULL ) ) );
+                    break;
+                }
+            }
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "test: host busy butchering at %d,%d moves=%d\n",
+                                  host_u.pos_bub().x(), host_u.pos_bub().y(),
+                                  host_u.activity.moves_left );
+                    std::fclose( f );
                 }
             }
         }
@@ -3863,6 +3899,216 @@ static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
     av_send_session_picture( sid, av.pos_bub(), &av );
 }
 
+/* DDA MP v4.0a-174: co-op assistance.
+ *
+ * A player standing next to another player who is busy with a long activity
+ * (crafting, butchering, disassembly, construction) can offer to help. The
+ * helping player is registered here; crafting reads the resulting speed
+ * multiplier from help_speed_factor(), the butchering activity is advanced by
+ * the per-turn bonus below, and both characters practice the relevant skill.
+ * The registry is main-thread only, like the rest of the host glue. */
+static std::map<int, int> mp_help_pairs; // helper character id -> target character id
+static int mp_help_tick = 0;
+
+static Character *mp_character_by_id( int id )
+{
+    if( get_avatar().getID().get_value() == id ) {
+        return &get_avatar();
+    }
+    for( npc &guy : g->all_npcs() ) {
+        if( guy.getID().get_value() == id ) {
+            return &guy;
+        }
+    }
+    return nullptr;
+}
+
+static bool mp_helpable_activity( const player_activity &act )
+{
+    const std::string id = act.id().str();
+    return id == "ACT_CRAFT" || id == "ACT_BUTCHER" || id == "ACT_BUTCHER_FULL" ||
+           id == "ACT_DISASSEMBLE" || id == "ACT_BUILD";
+}
+
+static std::string mp_help_activity_name( const player_activity &act )
+{
+    const std::string id = act.id().str();
+    if( id == "ACT_BUTCHER" || id == "ACT_BUTCHER_FULL" ) {
+        return fork_text( "butchering" );
+    }
+    if( id == "ACT_DISASSEMBLE" ) {
+        return fork_text( "disassembly" );
+    }
+    if( id == "ACT_BUILD" ) {
+        return fork_text( "construction" );
+    }
+    return fork_text( "crafting" );
+}
+
+static skill_id mp_help_skill( const player_activity &act )
+{
+    static const skill_id survival( "survival" );
+    static const skill_id fabrication( "fabrication" );
+    const std::string id = act.id().str();
+    if( id == "ACT_BUTCHER" || id == "ACT_BUTCHER_FULL" ) {
+        return survival;
+    }
+    if( id == "ACT_CRAFT" && !act.targets.empty() && act.targets.front() ) {
+        const recipe &rec = act.targets.front()->get_making();
+        if( !rec.skill_used.is_null() ) {
+            return rec.skill_used;
+        }
+    }
+    return fabrication;
+}
+
+bool is_helping( const Character *helper, const Character *target )
+{
+    if( helper == nullptr || target == nullptr ) {
+        return false;
+    }
+    const auto it = mp_help_pairs.find( helper->getID().get_value() );
+    return it != mp_help_pairs.end() && it->second == target->getID().get_value();
+}
+
+bool is_helping_anyone( const Character *helper )
+{
+    if( helper == nullptr ) {
+        return false;
+    }
+    return mp_help_pairs.find( helper->getID().get_value() ) != mp_help_pairs.end();
+}
+
+float help_speed_factor( const Character &target, const skill_id &skill )
+{
+    if( mp_help_pairs.empty() || skill.is_null() ) {
+        return 1.0f;
+    }
+    float factor = 1.0f;
+    for( const auto &entry : mp_help_pairs ) {
+        if( entry.second != target.getID().get_value() ) {
+            continue;
+        }
+        const Character *helper = mp_character_by_id( entry.first );
+        if( helper == nullptr ) {
+            continue;
+        }
+        const int level = helper->get_skill_level( skill );
+        factor += 0.04f * static_cast<float>( level + 1 );
+    }
+    return std::min( factor, 1.6f );
+}
+
+/* Advance the assistance every world turn: drop pairs that walked away or
+ * finished, push the butchering activity forward, and share the practice. */
+static void host_pump_help()
+{
+    if( mp_help_pairs.empty() ) {
+        return;
+    }
+    ++mp_help_tick;
+    for( auto it = mp_help_pairs.begin(); it != mp_help_pairs.end(); ) {
+        Character *helper = mp_character_by_id( it->first );
+        Character *target = mp_character_by_id( it->second );
+        const bool keep = helper != nullptr && target != nullptr &&
+                          rl_dist( helper->pos_bub(), target->pos_bub() ) <= 1 &&
+                          mp_helpable_activity( target->activity );
+        if( !keep ) {
+            if( helper != nullptr ) {
+                helper->add_msg_if_player( m_info, fork_text( "You stop helping." ) );
+            }
+            if( target != nullptr && helper != nullptr ) {
+                target->add_msg_if_player(
+                    m_info, string_format( fork_text( "%s stops helping you." ),
+                                           helper->get_name() ) );
+            }
+            it = mp_help_pairs.erase( it );
+            continue;
+        }
+        const skill_id skill = mp_help_skill( target->activity );
+        const int level = helper->get_skill_level( skill );
+        const std::string id = target->activity.id().str();
+        if( id == "ACT_BUTCHER" || id == "ACT_BUTCHER_FULL" ) {
+            target->activity.moves_left = std::max( 0, target->activity.moves_left -
+                                                    5 * ( level + 1 ) );
+        }
+        if( mp_diag_enabled() ) {
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "help: helper=%s target=%s act=%s level=%d moves_left=%d\n",
+                              helper->get_name().c_str(), target->get_name().c_str(),
+                              id.c_str(), level, target->activity.moves_left );
+                std::fclose( f );
+            }
+        }
+        if( mp_help_tick % 2 == 0 ) {
+            target->practice( skill, 1 );
+            helper->practice( skill, 1 );
+        }
+        ++it;
+    }
+}
+
+bool host_help_nearby( Character &helper )
+{
+    if( !host_is_running() ) {
+        return false;
+    }
+    const int helper_id = helper.getID().get_value();
+    const auto existing = mp_help_pairs.find( helper_id );
+    if( existing != mp_help_pairs.end() ) {
+        Character *target = mp_character_by_id( existing->second );
+        mp_help_pairs.erase( existing );
+        helper.add_msg_if_player( m_info, fork_text( "You stop helping." ) );
+        if( target != nullptr ) {
+            target->add_msg_if_player(
+                m_info, string_format( fork_text( "%s stops helping you." ),
+                                       helper.get_name() ) );
+        }
+        return true;
+    }
+    Character *best = nullptr;
+    int best_dist = 99;
+    const auto consider = [&]( Character & who ) {
+        if( &who == &helper ) {
+            return;
+        }
+        const int dist = rl_dist( who.pos_bub(), helper.pos_bub() );
+        if( dist > 1 || dist >= best_dist || !mp_helpable_activity( who.activity ) ) {
+            return;
+        }
+        best = &who;
+        best_dist = dist;
+    };
+    consider( get_avatar() );
+    for( int sid : host_session_ids() ) {
+        npc *av = av_session_npc( sid );
+        if( av != nullptr ) {
+            consider( *av );
+        }
+    }
+    if( best == nullptr ) {
+        helper.add_msg_if_player(
+            m_info, fork_text( "There is no one nearby busy with a task you could help with." ) );
+        return false;
+    }
+    mp_help_pairs[helper_id] = best->getID().get_value();
+    const std::string what = mp_help_activity_name( best->activity );
+    if( netplay::mp_diag_enabled() ) {
+        const skill_id diag_skill = mp_help_skill( best->activity );
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "help: registered helper=%s target=%s activity=%s skill=%s level=%d factor=%.2f\n",
+                          helper.get_name().c_str(), best->get_name().c_str(), what.c_str(),
+                          diag_skill.str().c_str(), helper.get_skill_level( diag_skill ),
+                          help_speed_factor( *best, diag_skill ) );
+            std::fclose( f );
+        }
+    }
+    helper.add_msg_if_player( m_info, string_format( fork_text( "You help: %s." ), what ) );
+    best->add_msg_if_player( m_info, string_format( fork_text( "%s helps you." ),
+                             helper.get_name() ) );
+    return true;
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -3950,6 +4196,15 @@ void host_pump_intents()
             av_send_status( in.sid );
             if( !netplay::host_avatar_keys_pending() ) {
                 g->mp_anchor_map_on( get_avatar() );
+            }
+            continue;
+        }
+        // DDA MP v4.0a-174: help with another player's long activity.
+        if( in.action == "help" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                host_help_nearby( *av );
+                av_send_status( in.sid );
             }
             continue;
         }
@@ -4049,6 +4304,7 @@ void host_note_world_turn()
     }
     host_region_sync();
     host_clear_auto_turn();
+    host_pump_help();
     mp_round_start = std::chrono::steady_clock::now();
     mp_host_input_done = false;
     if( mp_diag_enabled() ) {
@@ -4207,7 +4463,8 @@ bool host_round_done()
     // Long wait and long activities are explicit exceptions.
     if( !mp_host_input_done && !netplay::long_wait_active() ) {
         avatar &host_u = get_avatar();
-        if( !host_u.has_effect( effect_sleep ) && host_u.activity.is_null() ) {
+        if( !host_u.has_effect( effect_sleep ) && host_u.activity.is_null() &&
+            !netplay::is_helping_anyone( &host_u ) ) {
             return false;
         }
     }
@@ -4222,6 +4479,10 @@ bool host_round_done()
             continue;
         }
         if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
+            continue;
+        }
+        // DDA MP v4.0a-174: helping is an order too.
+        if( netplay::is_helping_anyone( npc_ptr ) ) {
             continue;
         }
         // No pool entry yet means the client has not spent anything this

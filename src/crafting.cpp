@@ -68,6 +68,7 @@
 #include "mapdata.h"
 #include "messages.h"
 #include "mutation.h"
+#include "netplay/netplay.h"  // co-op assistance speed bonus
 #include "npc.h"
 #include "options.h"
 #include "output.h"
@@ -423,7 +424,9 @@ float Character::crafting_speed_multiplier( const item &craft,
         }
     }
 
-    return total_multi;
+    // DDA MP v4.0a-174: a player helping with this craft speeds it up in
+    // proportion to their skill in the recipe's skill.
+    return total_multi * netplay::help_speed_factor( *this, rec.skill_used );
 }
 
 bool Character::has_morale_to_craft() const

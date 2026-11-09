@@ -789,6 +789,9 @@ action_id handle_interact( map &here, const tripoint_bub_ms &pos )
     return static_cast<action_id>( tmenu.ret );
 }
 
+/* DDA MP v4.0a-174: custom action-menu id for "help the busy player". */
+static constexpr int MP_ACTION_HELP_NEARBY = 91000;
+
 action_id handle_action_menu( map &here )
 {
     const input_context ctxt = get_default_mode_input_context();
@@ -1046,6 +1049,11 @@ action_id handle_action_menu( map &here )
             REGISTER_ACTION( ACTION_CONTROL_VEHICLE );
             REGISTER_ACTION( ACTION_ITEMACTION );
             REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
+            // DDA MP v4.0a-174: the host can help a busy client the same way.
+            if( netplay::host_is_running() && netplay::host_session_count() > 0 ) {
+                entries.emplace_back( MP_ACTION_HELP_NEARBY, true, 'H',
+                                      netplay::fork_text( "Help the busy player" ) );
+            }
 #if defined(TILES)
             if( use_tiles ) {
                 REGISTER_ACTION( ACTION_ZOOM_OUT );
@@ -1072,6 +1080,13 @@ action_id handle_action_menu( map &here )
         smenu.entries = entries;
         smenu.query();
         const int selection = smenu.ret;
+
+        // DDA MP v4.0a-174: custom entries are resolved before the category
+        // handling (their ids also live above NUM_ACTIONS).
+        if( selection == MP_ACTION_HELP_NEARBY ) {
+            netplay::host_help_nearby( get_avatar() );
+            return ACTION_NULL;
+        }
 
         if( selection < 0 || selection == NUM_ACTIONS ) {
             return ACTION_NULL;
@@ -1139,8 +1154,14 @@ action_id handle_main_menu()
         entries.emplace_back( MP_ENTRY_HOST, true, std::nullopt,
                               netplay::fork_text( "Network: open world for co-op (port 25565)" ) );
         // DDA MP v4.0a-173: in-game co-op instructions.
+        // NOTE (v4.0a-174): the separate "Co-op help" tab is not needed for the
+        // multiplayer mod. It is intentionally NOT displayed in the host's menu;
+        // the window itself stays reachable from the main menu and from the
+        // client's menu, and the code is kept for now.
+#if 0
         entries.emplace_back( MP_ENTRY_HELP, true, std::nullopt,
                               netplay::fork_text( "Co-op help" ) );
+#endif
         // DDA MP v4.0a-86: while hosting, offer the automatic turn-skipping
         // mode so the clients can move freely.
         if( netplay::host_is_running() ) {

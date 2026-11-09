@@ -2799,12 +2799,21 @@ static void mp_run_client_construct()
                                  chosen.str() );
 }
 
+/* DDA MP v4.0a-174: custom action-menu id for "help the busy player". It is
+ * higher than NUM_ACTIONS but handled before the category checks. */
+static constexpr int MP_ACTION_HELP_NEARBY = 91000;
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
                                        const std::string &char_json )
 {
     if( act <= 0 ) {
+        return;
+    }
+    if( act == MP_ACTION_HELP_NEARBY ) {
+        // DDA MP v4.0a-174: the host finds the busy player next to us.
+        netplay::client_send_intent( "help", 0, {} );
         return;
     }
     switch( static_cast<action_id>( act ) ) {
@@ -3024,6 +3033,9 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_CONTROL_VEHICLE );
             MP_REGISTER_ACTION( ACTION_ITEMACTION );
             MP_REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
+            // DDA MP v4.0a-174: assistance for a nearby busy player.
+            entries.emplace_back( MP_ACTION_HELP_NEARBY, true, 'H',
+                                  netplay::fork_text( "Help the busy player" ) );
 #if defined(TILES)
             MP_REGISTER_ACTION( ACTION_ZOOM_OUT );
             MP_REGISTER_ACTION( ACTION_ZOOM_IN );
@@ -3047,6 +3059,12 @@ static int mp_client_action_menu()
         smenu.entries = entries;
         smenu.query();
         const int selection = smenu.ret;
+
+        // DDA MP v4.0a-174: custom entries are resolved before the category
+        // handling below (their ids also live above NUM_ACTIONS).
+        if( selection == MP_ACTION_HELP_NEARBY ) {
+            return MP_ACTION_HELP_NEARBY;
+        }
 
         if( selection < 0 || selection == NUM_ACTIONS ) {
             return ACTION_NULL;
@@ -5268,6 +5286,8 @@ void run_view_loop()
                     } else if( action_name == "construct" ) {
                         netplay::client_send_intent( "construct", 0, { 1, 0 },
                                                      "board_up_window" );
+                    } else if( action_name == "help" ) {
+                        netplay::client_send_intent( "help", 0, {} );
                     } else if( action_name == "disassemble" ) {
                         // Address the first carried item by its host uid, exactly
                         // like the inventory item menu does. The mirror arrives
