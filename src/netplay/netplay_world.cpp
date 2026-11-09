@@ -4049,6 +4049,28 @@ bool is_helping_anyone( const Character *helper )
     return mp_help_pairs.find( helper->getID().get_value() ) != mp_help_pairs.end();
 }
 
+/// DDA MP v4.0a-177: session driving `who`, or -1 for the host avatar / none.
+static int mp_session_sid_for( const Character *who )
+{
+    if( who == nullptr ) {
+        return -1;
+    }
+    for( int sid : host_session_ids() ) {
+        if( av_session_npc( sid ) == who ) {
+            return sid;
+        }
+    }
+    return -1;
+}
+
+static void mp_send_help_state( const Character *helper, bool on )
+{
+    const int sid = mp_session_sid_for( helper );
+    if( sid >= 0 ) {
+        netplay::host_send_event_to_sid( sid, on ? "on" : "off", netplay::EVENT_HELP );
+    }
+}
+
 float help_speed_factor( const Character &target, const skill_id &skill )
 {
     if( mp_help_pairs.empty() || skill.is_null() ) {
@@ -4092,12 +4114,12 @@ static void host_pump_help()
                     m_info, string_format( fork_text( "%s stops helping you." ),
                                            helper->get_name() ) );
             }
-            // Clear the helper's top progress line.
-            for( int sid : host_session_ids() ) {
-                if( helper != nullptr && av_session_npc( sid ) == helper ) {
-                    netplay::host_send_hover_to_sid( sid, "" );
-                    break;
-                }
+            // Clear the helper's top progress line and reset its "helping"
+            // flag: the task ended, the pair walked apart, or the target died.
+            const int helper_sid = mp_session_sid_for( helper );
+            if( helper_sid >= 0 ) {
+                netplay::host_send_hover_to_sid( helper_sid, "" );
+                netplay::host_send_event_to_sid( helper_sid, "off", netplay::EVENT_HELP );
             }
             it = mp_help_pairs.erase( it );
             continue;
@@ -4143,6 +4165,11 @@ bool host_help_nearby( Character &helper )
     if( existing != mp_help_pairs.end() ) {
         Character *target = mp_character_by_id( existing->second );
         mp_help_pairs.erase( existing );
+        const int helper_sid = mp_session_sid_for( &helper );
+        mp_send_help_state( &helper, false );
+        if( helper_sid >= 0 ) {
+            netplay::host_send_hover_to_sid( helper_sid, "" );
+        }
         helper.add_msg_if_player( m_info, fork_text( "You stop helping." ) );
         if( target != nullptr ) {
             target->add_msg_if_player(
@@ -4172,11 +4199,13 @@ bool host_help_nearby( Character &helper )
         }
     }
     if( best == nullptr ) {
+        mp_send_help_state( &helper, false );
         helper.add_msg_if_player(
             m_info, fork_text( "There is no one nearby busy with a task you could help with." ) );
         return false;
     }
     mp_help_pairs[helper_id] = best->getID().get_value();
+    mp_send_help_state( &helper, true );
     const std::string what = mp_help_activity_name( best->activity );
     if( netplay::mp_diag_enabled() ) {
         const skill_id diag_skill = mp_help_skill( best->activity );

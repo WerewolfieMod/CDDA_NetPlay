@@ -407,6 +407,11 @@ constexpr int EVENT_DEATH = 200;
 /// Text payload: "<name>\x1f<activity msgid, empty when idle>"; the client
 /// translates the msgid with fork_text().
 constexpr int EVENT_PLAYER = 201;
+/// DDA MP v4.0a-177: authoritative "you are helping / no longer helping"
+/// state for the helper's client. Text payload: "on" or "off". Keeps the
+/// client's stop-confirmation flag in sync when the host ends the assistance
+/// (target finished, walked away, or the request was refused).
+constexpr int EVENT_HELP = 202;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

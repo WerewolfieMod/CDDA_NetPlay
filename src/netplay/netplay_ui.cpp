@@ -2803,7 +2803,8 @@ static void mp_run_client_construct()
  * higher than NUM_ACTIONS but handled before the category checks. */
 static constexpr int MP_ACTION_HELP_NEARBY = 91000;
 /// Whether this client believes it is currently helping (drives the stop
-/// confirmation; cleared when the host reports the help ended).
+/// confirmation). The host is authoritative: EVENT_HELP resets it when the
+/// assistance ends or a request is refused.
 static bool mp_client_helping = false;
 
 /* DDA MP v4.0a-176: walking into another player shows the interaction menu
@@ -4435,6 +4436,14 @@ void run_view_loop()
                         const std::string p_act = sep == std::string::npos
                                                   ? std::string() : mp_ev_text.substr( sep + 1 );
                         mp_run_player_interact( p_name, p_act );
+                        continue;
+                    }
+                    // DDA MP v4.0a-177: the host is the authority on whether
+                    // we are helping; reset the stop-confirmation flag when it
+                    // ends the assistance (finished task, walked away, refused).
+                    if( mp_ev_type == netplay::EVENT_HELP ) {
+                        mp_client_helping = mp_ev_text == "on";
+                        mp_inv_log( "help state: " + mp_ev_text );
                         continue;
                     }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
