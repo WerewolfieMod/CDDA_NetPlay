@@ -24,6 +24,7 @@
 
 class Character;
 class Creature;
+class npc;
 
 namespace netplay
 {
@@ -427,6 +428,10 @@ void show_coop_help();
 /// the helper's skill and both gain experience. Returns true when a helper was
 /// added or removed.
 bool host_help_nearby( Character &helper );
+/// DDA MP v4.0a-178: host-side player interaction. When the host walks into a
+/// session avatar, show the same co-op menu the client gets. Returns false for
+/// any other creature (the caller then falls back to the vanilla NPC menu).
+bool host_interact_player( npc &target );
 /// True when `helper` is currently assisting `target`.
 bool is_helping( const Character *helper, const Character *target );
 /// True when `helper` is assisting anyone (used by the round gate: a player

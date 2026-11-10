@@ -63,6 +63,8 @@
 #include "sounds.h"
 #include "translations.h"
 #include "trap.h"
+#include "ui_manager.h"
+#include "uilist.h"
 #include "weather.h"
 #include "overmapbuffer.h"
 #include "worldfactory.h"
@@ -1865,6 +1867,51 @@ void host_pump_avatar_keys()
                 if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
                     std::fprintf( f, "test: synthetic host right\n" );
                     std::fclose( f );
+                }
+            }
+        }
+    }
+    // DDA MP test hook: walk the host into an adjacent session avatar, so the
+    // host-side player interaction menu can be exercised without the OS
+    // window. The client should be AFK, otherwise the round gate waits for its
+    // order after the host spends its move.
+    if( const char *test_bump = std::getenv( "DDA_MP_TEST_HOST_BUMP" );
+        test_bump != nullptr && test_bump[0] != '\0' ) {
+        static bool mp_test_bump_done = false;
+        static auto mp_test_bump_last =
+            std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
+        const auto mp_test_bump_now = std::chrono::steady_clock::now();
+        if( !mp_test_bump_done &&
+            mp_test_bump_now - mp_test_bump_last > std::chrono::seconds( 2 ) ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av == nullptr ) {
+                    continue;
+                }
+                const int dx = av->pos_bub().x() - get_avatar().pos_bub().x();
+                const int dy = av->pos_bub().y() - get_avatar().pos_bub().y();
+                int code = 0;
+                if( dx == 1 && dy == 0 ) {
+                    code = 2; // RIGHT
+                } else if( dx == -1 && dy == 0 ) {
+                    code = 1; // LEFT
+                } else if( dx == 0 && dy == 1 ) {
+                    code = 4; // DOWN
+                } else if( dx == 0 && dy == -1 ) {
+                    code = 3; // UP
+                }
+                if( code != 0 ) {
+                    mp_test_bump_last = mp_test_bump_now;
+                    mp_test_bump_done = true;
+                    netplay::host_push_legacy_key( code );
+                    if( mp_diag_enabled() ) {
+                        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "test: host bump key=%d target=%d,%d\n",
+                                          code, av->pos_bub().x(), av->pos_bub().y() );
+                            std::fclose( f );
+                        }
+                    }
+                    break;
                 }
             }
         }
@@ -4155,6 +4202,32 @@ static void host_pump_help()
     }
 }
 
+/* DDA MP v4.0a-174/178: bind a helper to a specific busy player. Shared by the
+ * "help nearby" action and by the host-side player interaction menu, so the
+ * host helps exactly the player it walked into. */
+static void mp_register_help( Character &helper, Character &target )
+{
+    if( !mp_helpable_activity( target.activity ) ) {
+        return;
+    }
+    mp_help_pairs[helper.getID().get_value()] = target.getID().get_value();
+    mp_send_help_state( &helper, true );
+    const std::string what = mp_help_activity_name( target.activity );
+    if( netplay::mp_diag_enabled() ) {
+        const skill_id diag_skill = mp_help_skill( target.activity );
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "help: registered helper=%s target=%s activity=%s skill=%s level=%d factor=%.2f\n",
+                          helper.get_name().c_str(), target.get_name().c_str(), what.c_str(),
+                          diag_skill.str().c_str(), helper.get_skill_level( diag_skill ),
+                          help_speed_factor( target, diag_skill ) );
+            std::fclose( f );
+        }
+    }
+    helper.add_msg_if_player( m_info, string_format( fork_text( "You help: %s." ), what ) );
+    target.add_msg_if_player( m_info, string_format( fork_text( "%s helps you." ),
+                             helper.get_name() ) );
+}
+
 bool host_help_nearby( Character &helper )
 {
     if( !host_is_running() ) {
@@ -4204,22 +4277,48 @@ bool host_help_nearby( Character &helper )
             m_info, fork_text( "There is no one nearby busy with a task you could help with." ) );
         return false;
     }
-    mp_help_pairs[helper_id] = best->getID().get_value();
-    mp_send_help_state( &helper, true );
-    const std::string what = mp_help_activity_name( best->activity );
+    mp_register_help( helper, *best );
+    return true;
+}
+
+bool host_interact_player( npc &target )
+{
+    if( !host_is_running() || !mp_is_player_creature( &target ) ) {
+        return false;
+    }
+    uilist menu;
+    menu.text = string_format( fork_text( "Player: %s" ), target.get_name() );
+    int help_idx = -1;
+    if( mp_helpable_activity( target.activity ) ) {
+        help_idx = 0;
+        menu.addentry( string_format( fork_text( "Help: %s" ),
+                                      fork_text( mp_help_activity_msgid( target.activity ).c_str() ) ) );
+    }
+    menu.addentry( fork_text( "Close" ) );
     if( netplay::mp_diag_enabled() ) {
-        const skill_id diag_skill = mp_help_skill( best->activity );
         if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-            std::fprintf( f, "help: registered helper=%s target=%s activity=%s skill=%s level=%d factor=%.2f\n",
-                          helper.get_name().c_str(), best->get_name().c_str(), what.c_str(),
-                          diag_skill.str().c_str(), helper.get_skill_level( diag_skill ),
-                          help_speed_factor( *best, diag_skill ) );
+            std::fprintf( f, "host interact open: %s activity=%s\n", target.get_name().c_str(),
+                          mp_helpable_activity( target.activity )
+                          ? mp_help_activity_msgid( target.activity ).c_str() : "" );
             std::fclose( f );
         }
     }
-    helper.add_msg_if_player( m_info, string_format( fork_text( "You help: %s." ), what ) );
-    best->add_msg_if_player( m_info, string_format( fork_text( "%s helps you." ),
-                             helper.get_name() ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( help_idx >= 0 && menu.ret == help_idx ) {
+        Character &host_u = get_avatar();
+        if( is_helping_anyone( &host_u ) ) {
+            // Mirror the client menu: choosing Help while already helping
+            // stops the current assistance after confirmation.
+            if( query_yn( fork_text( "Stop helping?" ) ) ) {
+                host_help_nearby( host_u );
+            }
+        } else {
+            mp_register_help( host_u, target );
+        }
+    }
     return true;
 }
 

@@ -44,6 +44,7 @@
 #include "monster.h"
 #include "move_mode.h"
 #include "mtype.h"
+#include "netplay/netplay.h"
 #include "npc.h"
 #include "options.h"
 #include "output.h"
@@ -431,7 +432,12 @@ bool avatar_action::move( avatar &you, map &m, const tripoint_rel_ms &d )
         }
 
         if( !np.is_enemy() ) {
-            g->npc_menu( np );
+            // DDA MP v4.0a-178: a netplay player avatar gets the co-op menu
+            // (name, help with the current task, close) instead of the vanilla
+            // NPC dialogue, mirroring the client's bump behaviour.
+            if( !netplay::host_interact_player( np ) ) {
+                g->npc_menu( np );
+            }
             return false;
         }
 
