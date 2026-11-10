@@ -432,6 +432,15 @@ bool host_help_nearby( Character &helper );
 /// session avatar, show the same co-op menu the client gets. Returns false for
 /// any other creature (the caller then falls back to the vanilla NPC menu).
 bool host_interact_player( npc &target );
+/// DDA MP v4.0a-180: progress line shown on the host's screen while the host
+/// itself is helping a client. Empty when the host is not helping.
+const std::string &host_help_hint();
+/// Draw that line on one of the host's top rows. Erases the row when the hint
+/// is empty (called once after the assistance ends).
+void host_draw_help_hint( int row );
+/// DDA MP v4.0a-180: drop all assistance state when hosting stops, so a stale
+/// progress line does not survive into single-player.
+void host_help_shutdown();
 /// True when `helper` is currently assisting `target`.
 bool is_helping( const Character *helper, const Character *target );
 /// True when `helper` is assisting anyone (used by the round gate: a player

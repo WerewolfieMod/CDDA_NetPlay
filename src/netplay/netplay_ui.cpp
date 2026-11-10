@@ -117,6 +117,38 @@ void host_draw_long_wait_hint( int row )
     wnoutrefresh( win );
 }
 
+/* DDA MP v4.0a-180: progress line for the host while it helps a client. Draws
+ * on the requested top row; when the hint becomes empty the row is erased once
+ * and further calls are no-ops. */
+void host_draw_help_hint( int row )
+{
+    const std::string &hint = host_help_hint();
+    const int w = std::min( TERMX, 64 );
+    static catacurses::window wins[2];
+    static int win_w[2] = { -1, -1 };
+    static bool cleared[2] = { true, true };
+    const int slot = row == 1 ? 1 : 0;
+    if( hint.empty() && cleared[slot] ) {
+        return;
+    }
+    catacurses::window &win = wins[slot];
+    if( !win || win_w[slot] != w ) {
+        win = catacurses::newwin( 1, w, point( std::max( 0, ( TERMX - w ) / 2 ), slot ) );
+        win_w[slot] = w;
+        if( !win ) {
+            return;
+        }
+    }
+    werase( win );
+    if( hint.empty() ) {
+        cleared[slot] = true;
+    } else {
+        mvwprintz( win, point( 0, 0 ), c_light_blue, hint );
+        cleared[slot] = false;
+    }
+    wnoutrefresh( win );
+}
+
 /* ------------------------------------------------------------------ */
 /* chunk helpers                                                       */
 /* ------------------------------------------------------------------ */

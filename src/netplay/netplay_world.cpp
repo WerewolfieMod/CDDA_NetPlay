@@ -947,6 +947,7 @@ static bool mp_is_player_creature( const Creature *cr )
 // Defined with the co-op assistance block below; used by the key handler.
 static bool mp_helpable_activity( const player_activity &act );
 static std::string mp_help_activity_msgid( const player_activity &act );
+static void mp_register_help( Character &helper, Character &target );
 
 /* DDA MP v4.0a-166: one session event line. When the message came from a
  * translated template it carries the untranslated msgid plus the msgid-language
@@ -1913,6 +1914,66 @@ void host_pump_avatar_keys()
                     }
                     break;
                 }
+            }
+        }
+    }
+    // DDA MP test hook: make the first bound session avatar butcher a corpse,
+    // so the host-side help and its top progress line can be exercised.
+    if( const char *test_avbusy = std::getenv( "DDA_MP_TEST_AVATAR_BUSY" );
+        test_avbusy != nullptr && test_avbusy[0] != '\0' ) {
+        static bool mp_test_avbusy_done = false;
+        if( !mp_test_avbusy_done ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av == nullptr ||
+                    rl_dist( av->pos_bub(), get_avatar().pos_bub() ) > 1 ) {
+                    continue;
+                }
+                mp_test_avbusy_done = true;
+                item knife( itype_id( "knife_combat" ), calendar::turn );
+                av->i_add( knife );
+                map &here = get_map();
+                here.add_item( av->pos_bub(), item::make_corpse( mtype_id( "mon_zombie" ) ) );
+                for( item &it : here.i_at( av->pos_bub() ) ) {
+                    if( it.is_corpse() ) {
+                        item_location loc( map_cursor( av->pos_bub() ), &it );
+                        av->assign_activity( butchery_activity_actor(
+                                                 butchery_data( loc, butcher_type::FULL ) ) );
+                        break;
+                    }
+                }
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "test: avatar busy butchering sid=%d\n", sid );
+                        std::fclose( f );
+                    }
+                }
+                break;
+            }
+        }
+    }
+    // DDA MP test hook: register the host as the helper of an adjacent busy
+    // session avatar, bypassing the menu selection.
+    if( const char *test_host_help = std::getenv( "DDA_MP_TEST_HOST_HELP" );
+        test_host_help != nullptr && test_host_help[0] != '\0' ) {
+        static bool mp_test_host_help_done = false;
+        if( !mp_test_host_help_done && !is_helping_anyone( &get_avatar() ) ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av == nullptr ||
+                    rl_dist( av->pos_bub(), get_avatar().pos_bub() ) > 1 ||
+                    !mp_helpable_activity( av->activity ) ) {
+                    continue;
+                }
+                mp_test_host_help_done = true;
+                mp_register_help( get_avatar(), *av );
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "test: host help registered sid=%d\n", sid );
+                        std::fclose( f );
+                    }
+                }
+                break;
             }
         }
     }
@@ -3997,6 +4058,20 @@ static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
  * The registry is main-thread only, like the rest of the host glue. */
 static std::map<int, int> mp_help_pairs; // helper character id -> target character id
 static int mp_help_tick = 0;
+/// DDA MP v4.0a-180: progress line shown at the top of the host's screen while
+/// the host itself is helping a client. Empty when the host is not helping.
+static std::string mp_host_help_hint;
+
+const std::string &host_help_hint()
+{
+    return mp_host_help_hint;
+}
+
+void host_help_shutdown()
+{
+    mp_help_pairs.clear();
+    mp_host_help_hint.clear();
+}
 
 static Character *mp_character_by_id( int id )
 {
@@ -4167,6 +4242,8 @@ static void host_pump_help()
             if( helper_sid >= 0 ) {
                 netplay::host_send_hover_to_sid( helper_sid, "" );
                 netplay::host_send_event_to_sid( helper_sid, "off", netplay::EVENT_HELP );
+            } else if( helper != nullptr && helper->is_avatar() ) {
+                mp_host_help_hint.clear();
             }
             it = mp_help_pairs.erase( it );
             continue;
@@ -4190,13 +4267,15 @@ static void host_pump_help()
             target->practice( skill, 1 );
             helper->practice( skill, 1 );
         }
-        // DDA MP v4.0a-175: show the progressing task at the top on the helper's
-        // screen, exactly like the busy player sees it.
-        for( int sid : host_session_ids() ) {
-            if( av_session_npc( sid ) == helper ) {
-                netplay::host_send_hover_to_sid( sid, mp_activity_progress( *target ) );
-                break;
-            }
+        // DDA MP v4.0a-175/180: show the progressing task at the top on the
+        // helper's screen. A remote helper gets the hover line; when the host
+        // itself helps, keep the line in host_help_hint() for its input loop.
+        const std::string progress = mp_activity_progress( *target );
+        const int helper_sid = mp_session_sid_for( helper );
+        if( helper_sid >= 0 ) {
+            netplay::host_send_hover_to_sid( helper_sid, progress );
+        } else if( helper->is_avatar() ) {
+            mp_host_help_hint = progress;
         }
         ++it;
     }
@@ -4212,6 +4291,9 @@ static void mp_register_help( Character &helper, Character &target )
     }
     mp_help_pairs[helper.getID().get_value()] = target.getID().get_value();
     mp_send_help_state( &helper, true );
+    if( helper.is_avatar() ) {
+        mp_host_help_hint = mp_activity_progress( target );
+    }
     const std::string what = mp_help_activity_name( target.activity );
     if( netplay::mp_diag_enabled() ) {
         const skill_id diag_skill = mp_help_skill( target.activity );
@@ -4242,6 +4324,8 @@ bool host_help_nearby( Character &helper )
         mp_send_help_state( &helper, false );
         if( helper_sid >= 0 ) {
             netplay::host_send_hover_to_sid( helper_sid, "" );
+        } else if( helper.is_avatar() ) {
+            mp_host_help_hint.clear();
         }
         helper.add_msg_if_player( m_info, fork_text( "You stop helping." ) );
         if( target != nullptr ) {

@@ -1237,6 +1237,8 @@ bool host_start( int port )
 void host_stop()
 {
     set_long_wait( false );
+    // DDA MP v4.0a-180: no assistance survives the session.
+    host_help_shutdown();
     // DDA MP v4.0a-142: split regions own extra maps and creature stores.
     // Fold them back into the host world before the transport goes away.
     host_region_shutdown();

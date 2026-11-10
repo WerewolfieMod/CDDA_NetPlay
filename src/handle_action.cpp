@@ -294,6 +294,10 @@ input_context game::get_player_input( std::string &action )
 
     user_turn current_turn;
 
+    // DDA MP v4.0a-180: track whether the host's help-progress line is on
+    // screen, so the final empty update erases it once.
+    static bool mp_help_hint_was = false;
+
     if( get_option<bool>( "ANIMATIONS" ) ) {
         const int TOTAL_VIEW = MAX_VIEW_DISTANCE * 2 + 1;
         point iStart( ( TERRAIN_WINDOW_WIDTH > TOTAL_VIEW ) ? ( TERRAIN_WINDOW_WIDTH - TOTAL_VIEW ) / 2 : 0,
@@ -489,6 +493,14 @@ input_context game::get_player_input( std::string &action )
                 netplay::host_draw_long_wait_hint( 0 );
                 refresh_display();
             }
+            // DDA MP v4.0a-180: the host's own help progress, one row below
+            // the long-wait notice. Erased once when the help ends.
+            const bool mp_help_now = !netplay::host_help_hint().empty();
+            if( mp_help_now || mp_help_hint_was ) {
+                netplay::host_draw_help_hint( 1 );
+                refresh_display();
+                mp_help_hint_was = mp_help_now;
+            }
         } while( handle_mouseview( ctxt, action, true ) && uquit != QUIT_WATCH
                  && ( action != "TIMEOUT" || !current_turn.has_timeout_elapsed() ) );
         ctxt.reset_timeout();
@@ -505,6 +517,12 @@ input_context game::get_player_input( std::string &action )
             if( netplay::long_wait_active() && netplay::host_session_count() > 0 ) {
                 netplay::host_draw_long_wait_hint( 0 );
                 refresh_display();
+            }
+            const bool mp_help_now = !netplay::host_help_hint().empty();
+            if( mp_help_now || mp_help_hint_was ) {
+                netplay::host_draw_help_hint( 1 );
+                refresh_display();
+                mp_help_hint_was = mp_help_now;
             }
             if( action == "TIMEOUT" && current_turn.has_timeout_elapsed() ) {
                 break;
