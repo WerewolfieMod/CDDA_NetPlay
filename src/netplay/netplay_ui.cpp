@@ -19,6 +19,7 @@
 #include <tuple>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "cursesdef.h"
 #include "cursesport.h"
@@ -52,6 +53,7 @@
 #include "input.h"
 #include "inventory_ui.h"
 #include "inventory.h"
+#include "item_category.h"
 #include "itype.h"
 #include "flag.h"
 #include "ranged.h"
@@ -1158,6 +1160,23 @@ static int mp_origin_y = 0;
 static int mp_origin_z = 0;
 static bool mp_have_origin = false;
 
+/// DDA MP v4.0a-179: the inventory packet carries the host's localized
+/// category header plus the stable category id. Resolve the id against the
+/// client's own data so a Russian client reading an English host still gets
+/// Russian category headers.
+static std::string mp_local_category( const netplay::inv_entry_view &e )
+{
+    if( e.category_id.empty() ) {
+        return e.category;
+    }
+    for( const item_category &cat : item_category::get_all() ) {
+        if( cat.get_id().str() == e.category_id ) {
+            return cat.name_header();
+        }
+    }
+    return e.category;
+}
+
 static void mp_overlay_inventory( const std::string &text, bool open, int &sel, int &scroll )
 {
     if( !imclient || !open ) {
@@ -1277,6 +1296,27 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
     mp_inv_split = worn_n;
     const netplay::inv_entry_view *chosen = sel < total ? all_rows[sel] : nullptr;
 
+    // DDA MP v4.0a-179: the host sends display names in ITS language. The
+    // client's avatar mirror holds a full copy of the same items (tagged with
+    // the stable mp_uid), so render the mirror's name instead. That keeps
+    // damage/ammo/mod details intact but lets the client's own catalog
+    // translate them. Items without a mirror (pickup rows) keep the host name.
+    std::unordered_map<std::string, std::string> mp_mirror_names;
+    for( item *it : get_avatar().inv_dump() ) {
+        if( it == nullptr ) {
+            continue;
+        }
+        const std::string uid = it->get_var( "mp_uid", std::string() );
+        if( !uid.empty() ) {
+            mp_mirror_names[uid] = netplay::inv_strip_tags(
+                                       it->display_name( it->count(), false ) );
+        }
+    }
+    const auto mp_local_item_name = [&]( const netplay::inv_entry_view & e ) -> std::string {
+        const auto it = mp_mirror_names.find( e.uid );
+        return it != mp_mirror_names.end() ? it->second : e.name;
+    };
+
     auto draw_column = [&]( float x, const std::vector<const netplay::inv_entry_view *> &rows, int base ) {
         float y = body_top;
         const bool active = sel >= base && sel < base + static_cast<int>( rows.size() );
@@ -1301,7 +1341,7 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
                 }
                 dl->AddRectFilled( ImVec2( x - fs * 0.35f, y - lh * 0.1f ),
                                    ImVec2( x + col_w, y + lh * 1.0f ), IM_COL32( 30, 40, 48, 255 ) );
-                dl->AddText( ImVec2( x, y ), col_section, e->category.c_str() );
+                dl->AddText( ImVec2( x, y ), col_section, mp_local_category( *e ).c_str() );
                 last_cat = e->category;
                 y += lh * 1.15f;
             }
@@ -1331,7 +1371,8 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
             const float indent = static_cast<float>( e->depth ) * fs * 1.1f;
             const float name_x = x + fs * 1.15f + indent;
             const float name_w = col_w - ( name_x - x ) - qw - fs * 0.9f;
-            const std::string nm = mp_clip_text( ( e->depth > 0 ? "> " : "" ) + e->name, name_w );
+            const std::string nm = mp_clip_text(
+                                       ( e->depth > 0 ? "> " : "" ) + mp_local_item_name( *e ), name_w );
             dl->AddText( ImVec2( name_x, y ), col, nm.c_str() );
             dl->AddText( ImVec2( x + col_w - qw, y ), col_qty, qty.c_str() );
             y += lh;
@@ -1344,7 +1385,7 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
                     d1 += "   " + string_format( "%s %s", netplay::fork_text( "Longest side" ),
                                                  mp_fmt_cm( e->side_mm ).c_str() );
                 }
-                std::string d2 = e->category;
+                std::string d2 = mp_local_category( *e );
                 if( e->charges != 0 ) {
                     d2 += ( d2.empty() ? "" : "   " ) + string_format( "%s %d", _( "Charges" ), e->charges );
                 }
@@ -1378,7 +1419,8 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
     dl->AddText( ImVec2( ix + pad, fy ), col_dim,
                  netplay::fork_text( "[Esc] close   [Up/Down] select   [Tab] column   [PgUp/PgDn] page" ).c_str() );
     if( chosen != nullptr ) {
-        const std::string right = string_format( "%s: %s", _( "Category" ), chosen->category );
+        const std::string right = string_format( "%s: %s", _( "Category" ),
+                                                 mp_local_category( *chosen ).c_str() );
         const float rw = ImGui::CalcTextSize( right.c_str() ).x;
         dl->AddText( ImVec2( ix + iw - pad - rw, fy ), col_dim, right.c_str() );
     }
@@ -3175,8 +3217,13 @@ static int mp_client_main_menu()
 
     entries.emplace_back( MP_ENTRY_DISCONNECT, true, 'Q',
                           netplay::fork_text( "Disconnect from server" ) );
+    // DDA MP v4.0a-179: like the host's menu, the separate "Co-op help" tab is
+    // not needed for the mod. The window stays reachable from the main menu;
+    // the entry and its handler are kept for now but not displayed.
+#if 0
     entries.emplace_back( MP_ENTRY_COOP_HELP, true, 'H',
                           netplay::fork_text( "Co-op help" ) );
+#endif
 
     uilist smenu;
     smenu.settext( _( "MAIN MENU" ) );
@@ -4312,26 +4359,29 @@ void run_view_loop()
                         }
                         if( mp_prev.valid ) {
                             if( d.hp < mp_prev.hp ) {
-                                mp_log_add( string_format( "Потеряно %d HP", mp_prev.hp - d.hp ),
+                                mp_log_add( string_format( netplay::fork_text( "Lost %d HP" ),
+                                                           mp_prev.hp - d.hp ),
                                             static_cast<int>( m_bad ) );
                             } else if( d.hp > mp_prev.hp ) {
-                                mp_log_add( string_format( "Восстановлено %d HP", d.hp - mp_prev.hp ),
+                                mp_log_add( string_format( netplay::fork_text( "Regained %d HP" ),
+                                                           d.hp - mp_prev.hp ),
                                             static_cast<int>( m_good ) );
                             }
                             if( d.hunger >= mp_prev.hunger + 10 ) {
-                                mp_log_add( string_format( "Голод: %d", d.hunger ),
+                                mp_log_add( string_format( netplay::fork_text( "Hunger: %d" ), d.hunger ),
                                             static_cast<int>( m_warning ) );
                             }
                             if( d.thirst >= mp_prev.thirst + 10 ) {
-                                mp_log_add( string_format( "Жажда: %d", d.thirst ),
+                                mp_log_add( string_format( netplay::fork_text( "Thirst: %d" ), d.thirst ),
                                             static_cast<int>( m_info ) );
                             }
                             if( d.pain > mp_prev.pain ) {
-                                mp_log_add( string_format( "Боль: %d", d.pain ),
+                                mp_log_add( string_format( netplay::fork_text( "Pain: %d" ), d.pain ),
                                             static_cast<int>( m_bad ) );
                             }
                             if( d.effects != mp_prev.effects ) {
-                                mp_log_add( "Состояние изменилось", static_cast<int>( m_info ) );
+                                mp_log_add( netplay::fork_text( "Condition changed" ),
+                                            static_cast<int>( m_info ) );
                             }
                         }
                         mp_prev = d;
