@@ -18,6 +18,7 @@
 #include <set>
 #include <tuple>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -26,6 +27,7 @@
 #include "avatar.h"      // get_avatar (native character creation)
 #include "crafting_gui.h" // select_crafter_and_crafting_recipe (client craft)
 #include "recipe.h"       // recipe::ident (craft intent)
+#include "recipe_dictionary.h" // recipe_dict / recipe_subset (view recipe)
 #include "field.h"       // fields mirrored into the native map
 #include "field_type.h"  // field_type_str_id
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
@@ -55,6 +57,7 @@
 #include "inventory.h"
 #include "item_category.h"
 #include "itype.h"
+#include "game_inventory.h"
 #include "flag.h"
 #include "ranged.h"
 #include "npc.h"
@@ -1643,7 +1646,7 @@ static int mp_client_item_menu( Character &you, const item &it )
     }
     mp_menu_entry( menu, 'f', it.is_favorite ? pgettext( "action", "unfavorite" ) :
                    pgettext( "action", "favorite" ), hint_rating::good );
-    mp_menu_entry( menu, 'V', pgettext( "action", "view recipe" ), hint_rating::cant );
+    mp_menu_entry( menu, 'V', pgettext( "action", "view recipe" ), hint_rating::good );
     {
         bool can_collapse = false;
         bool can_expand = false;
@@ -2031,6 +2034,10 @@ static void mp_start_client_throw( const item &it, const std::string &uid )
     }
 }
 
+/// DDA MP v4.0a-185: recipe view from the client item menu. Defined after the
+/// crafting helper it calls.
+static void mp_run_view_recipe( const item &it );
+
 static void mp_run_host_inventory( const std::string &text )
 {
     try {
@@ -2180,6 +2187,10 @@ static void mp_run_host_inventory( const std::string &text )
         }
         if( act == 't' ) {
             mp_start_client_throw( it, uid );
+            break;
+        }
+        if( act == 'V' ) {
+            mp_run_view_recipe( it );
             break;
         }
         if( act > 0 ) {
@@ -2758,7 +2769,8 @@ static void mp_run_client_fire()
  * mirrored avatar (recipe list, availability, batch size), then sends the
  * chosen recipe to the host, which starts the real craft activity on the
  * session avatar. Workbench variants use the host's map at the avatar. */
-static void mp_run_client_craft( bool all )
+static void mp_run_client_craft( bool all, const std::string &filter = "",
+                                 const recipe_id &goto_recipe = recipe_id() )
 {
     if( !mp_native_avatar_ready ) {
         return;
@@ -2768,7 +2780,7 @@ static void mp_run_client_craft( bool all )
     std::pair<Character *, const recipe *> chosen;
     try {
         ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
-        chosen = select_crafter_and_crafting_recipe( batch_size, recipe_id(), &you );
+        chosen = select_crafter_and_crafting_recipe( batch_size, goto_recipe, &you, filter );
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "craft error: " ) + e.what() );
         return;
@@ -2788,6 +2800,49 @@ static void mp_run_client_craft( bool all )
     mp_inv_log( string_format( "craft: %s batch=%d all=%d",
                                chosen.second->ident().str().c_str(), batch_size,
                                all ? 1 : 0 ) );
+}
+
+/* DDA MP v4.0a-185: the item menu's "view recipe" used to be disabled on the
+ * client. Open the normal craft UI filtered to the item on the mirror; the
+ * chosen recipe still travels to the host as the usual craft intent. */
+static void mp_run_view_recipe( const item &it )
+{
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "recipe: mirror not ready" );
+        return;
+    }
+    avatar &you = get_avatar();
+    if( it.is_craft() ) {
+        const recipe_id id = it.get_making().ident();
+        if( !you.get_group_available_recipes().contains( &id.obj() ) ) {
+            add_msg( m_info, _( "You don't know how to craft the %s!" ), id->result_name() );
+            return;
+        }
+        mp_run_client_craft( false, "", id );
+        return;
+    }
+    const itype_id item = it.typeId();
+    const std::string itname = item->nname( 1U );
+    bool is_byproduct = false;
+    bool can_craft = false;
+    for( const auto &[_, r] : recipe_dict ) {
+        if( !r.obsolete && ( item == r.result() || r.in_byproducts( item ) ) ) {
+            is_byproduct = true;
+            if( you.get_group_available_recipes().contains( &r ) ) {
+                can_craft = true;
+                break;
+            }
+        }
+    }
+    if( !is_byproduct ) {
+        add_msg( m_info, _( "You wonder if it's even possible to craft the %s…" ), itname );
+        return;
+    }
+    if( !can_craft ) {
+        add_msg( m_info, _( "You don't know how to craft the %s!" ), itname );
+        return;
+    }
+    mp_run_client_craft( false, string_format( "r:%s", itname ) );
 }
 
 static void mp_run_client_throw( const item &thrown, const std::string &uid,
@@ -3041,6 +3096,13 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_CHAT:
             mp_run_client_chat();
             break;
+        case ACTION_COMPARE:
+            // DDA MP v4.0a-185: item comparison is read-only; run it on the
+            // mirror instead of opening the generic inventory.
+            if( mp_native_avatar_ready ) {
+                game_menus::inv::compare( std::nullopt );
+            }
+            break;
         // DDA MP v4.0a-133/181: the item-action hotkeys open the inventory; the
         // row menu exposes drop/eat/wear/read/wield/use/reload/disassemble for
         // the chosen item. The same route serves the action-menu entries that
@@ -3052,7 +3114,6 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_READ:
         case ACTION_WIELD:
         case ACTION_USE:
-        case ACTION_COMPARE:
         case ACTION_RELOAD_ITEM:
         case ACTION_RELOAD_WEAPON:
         case ACTION_RELOAD_WIELDED:
@@ -3176,13 +3237,13 @@ static int mp_client_action_menu()
         } else if( category == _( "Inventory" ) ) {
             MP_REGISTER_ACTION( ACTION_INVENTORY );
             MP_REGISTER_ACTION( ACTION_ADVANCEDINV );
-            // DDA MP v4.0a-181: sort/compare/organize/directional drop are
-            // separate host inventory screens; hide them rather than opening
-            // the generic inventory under a misleading label.
+            // DDA MP v4.0a-181/185: item comparison runs read-only on the
+            // mirror; sort/organize/directional drop still change host state,
+            // so keep those hidden.
+            MP_REGISTER_ACTION( ACTION_COMPARE );
 #if 0
             MP_REGISTER_ACTION( ACTION_SORT_ARMOR );
             MP_REGISTER_ACTION( ACTION_DIR_DROP );
-            MP_REGISTER_ACTION( ACTION_COMPARE );
             MP_REGISTER_ACTION( ACTION_ORGANIZE );
 #endif
             MP_REGISTER_ACTION( ACTION_INSERT_ITEM );
