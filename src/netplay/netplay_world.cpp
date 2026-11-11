@@ -3496,6 +3496,54 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_CYCLE_MOVE:
+            case ACTION_CYCLE_MOVE_REVERSE: {
+                // DDA MP v4.0a-181: the action-menu cycle entry used to fall
+                // through to "not available". NPC avatars have no desired-mode
+                // machinery, so cycle the effective mode directly.
+                const move_mode_id walk( "walk" );
+                const move_mode_id run( "run" );
+                const move_mode_id crouch( "crouch" );
+                const move_mode_id prone( "prone" );
+                move_mode_id next = walk;
+                if( action == ACTION_CYCLE_MOVE_REVERSE ) {
+                    if( av->is_prone() ) {
+                        next = walk;
+                    } else if( av->is_crouching() ) {
+                        next = prone;
+                    } else if( av->is_running() ) {
+                        next = crouch;
+                    } else {
+                        next = prone;
+                    }
+                } else {
+                    if( av->is_running() ) {
+                        next = crouch;
+                    } else if( av->is_crouching() ) {
+                        next = prone;
+                    } else if( av->is_prone() ) {
+                        next = walk;
+                    } else {
+                        next = run;
+                    }
+                }
+                const int cost = av->move_mode_switch_cost( av->current_movement_mode(), next );
+                av->set_movement_mode( next );
+                auto pool_it = av_move_pool.find( sid );
+                if( pool_it != av_move_pool.end() ) {
+                    pool_it->second = std::max( 0, pool_it->second - cost );
+                    av->set_moves( pool_it->second );
+                }
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "action: cycle move sid=%d mode=%s\n",
+                                      sid, av->current_movement_mode().str().c_str() );
+                        std::fclose( f );
+                    }
+                }
+                changed = true;
+                break;
+            }
             case ACTION_MOVE_UP:
             case ACTION_MOVE_DOWN: {
                 // DDA MP v4.0a-124: stairs for a session avatar. The map's
