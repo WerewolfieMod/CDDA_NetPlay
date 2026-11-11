@@ -67,6 +67,7 @@
 #include "action.h"
 #include "auto_note.h"
 #include "auto_pickup.h"
+#include "bodygraph.h"
 #include "distraction_manager.h"
 #include "help.h"
 #include "options.h"
@@ -2960,6 +2961,19 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_PL_INFO:
             mp_run_character_info( char_json );
             break;
+        case ACTION_MORALE:
+            // DDA MP v4.0a-182: read-only morale breakdown from the avatar
+            // mirror; no host state is touched.
+            mp_inv_log( "ui: morale open" );
+            get_avatar().disp_morale();
+            mp_inv_log( "ui: morale closed" );
+            break;
+        case ACTION_BODYSTATUS:
+            // Read-only bodypart graph from the mirror (health, effects).
+            mp_inv_log( "ui: bodygraph open" );
+            display_bodygraph( get_avatar() );
+            mp_inv_log( "ui: bodygraph closed" );
+            break;
         case ACTION_LOOK:
         case ACTION_PEEK:
         case ACTION_LIST_ITEMS:
@@ -3208,15 +3222,15 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_DISASSEMBLE );
         } else if( category == _( "Info" ) ) {
             MP_REGISTER_ACTION( ACTION_PL_INFO );
-            // DDA MP v4.0a-181: missions/factions/morale/medical/body status
-            // and diary read host-side character data that is not mirrored in
-            // full; hide them until those mirrors exist.
+            // DDA MP v4.0a-182: morale and the bodypart graph are read-only
+            // and run on the mirror. Missions/factions/medical/diary still read
+            // or act on host-side data that is not mirrored in full; hide them.
+            MP_REGISTER_ACTION( ACTION_MORALE );
+            MP_REGISTER_ACTION( ACTION_BODYSTATUS );
 #if 0
             MP_REGISTER_ACTION( ACTION_MISSIONS );
             MP_REGISTER_ACTION( ACTION_FACTIONS );
-            MP_REGISTER_ACTION( ACTION_MORALE );
             MP_REGISTER_ACTION( ACTION_MEDICAL );
-            MP_REGISTER_ACTION( ACTION_BODYSTATUS );
 #endif
             MP_REGISTER_ACTION( ACTION_MESSAGES );
 #if 0
@@ -5521,6 +5535,10 @@ void run_view_loop()
                         netplay::client_send_client_action( ACTION_SMASH );
                     } else if( action_name == "cycle_move" ) {
                         netplay::client_send_client_action( ACTION_CYCLE_MOVE );
+                    } else if( action_name == "bodygraph" ) {
+                        mp_client_dispatch_action( ACTION_BODYSTATUS, "", "" );
+                    } else if( action_name == "morale" ) {
+                        mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {
                         netplay::client_send_intent( "butcher", 0, { 0, 0 } );
                     } else if( action_name == "construct" ) {
