@@ -4540,7 +4540,17 @@ static void mp_send_dialogue_state( int sid )
         if( d.response_condition_exists[i] && !d.response_condition_eval[i] ) {
             continue;
         }
-        const std::string &opt = d.responses[i].text;
+        const talk_response &r = d.responses[i];
+        // The engine's mission/trade/training effects act on the host avatar
+        // (get_player_character()), not on the remote session avatar. Until a
+        // transfer layer exists, only expose side-effect-free topic navigation.
+        if( r.mission_selected != nullptr ||
+            !r.skill.str().empty() || !r.style.str().empty() ||
+            !r.dialogue_spell.str().empty() || !r.proficiency.str().empty() ||
+            !r.success.effects.empty() || !r.failure.effects.empty() ) {
+            continue;
+        }
+        const std::string &opt = r.text;
         if( opt.empty() || mp_dialogue_option_unsafe( opt ) ) {
             continue;
         }
