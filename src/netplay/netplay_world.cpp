@@ -3080,6 +3080,12 @@ void host_pump_inventory_actions()
                 }
                 changed = true;
                 break;
+            case 'o':   // open container: the client lists nested rows
+                for( item_pocket *pocket : loc->get_standard_pockets() ) {
+                    pocket->settings.set_collapse( false );
+                }
+                changed = true;
+                break;
             case 'R': { // read
                 std::vector<std::string> fail_messages;
                 const Character *reader = av->get_book_reader( *loc, fail_messages );
