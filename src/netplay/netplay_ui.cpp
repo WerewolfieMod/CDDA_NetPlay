@@ -28,6 +28,7 @@
 #include "crafting_gui.h" // select_crafter_and_crafting_recipe (client craft)
 #include "recipe.h"       // recipe::ident (craft intent)
 #include "recipe_dictionary.h" // recipe_dict / recipe_subset (view recipe)
+#include "faction.h"
 #include "field.h"       // fields mirrored into the native map
 #include "field_type.h"  // field_type_str_id
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
@@ -47,6 +48,7 @@
 #include "construction.h"        // client-side construction list (data only)
 #include "construction_group.h"  // construction group names
 #include "overmapbuffer.h" // weather/overmap context for map::load
+#include "overmap_ui.h"    // client-side sky/time window
 
 #include "submap.h"      // synthetic client-side map bubble
 #include "lightmap.h"    // lit_level (client light overlay)
@@ -96,6 +98,10 @@
 
 namespace netplay
 {
+
+/// DDA MP v4.0a-186: full-screen map view built from the streamed overmap
+/// minimap block. Opened from the client action menu, closed by any key.
+static bool mp_map_open = false;
 
 /* DDA MP v4.0a-86: one-line long-wait notice, drawn by the host under the
  * "Waiting for other players..." line. No-op while the mode is off. */
@@ -3049,6 +3055,32 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             get_avatar().disp_medical( true );
             mp_inv_log( "ui: medical closed" );
             break;
+        case ACTION_FACTIONS:
+            // DDA MP v4.0a-186: the faction list is global game data and the
+            // mirror carries the reputation; the screen is read-only.
+            if( mp_native_avatar_ready ) {
+                mp_inv_log( "ui: factions open" );
+                g->faction_manager_ptr->display();
+                mp_inv_log( "ui: factions closed" );
+            }
+            break;
+        case ACTION_SKY:
+            // DDA MP v4.0a-186: time/weather are streamed with the snapshots,
+            // so the sky window can run locally.
+            if( mp_native_avatar_ready ) {
+                mp_inv_log( "ui: sky open" );
+                ui::omap::display_visible_weather();
+                mp_inv_log( "ui: sky closed" );
+            }
+            break;
+        case ACTION_MAP:
+            // DDA MP v4.0a-186: full-screen view of the streamed overmap
+            // minimap block (the host does not send its whole explored map).
+            if( mp_native_avatar_ready ) {
+                mp_map_open = true;
+                mp_inv_log( "ui: map open" );
+            }
+            break;
         case ACTION_LOOK:
         case ACTION_PEEK:
         case ACTION_LIST_ITEMS:
@@ -3208,12 +3240,12 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_LOOK );
             MP_REGISTER_ACTION( ACTION_PEEK );
             MP_REGISTER_ACTION( ACTION_LIST_ITEMS );
-            // DDA MP v4.0a-181: zones/map/sky need host-side data or a full
-            // overmap the client does not mirror; hide them until wired.
+            // DDA MP v4.0a-186: sky/time and the local overmap view run from
+            // streamed data. Zones still need host-side zone data; hide.
+            MP_REGISTER_ACTION( ACTION_SKY );
+            MP_REGISTER_ACTION( ACTION_MAP );
 #if 0
             MP_REGISTER_ACTION( ACTION_ZONES );
-            MP_REGISTER_ACTION( ACTION_MAP );
-            MP_REGISTER_ACTION( ACTION_SKY );
 #endif
         } else if( category == _( "Interact" ) ) {
             MP_REGISTER_ACTION( ACTION_EXAMINE );
@@ -3303,16 +3335,16 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_DISASSEMBLE );
         } else if( category == _( "Info" ) ) {
             MP_REGISTER_ACTION( ACTION_PL_INFO );
-            // DDA MP v4.0a-182/183: morale, the bodypart graph and the medical
-            // window are read-only on the mirror (the medical window hides its
-            // treatment actions). Missions/factions/diary still read or write
-            // host-side data that is not mirrored in full; hide them.
+            // DDA MP v4.0a-182/183/186: morale, the bodypart graph, the medical
+            // window and the faction list are read-only on the mirror. Missions
+            // and the diary still read or write host-side data that is not
+            // mirrored in full; hide them.
             MP_REGISTER_ACTION( ACTION_MORALE );
             MP_REGISTER_ACTION( ACTION_BODYSTATUS );
             MP_REGISTER_ACTION( ACTION_MEDICAL );
+            MP_REGISTER_ACTION( ACTION_FACTIONS );
 #if 0
             MP_REGISTER_ACTION( ACTION_MISSIONS );
-            MP_REGISTER_ACTION( ACTION_FACTIONS );
 #endif
             MP_REGISTER_ACTION( ACTION_MESSAGES );
 #if 0
@@ -5527,6 +5559,62 @@ void run_view_loop()
                     }
                 }
             }
+            if( mp_map_open ) {
+                ImDrawList *mdl = ImGui::GetForegroundDrawList();
+                const ImGuiIO &mio = ImGui::GetIO();
+                const float mfs = ImGui::GetFontSize();
+                mdl->AddRectFilled( ImVec2( 0, 0 ), mio.DisplaySize, IM_COL32( 0, 0, 0, 240 ) );
+                mdl->AddText( ImVec2( mfs, mfs ), IM_COL32( 235, 235, 235, 255 ),
+                              fork_text( "Map" ).c_str() );
+                if( mp_mini_map.width > 0 && mp_mini_map.height > 0 &&
+                    mp_mini_map.color.size() == static_cast<size_t>( mp_mini_map.width ) *
+                    mp_mini_map.height ) {
+                    const float avail_w = mio.DisplaySize.x - mfs * 4.0f;
+                    const float avail_h = mio.DisplaySize.y - mfs * 6.0f;
+                    const float cell = std::max( 2.0f, std::min( avail_w / mp_mini_map.width,
+                                                                 avail_h / mp_mini_map.height ) );
+                    const float mw = mp_mini_map.width * cell;
+                    const float mh = mp_mini_map.height * cell;
+                    const float mx = ( mio.DisplaySize.x - mw ) / 2.0f;
+                    const float my = ( mio.DisplaySize.y - mh ) / 2.0f;
+                    mdl->AddRectFilled( ImVec2( mx - 2, my - 2 ),
+                                        ImVec2( mx + mw + 2, my + mh + 2 ),
+                                        IM_COL32( 24, 28, 28, 255 ) );
+                    for( int yy = 0; yy < mp_mini_map.height; ++yy ) {
+                        for( int xx = 0; xx < mp_mini_map.width; ++xx ) {
+                            const size_t mi = static_cast<size_t>( yy ) * mp_mini_map.width + xx;
+                            if( mi >= mp_mini_map.color.size() ||
+                                mi >= mp_mini_map.seen.size() || mp_mini_map.seen[mi] == 0 ) {
+                                continue;
+                            }
+                            const int ci = static_cast<int>( mp_mini_map.color[mi] );
+                            const ImU32 col = cataimgui::ImU32_from_color(
+                                                  decode_cell_color( ci ) );
+                            mdl->AddRectFilled(
+                                ImVec2( mx + xx * cell, my + yy * cell ),
+                                ImVec2( mx + ( xx + 1 ) * cell, my + ( yy + 1 ) * cell ), col );
+                        }
+                    }
+                    // Avatar at the block centre, then critter beacons.
+                    const float cx = mx + mw / 2.0f;
+                    const float cy = my + mh / 2.0f;
+                    mdl->AddCircle( ImVec2( cx, cy ), std::max( 4.0f, cell * 1.5f ),
+                                    IM_COL32( 255, 255, 255, 255 ), 0, 2.0f );
+                    for( const minimap_frame::beacon &b : mp_mini_map.beacons ) {
+                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx + 0.5f ) * cell;
+                        const float by = my + ( mp_mini_map.height / 2 + b.dy + 0.5f ) * cell;
+                        const ImU32 bcol = cataimgui::ImU32_from_color(
+                                               decode_cell_color( static_cast<int>( b.color ) ) );
+                        mdl->AddCircleFilled( ImVec2( bx, by ), std::max( 2.0f, cell * 0.7f ),
+                                              bcol );
+                    }
+                } else {
+                    mdl->AddText( ImVec2( mfs, mfs * 3.0f ), IM_COL32( 180, 180, 180, 255 ),
+                                  fork_text( "No map data yet." ).c_str() );
+                }
+                mdl->AddText( ImVec2( mfs, mio.DisplaySize.y - mfs * 2.0f ),
+                              IM_COL32( 180, 180, 180, 255 ), fork_text( "[Esc] close" ).c_str() );
+            }
             netplay::overlay_end();
 
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
@@ -5621,6 +5709,12 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_BODYSTATUS, "", "" );
                     } else if( action_name == "medical" ) {
                         mp_client_dispatch_action( ACTION_MEDICAL, "", "" );
+                    } else if( action_name == "factions" ) {
+                        mp_client_dispatch_action( ACTION_FACTIONS, "", "" );
+                    } else if( action_name == "sky" ) {
+                        mp_client_dispatch_action( ACTION_SKY, "", "" );
+                    } else if( action_name == "map" ) {
+                        mp_client_dispatch_action( ACTION_MAP, "", "" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {
@@ -5665,6 +5759,14 @@ void run_view_loop()
                     mp_throw_dy = 0;
                     mp_inv_log( "test: throw cursor" );
                 }
+            }
+            if( mp_map_open ) {
+                // Full-screen map: any non-timeout key closes it.
+                const std::string map_action = ctxt.handle_input();
+                if( map_action != "TIMEOUT" ) {
+                    mp_map_open = false;
+                }
+                continue;
             }
             const std::string action = ctxt.handle_input();
             // DDA MP v4.0a-97: choose the tile to pick from (several tiles
