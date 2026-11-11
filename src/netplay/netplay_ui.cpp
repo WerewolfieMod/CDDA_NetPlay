@@ -2964,15 +2964,35 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_MORALE:
             // DDA MP v4.0a-182: read-only morale breakdown from the avatar
             // mirror; no host state is touched.
+            if( !mp_native_avatar_ready ) {
+                mp_inv_log( "ui: status mirror not ready" );
+                break;
+            }
             mp_inv_log( "ui: morale open" );
             get_avatar().disp_morale();
             mp_inv_log( "ui: morale closed" );
             break;
         case ACTION_BODYSTATUS:
             // Read-only bodypart graph from the mirror (health, effects).
+            if( !mp_native_avatar_ready ) {
+                mp_inv_log( "ui: status mirror not ready" );
+                break;
+            }
             mp_inv_log( "ui: bodygraph open" );
             display_bodygraph( get_avatar() );
             mp_inv_log( "ui: bodygraph closed" );
+            break;
+        case ACTION_MEDICAL:
+            // DDA MP v4.0a-183: the medical window is shown read-only; the
+            // treatment actions belong to the host and would only change the
+            // local mirror.
+            if( !mp_native_avatar_ready ) {
+                mp_inv_log( "ui: status mirror not ready" );
+                break;
+            }
+            mp_inv_log( "ui: medical open (read-only)" );
+            get_avatar().disp_medical( true );
+            mp_inv_log( "ui: medical closed" );
             break;
         case ACTION_LOOK:
         case ACTION_PEEK:
@@ -3222,15 +3242,16 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_DISASSEMBLE );
         } else if( category == _( "Info" ) ) {
             MP_REGISTER_ACTION( ACTION_PL_INFO );
-            // DDA MP v4.0a-182: morale and the bodypart graph are read-only
-            // and run on the mirror. Missions/factions/medical/diary still read
-            // or act on host-side data that is not mirrored in full; hide them.
+            // DDA MP v4.0a-182/183: morale, the bodypart graph and the medical
+            // window are read-only on the mirror (the medical window hides its
+            // treatment actions). Missions/factions/diary still read or write
+            // host-side data that is not mirrored in full; hide them.
             MP_REGISTER_ACTION( ACTION_MORALE );
             MP_REGISTER_ACTION( ACTION_BODYSTATUS );
+            MP_REGISTER_ACTION( ACTION_MEDICAL );
 #if 0
             MP_REGISTER_ACTION( ACTION_MISSIONS );
             MP_REGISTER_ACTION( ACTION_FACTIONS );
-            MP_REGISTER_ACTION( ACTION_MEDICAL );
 #endif
             MP_REGISTER_ACTION( ACTION_MESSAGES );
 #if 0
@@ -5528,7 +5549,7 @@ void run_view_loop()
             if( const char *test_action = std::getenv( "DDA_MP_TEST_CLIENT_ACTION" );
                 test_action != nullptr && test_action[0] != '\0' ) {
                 static bool mp_test_action_once = false;
-                if( !mp_test_action_once && mp_have_picture ) {
+                if( !mp_test_action_once && mp_native_avatar_ready ) {
                     const std::string action_name( test_action );
                     bool sent = true;
                     if( action_name == "smash" ) {
@@ -5537,6 +5558,8 @@ void run_view_loop()
                         netplay::client_send_client_action( ACTION_CYCLE_MOVE );
                     } else if( action_name == "bodygraph" ) {
                         mp_client_dispatch_action( ACTION_BODYSTATUS, "", "" );
+                    } else if( action_name == "medical" ) {
+                        mp_client_dispatch_action( ACTION_MEDICAL, "", "" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {

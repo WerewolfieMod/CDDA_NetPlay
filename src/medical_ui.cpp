@@ -36,6 +36,7 @@
 #include "item_location.h"
 #include "math_parser_diag_value.h"
 #include "messages.h"
+#include "netplay/netplay.h"
 #include "output.h"
 #include "proficiency.h"
 #include "requirements.h"
@@ -86,8 +87,11 @@ namespace
 class medical_ui : public cataimgui::window
 {
     public:
-        explicit medical_ui( Character *guy ) : cataimgui::window( _( "Medical" ),
-                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav ) {
+        explicit medical_ui( Character *guy, bool read_only = false ) :
+            cataimgui::window( _( "Medical" ),
+                               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                               ImGuiWindowFlags_NoNav ),
+            read_only( read_only ) {
             you = guy;
         };
 
@@ -122,6 +126,7 @@ class medical_ui : public cataimgui::window
 
     private:
         Character *you;
+        bool read_only = false;
         bodypart_id bp;
         input_context ctxt;
         cataimgui::scroll s = cataimgui::scroll::none;
@@ -133,9 +138,9 @@ class medical_ui : public cataimgui::window
 };
 } // namespace
 
-bool Character::disp_medical()
+bool Character::disp_medical( bool read_only )
 {
-    medical_ui medic( this );
+    medical_ui medic( this, read_only );
     return medic.execute();
 }
 
@@ -168,13 +173,13 @@ bool medical_ui::execute()
 
         // creating a new window within main loop of draw_controls() causes destructor to destroy wrong window
         // so moved here, outside of draw_controls()
-        if( last_action == "CONFIRM" ) {
+        if( last_action == "CONFIRM" && !read_only ) {
             if( you->pick_wound_fix( bp ) ) {
                 return true;
             }
         }
 
-        if( last_action == "APPLY" ) {
+        if( last_action == "APPLY" && !read_only ) {
             if( you->is_avatar() ) {
                 avatar_action::use_item( *you->as_avatar() );
             } else {
@@ -661,6 +666,12 @@ void medical_ui::limb_tab( const std::vector<bodypart_id> &bodyparts )
 
 void medical_ui::draw_hint_section()
 {
+    if( read_only ) {
+        cataimgui::draw_colored_text( netplay::fork_text(
+                                          "Read-only view: treatment is performed on the host." ), c_unset );
+        ImGui::Separator();
+        return;
+    }
     const std::string desc = string_format(
                                  _( "[<color_yellow>%s</color>] Use item [<color_yellow>%s</color>] Treat, [<color_yellow>%s</color>] Keybindings" ),
                                  ctxt.get_desc( "APPLY" ), ctxt.get_desc( "CONFIRM" ), ctxt.get_desc( "HELP_KEYBINDINGS" ) );
@@ -682,6 +693,13 @@ void medical_ui::draw_controls()
     }
 
     const std::vector<bodypart_id> bodyparts = you->get_all_body_parts( get_body_part_flags::sorted );
+    if( bodyparts.empty() ) {
+        // DDA MP v4.0a-183: a client mirror that has not received the body
+        // data yet must not index an empty vector (crash). Show a hint instead.
+        cataimgui::draw_colored_text(
+            netplay::fork_text( "No body data available." ), c_unset );
+        return;
+    }
     size_t num_entries = bodyparts.size();
     const int last_entry = num_entries == 0 ? 0 : ( static_cast<int>( num_entries ) - 1 );
 
