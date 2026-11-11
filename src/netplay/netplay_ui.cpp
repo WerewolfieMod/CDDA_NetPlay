@@ -3001,6 +3001,7 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
 {
     uilist menu;
     menu.text = string_format( netplay::fork_text( "NPC: %s" ), name );
+    menu.addentry( netplay::fork_text( "Talk" ) );
     menu.addentry( netplay::fork_text( "Look" ) );
     menu.addentry( netplay::fork_text( "Close" ) );
     mp_inv_log( string_format( "npc interact open: %s %d,%d", name, dx, dy ) );
@@ -3009,10 +3010,60 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
         menu.query();
     }
     if( menu.ret == 0 ) {
+        netplay::client_send_intent( "talk_npc", 0, { dx, dy } );
+        mp_inv_log( string_format( "npc talk requested: %s %d,%d", name, dx, dy ) );
+    } else if( menu.ret == 1 ) {
         mp_cursor = mp_cursor_mode::look;
         mp_cursor_dx = dx;
         mp_cursor_dy = dy;
     }
+}
+
+/* DDA MP v4.0a-189: one streamed dialogue step. The host sends the line and
+ * numbered options; the chosen host response index goes back as an intent. */
+static void mp_run_dialogue( const std::string &payload )
+{
+    const std::string::size_type first = payload.find( '\x1f' );
+    const std::string line = first == std::string::npos ? payload : payload.substr( 0, first );
+    std::vector<std::pair<int, std::string>> options;
+    if( first != std::string::npos ) {
+        const std::string rest = payload.substr( first + 1 );
+        std::string::size_type pos = 0;
+        while( pos <= rest.size() ) {
+            const std::string::size_type sep = rest.find( '\x1f', pos );
+            const std::string item = rest.substr( pos, sep == std::string::npos
+                                                  ? std::string::npos : sep - pos );
+            const std::string::size_type us = item.find( '\x1e' );
+            if( us != std::string::npos ) {
+                options.emplace_back( std::atoi( item.substr( 0, us ).c_str() ),
+                                      item.substr( us + 1 ) );
+            }
+            if( sep == std::string::npos ) {
+                break;
+            }
+            pos = sep + 1;
+        }
+    }
+    uilist menu;
+    menu.text = line.empty() ? netplay::fork_text( "Conversation" ) : line;
+    for( const auto &opt : options ) {
+        menu.addentry( opt.second );
+    }
+    mp_inv_log( string_format( "dialogue open: line=%d options=%d",
+                               static_cast<int>( line.size() ),
+                               static_cast<int>( options.size() ) ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    int chosen = -1;
+    if( menu.ret >= 0 && menu.ret < static_cast<int>( options.size() ) ) {
+        chosen = options[menu.ret].first;
+    }
+    netplay::client_send_intent( "dialogue_choice", 0, { chosen } );
+    mp_inv_log( string_format( "dialogue: line=%d options=%d chosen=%d",
+                               static_cast<int>( line.size() ),
+                               static_cast<int>( options.size() ), chosen ) );
 }
 
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
@@ -4816,6 +4867,11 @@ void run_view_loop()
                         mp_run_npc_interact( p_name, ndx, ndy );
                         continue;
                     }
+                    // DDA MP v4.0a-189: one dialogue step from the host.
+                    if( mp_ev_type == netplay::EVENT_DIALOGUE ) {
+                        mp_run_dialogue( mp_ev_text );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -5792,6 +5848,12 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_PICK_STYLE, "", "" );
                     } else if( action_name == "npc" ) {
                         mp_run_npc_interact( "Test NPC", 1, 0 );
+                    } else if( action_name == "dialogue" ) {
+                        mp_run_dialogue(
+                            "Test NPC: Hello." "\x1f" "0" "\x1e" "Option A" "\x1f"
+                            "1" "\x1e" "Option B" "\x1f" "-1" "\x1e" "Close" );
+                    } else if( action_name == "npc_talk" ) {
+                        netplay::client_send_intent( "talk_npc", 0, { 0, -1 } );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {

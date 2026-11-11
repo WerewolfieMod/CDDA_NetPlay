@@ -416,6 +416,10 @@ constexpr int EVENT_HELP = 202;
 /// DDA MP v4.0a-188: stepping into a common NPC opens an inspection menu on
 /// the client. Text payload: "<name>\x1f<dx>\x1f<dy>".
 constexpr int EVENT_NPC = 203;
+/// DDA MP v4.0a-189: one dialogue step for the client. Payload:
+/// "<line>\x1f<index>\x1e<option>\x1f<index>\x1e<option>..." (indices into the
+/// host dialogue's response list). An empty option list closes the dialogue.
+constexpr int EVENT_DIALOGUE = 204;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

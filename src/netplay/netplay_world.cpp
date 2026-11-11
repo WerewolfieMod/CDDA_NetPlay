@@ -30,6 +30,7 @@
 #include "character_martial_arts.h"
 #include "construction.h"
 #include "construction_group.h"
+#include "dialogue.h"
 #include "catacharset.h"
 #include "color.h"
 #include "creature.h"
@@ -48,6 +49,7 @@
 #include "map_memory.h"
 #include "map_selector.h"
 #include "memory_fast.h"
+#include "mission.h"
 #include "monster.h"
 #include "mtype.h"
 #include "npc.h"
@@ -4125,6 +4127,8 @@ static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
  * The registry is main-thread only, like the rest of the host glue. */
 static std::map<int, int> mp_help_pairs; // helper character id -> target character id
 static int mp_help_tick = 0;
+/// DDA MP v4.0a-189: one active network dialogue per client session.
+static std::map<int, std::unique_ptr<dialogue>> mp_dialogues;
 /// DDA MP v4.0a-180: progress line shown at the top of the host's screen while
 /// the host itself is helping a client. Empty when the host is not helping.
 static std::string mp_host_help_hint;
@@ -4138,6 +4142,7 @@ void host_help_shutdown()
 {
     mp_help_pairs.clear();
     mp_host_help_hint.clear();
+    mp_dialogues.clear();
 }
 
 static Character *mp_character_by_id( int id )
@@ -4473,6 +4478,105 @@ bool host_interact_player( npc &target )
     return true;
 }
 
+static bool mp_dialogue_option_unsafe( const std::string &text )
+{
+    // Effects that open host-side UIs cannot be bridged yet. Filter the common
+    // trade/training labels so choosing them cannot freeze the host in a menu.
+    static const std::vector<std::string> bad = {
+        _( "Trade" ), _( "Let's trade" ), _( "Train" ), _( "Training" ), _( "Bionics" )
+    };
+    for( const std::string &b : bad ) {
+        if( !b.empty() && text.find( b ) != std::string::npos ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void mp_end_dialogue( int sid, const std::string &why )
+{
+    mp_dialogues.erase( sid );
+    if( !why.empty() ) {
+        netplay::host_send_event_to_sid( sid, why, static_cast<int>( m_info ) );
+    }
+}
+
+static void mp_send_dialogue_state( int sid )
+{
+    const auto it = mp_dialogues.find( sid );
+    if( it == mp_dialogues.end() ) {
+        return;
+    }
+    dialogue &d = *it->second;
+    if( d.topic_stack.empty() ) {
+        mp_end_dialogue( sid, fork_text( "Conversation ended." ) );
+        return;
+    }
+    const talk_topic topic = d.topic_stack.back();
+    std::string line = d.dynamic_line( topic );
+    if( !line.empty() ) {
+        if( line[0] != '*' && line[0] != '&' ) {
+            line = string_format( "\"%s\"", line );
+        }
+        if( d.actor( true )->get_npc() ) {
+            parse_tags( line, *d.actor( false )->get_character(),
+                        *d.actor( true )->get_npc(), d, topic.item_type );
+        } else {
+            parse_tags( line, *d.actor( false )->get_character(),
+                        *d.actor( false )->get_character(), d, topic.item_type );
+        }
+        line = uppercase_first_letter( line );
+        if( line[0] == '&' ) {
+            line = line.substr( 1 );
+        } else if( line[0] == '*' ) {
+            line = string_format( pgettext( "npc does something", "%s %s" ),
+                                  d.actor( true )->disp_name(), line.substr( 1 ) );
+        }
+    }
+    d.gen_responses( topic );
+    std::string payload = line;
+    int shown = 0;
+    for( size_t i = 0; i < d.responses.size(); i++ ) {
+        if( d.response_condition_exists[i] && !d.response_condition_eval[i] ) {
+            continue;
+        }
+        const std::string &opt = d.responses[i].text;
+        if( opt.empty() || mp_dialogue_option_unsafe( opt ) ) {
+            continue;
+        }
+        payload += '\x1f';
+        payload += std::to_string( i );
+        payload += '\x1e';
+        payload += opt;
+        ++shown;
+    }
+    if( shown == 0 ) {
+        payload += '\x1f';
+        payload += "-1\x1e";
+        payload += fork_text( "Close" );
+    }
+    netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_DIALOGUE );
+}
+
+static void mp_start_dialogue( int sid, npc &av, npc &other )
+{
+    auto d = std::make_unique<dialogue>( get_talker_for( av ), get_talker_for( other ) );
+    d->actor( true )->check_missions();
+    for( mission *m : d->actor( true )->assigned_missions() ) {
+        if( m->get_assigned_player_id() == av.getID() ) {
+            d->missions_assigned.push_back( m );
+        }
+    }
+    for( const std::string &topic_id : d->actor( true )->get_topics( false ) ) {
+        d->add_topic( topic_id );
+    }
+    if( d->topic_stack.empty() ) {
+        d->add_topic( "TALK_TALK" );
+    }
+    mp_dialogues[sid] = std::move( d );
+    mp_send_dialogue_state( sid );
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -4569,6 +4673,61 @@ void host_pump_intents()
             if( av != nullptr ) {
                 host_help_nearby( *av );
                 av_send_status( in.sid );
+            }
+            continue;
+        }
+        // DDA MP v4.0a-189: network NPC dialogue. The client sends the target
+        // offset; the host drives the engine dialogue and streams line/options.
+        if( in.action == "talk_npc" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                if( other != nullptr && other != av && !other->is_enemy() &&
+                    !mp_is_player_creature( other ) ) {
+                    mp_start_dialogue( in.sid, *av, *other );
+                }
+            }
+            continue;
+        }
+        if( in.action == "dialogue_choice" ) {
+            const auto dit = mp_dialogues.find( in.sid );
+            if( dit == mp_dialogues.end() ) {
+                continue;
+            }
+            const int idx = in.args.empty() ? -1 : in.args[0];
+            if( idx < 0 || idx >= static_cast<int>( dit->second->responses.size() ) ) {
+                mp_end_dialogue( in.sid, "" );
+                continue;
+            }
+            dialogue &d = *dit->second;
+            talk_response chosen = d.responses[idx];
+            if( chosen.mission_selected != nullptr ) {
+                d.actor( true )->select_mission( chosen.mission_selected );
+            }
+            d.actor( true )->store_chosen_training( chosen.skill, chosen.style,
+                                                    chosen.dialogue_spell, chosen.proficiency );
+            const bool success = chosen.trial.roll( d );
+            talk_effect_t const &effects = success ? chosen.success : chosen.failure;
+            const talk_topic next = effects.apply( d );
+            talk_effect_t::update_missions( d );
+            if( d.done || next.id == "TALK_DONE" ) {
+                mp_end_dialogue( in.sid, fork_text( "Conversation ended." ) );
+                continue;
+            }
+            if( next.id == "TALK_NONE" ) {
+                if( !d.topic_stack.empty() ) {
+                    d.topic_stack.pop_back();
+                }
+            } else {
+                d.add_topic( next );
+            }
+            if( d.topic_stack.empty() ) {
+                mp_end_dialogue( in.sid, fork_text( "Conversation ended." ) );
+            } else {
+                mp_send_dialogue_state( in.sid );
             }
             continue;
         }
