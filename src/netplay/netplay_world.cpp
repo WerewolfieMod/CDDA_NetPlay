@@ -27,6 +27,7 @@
 #include "bubble_context.h"
 #include "butchery.h"
 #include "calendar.h"
+#include "character_martial_arts.h"
 #include "construction.h"
 #include "construction_group.h"
 #include "catacharset.h"
@@ -4556,6 +4557,32 @@ void host_pump_intents()
             if( av != nullptr ) {
                 host_help_nearby( *av );
                 av_send_status( in.sid );
+            }
+            continue;
+        }
+        // DDA MP v4.0a-187: martial style and default ammo chosen on the
+        // client mirror.
+        if( in.action == "pick_style" && !in.data.empty() ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const matype_id style( in.data );
+                if( style.is_valid() && av->martial_arts_data->has_martialart( style ) ) {
+                    av->martial_arts_data->set_style( style );
+                    av_send_status( in.sid );
+                }
+            }
+            continue;
+        }
+        if( in.action == "default_ammo" && !in.data.empty() ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                for( item *it : av->inv_dump() ) {
+                    if( it != nullptr && it->get_var( "mp_uid", std::string() ) == in.data ) {
+                        av->ammo_location = item_location( *av, it );
+                        av_send_status( in.sid );
+                        break;
+                    }
+                }
             }
             continue;
         }

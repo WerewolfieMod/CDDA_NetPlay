@@ -25,6 +25,7 @@
 #include "cursesdef.h"
 #include "cursesport.h"
 #include "avatar.h"      // get_avatar (native character creation)
+#include "character_martial_arts.h" // style picker on the client mirror
 #include "crafting_gui.h" // select_crafter_and_crafting_recipe (client craft)
 #include "recipe.h"       // recipe::ident (craft intent)
 #include "recipe_dictionary.h" // recipe_dict / recipe_subset (view recipe)
@@ -3135,6 +3136,39 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
                 game_menus::inv::compare( std::nullopt );
             }
             break;
+        case ACTION_PICK_STYLE:
+            // DDA MP v4.0a-187: pick the style on the mirror, then tell the
+            // host to apply it to the session avatar.
+            if( mp_native_avatar_ready ) {
+                avatar &you = get_avatar();
+                mp_inv_log( "ui: style open" );
+                if( you.martial_arts_data->pick_style( you ) ) {
+                    const matype_id style = you.martial_arts_data->selected_style();
+                    if( !style.is_null() ) {
+                        netplay::client_send_intent( "pick_style", 0, {}, style.str() );
+                        mp_inv_log( "action: pick_style " + style.str() );
+                    }
+                }
+            }
+            break;
+        case ACTION_SELECT_DEFAULT_AMMO:
+            // DDA MP v4.0a-187: choose the ammo from the mirror inventory and
+            // send its stable uid; the host stores the preference on its item.
+            if( mp_native_avatar_ready ) {
+                avatar &you = get_avatar();
+                item_location weapon = you.get_wielded_item();
+                if( weapon && weapon->is_gun() ) {
+                    item::reload_option opt = you.select_ammo( weapon, false );
+                    if( opt ) {
+                        const std::string uid = opt.ammo->get_var( "mp_uid", std::string() );
+                        if( !uid.empty() ) {
+                            netplay::client_send_intent( "default_ammo", 0, {}, uid );
+                            mp_inv_log( "action: default_ammo " + uid );
+                        }
+                    }
+                }
+            }
+            break;
         // DDA MP v4.0a-133/181: the item-action hotkeys open the inventory; the
         // row menu exposes drop/eat/wear/read/wield/use/reload/disassemble for
         // the chosen item. The same route serves the action-menu entries that
@@ -3310,14 +3344,14 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_RECAST_SPELL );
 #endif
             MP_REGISTER_ACTION( ACTION_SELECT_FIRE_MODE );
-#if 0
+            // DDA MP v4.0a-187: style and default-ammo pickers run on the
+            // mirror and send the choice to the host.
             MP_REGISTER_ACTION( ACTION_SELECT_DEFAULT_AMMO );
-#endif
+            MP_REGISTER_ACTION( ACTION_PICK_STYLE );
             MP_REGISTER_ACTION( ACTION_THROW );
             MP_REGISTER_ACTION( ACTION_THROW_WIELDED );
             MP_REGISTER_ACTION( ACTION_FIRE_BURST );
 #if 0
-            MP_REGISTER_ACTION( ACTION_PICK_STYLE );
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_TRAVEL_MODE );
             MP_REGISTER_ACTION( ACTION_TOGGLE_SAFEMODE );
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTOSAFE );
@@ -5715,6 +5749,8 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_SKY, "", "" );
                     } else if( action_name == "map" ) {
                         mp_client_dispatch_action( ACTION_MAP, "", "" );
+                    } else if( action_name == "style" ) {
+                        mp_client_dispatch_action( ACTION_PICK_STYLE, "", "" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {
