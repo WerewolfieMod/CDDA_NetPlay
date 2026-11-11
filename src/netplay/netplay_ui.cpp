@@ -2994,6 +2994,27 @@ static void mp_run_client_chat()
     }
 }
 
+/* DDA MP v4.0a-188: common-NPC encounter menu. "Look" moves the client's look
+ * cursor onto the NPC tile. Dialogue/trade/missions still live on the host and
+ * need a dedicated network protocol. */
+static void mp_run_npc_interact( const std::string &name, int dx, int dy )
+{
+    uilist menu;
+    menu.text = string_format( netplay::fork_text( "NPC: %s" ), name );
+    menu.addentry( netplay::fork_text( "Look" ) );
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "npc interact open: %s %d,%d", name, dx, dy ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret == 0 ) {
+        mp_cursor = mp_cursor_mode::look;
+        mp_cursor_dx = dx;
+        mp_cursor_dy = dy;
+    }
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -4777,6 +4798,24 @@ void run_view_loop()
                         mp_inv_log( "help state: " + mp_ev_text );
                         continue;
                     }
+                    // DDA MP v4.0a-188: a common NPC in the target tile opens
+                    // the inspection menu; payload is name\x1fdx\x1fdy.
+                    if( mp_ev_type == netplay::EVENT_NPC ) {
+                        const std::string::size_type s1 = mp_ev_text.find( '\x1f' );
+                        const std::string::size_type s2 = s1 == std::string::npos
+                                                          ? std::string::npos
+                                                          : mp_ev_text.find( '\x1f', s1 + 1 );
+                        const std::string p_name = s1 == std::string::npos
+                                                   ? mp_ev_text : mp_ev_text.substr( 0, s1 );
+                        int ndx = 0;
+                        int ndy = 0;
+                        if( s2 != std::string::npos ) {
+                            ndx = std::atoi( mp_ev_text.substr( s1 + 1, s2 - s1 - 1 ).c_str() );
+                            ndy = std::atoi( mp_ev_text.substr( s2 + 1 ).c_str() );
+                        }
+                        mp_run_npc_interact( p_name, ndx, ndy );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -5751,6 +5790,8 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_MAP, "", "" );
                     } else if( action_name == "style" ) {
                         mp_client_dispatch_action( ACTION_PICK_STYLE, "", "" );
+                    } else if( action_name == "npc" ) {
+                        mp_run_npc_interact( "Test NPC", 1, 0 );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {

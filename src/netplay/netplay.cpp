@@ -1673,6 +1673,8 @@ std::string fork_text( const char *msgid )
             { "Help the busy player", "Помочь занятому игроку" },
             { "Stop helping?", "Прекратить помощь?" },
             { "Player: %s", "Игрок: %s" },
+            { "NPC: %s", "НПС: %s" },
+            { "Look", "Осмотреть" },
             { "Help: %s", "Помочь: %s" },
             { "Close", "Закрыть" },
             { "Lost %d HP", "Потеряно %d HP" },

@@ -2129,6 +2129,18 @@ void host_pump_avatar_keys()
                     if( other->is_enemy() ) {
                         attacked = npc_ptr->melee_attack( *other, true );
                         other->make_angry();
+                    } else {
+                        // DDA MP v4.0a-188: a common NPC opens the client's
+                        // inspection menu instead of a bump message. Dialogue
+                        // and trade still need a dedicated network protocol.
+                        const tripoint_rel_ms rel = dst - npc_ptr->pos_bub();
+                        netplay::host_send_event_to_sid(
+                            sk.sid,
+                            string_format( "%s\x1f%d\x1f%d", other->get_name(),
+                                           rel.x(), rel.y() ),
+                            netplay::EVENT_NPC );
+                        av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+                        break;
                     }
                 }
                 if( attacked ) {
