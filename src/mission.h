@@ -387,13 +387,17 @@ class mission
         void assign( Character &u );
 
         /** Called when the mission has failed, calls the mission fail callback. */
+        /// DDA MP v4.0a-192: Character overloads for session avatars.
         void fail();
+        void fail( Character &player );
         /** Handles mission completion tasks (remove given item, etc.). */
         void wrap_up();
+        void wrap_up( Character &player );
         /** Handles partial mission completion (kill complete, now report back!). */
         void step_complete( int step );
         /** Checks if the player has completed the matching mission and returns true if they have. */
         bool is_complete( const character_id &npc_id ) const;
+        bool is_complete( const character_id &npc_id, const Character &player ) const;
         /** Checks if the player has failed the matching mission and returns true if they have. */
         bool has_failed() const;
         /** Checks if the mission is started, but not failed and not succeeded. */

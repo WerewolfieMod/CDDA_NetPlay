@@ -426,6 +426,9 @@ constexpr int EVENT_MISSION_OFFERS = 205;
 /// DDA MP v4.0a-191: session mission journal. Payload:
 /// "<name>\x1e<status>\x1e<description>\x1f...".
 constexpr int EVENT_MISSION_JOURNAL = 206;
+/// DDA MP v4.0a-192: missions ready to turn in at this NPC. Payload:
+/// "<uid>\x1e<mission name>\x1f...".
+constexpr int EVENT_MISSION_TURNIN = 207;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

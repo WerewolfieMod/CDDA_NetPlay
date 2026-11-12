@@ -3006,6 +3006,7 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
     menu.text = string_format( netplay::fork_text( "NPC: %s" ), name );
     menu.addentry( netplay::fork_text( "Talk" ) );
     menu.addentry( netplay::fork_text( "Missions" ) );
+    menu.addentry( netplay::fork_text( "Turn in" ) );
     menu.addentry( netplay::fork_text( "Look" ) );
     menu.addentry( netplay::fork_text( "Close" ) );
     mp_inv_log( string_format( "npc interact open: %s %d,%d", name, dx, dy ) );
@@ -3022,6 +3023,11 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
         netplay::client_send_intent( "mission_offers", 0, { dx, dy } );
         mp_inv_log( string_format( "npc missions requested: %s %d,%d", name, dx, dy ) );
     } else if( menu.ret == 2 ) {
+        mp_mission_dx = dx;
+        mp_mission_dy = dy;
+        netplay::client_send_intent( "mission_turnin_list", 0, { dx, dy } );
+        mp_inv_log( string_format( "npc turnin requested: %s %d,%d", name, dx, dy ) );
+    } else if( menu.ret == 3 ) {
         mp_cursor = mp_cursor_mode::look;
         mp_cursor_dx = dx;
         mp_cursor_dy = dy;
@@ -3115,6 +3121,48 @@ static void mp_run_mission_offers( const std::string &payload )
             "mission_accept", 0,
             { mp_mission_dx, mp_mission_dy, offers[menu.ret].first } );
     }
+}
+
+/* DDA MP v4.0a-192: missions ready to turn in. Payload entries are
+ * "<uid>\x1e<name>"; the uid identifies the host mission. */
+static void mp_run_mission_turnins( const std::string &payload )
+{
+    std::vector<std::pair<int, std::string>> entries;
+    std::string::size_type pos = 0;
+    while( pos <= payload.size() ) {
+        const std::string::size_type sep = payload.find( '\x1f', pos );
+        const std::string item = payload.substr( pos, sep == std::string::npos
+                                                  ? std::string::npos : sep - pos );
+        const std::string::size_type us = item.find( '\x1e' );
+        if( us != std::string::npos ) {
+            entries.emplace_back( std::atoi( item.substr( 0, us ).c_str() ),
+                                  item.substr( us + 1 ) );
+        }
+        if( sep == std::string::npos ) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    if( entries.empty() ) {
+        return;
+    }
+    uilist menu;
+    menu.text = netplay::fork_text( "Turn in" );
+    for( const auto &e : entries ) {
+        menu.addentry( e.second );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret >= 0 && menu.ret < static_cast<int>( entries.size() ) ) {
+        netplay::client_send_intent(
+            "mission_turnin", 0,
+            { mp_mission_dx, mp_mission_dy, entries[menu.ret].first } );
+    }
+    mp_inv_log( string_format( "missions: turnin=%d ret=%d",
+                               static_cast<int>( entries.size() ), menu.ret ) );
 }
 
 /* DDA MP v4.0a-191: read-only journal of missions assigned to this session. */
@@ -4981,6 +5029,10 @@ void run_view_loop()
                     }
                     if( mp_ev_type == netplay::EVENT_MISSION_JOURNAL ) {
                         mp_run_mission_journal( mp_ev_text );
+                        continue;
+                    }
+                    if( mp_ev_type == netplay::EVENT_MISSION_TURNIN ) {
+                        mp_run_mission_turnins( mp_ev_text );
                         continue;
                     }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );

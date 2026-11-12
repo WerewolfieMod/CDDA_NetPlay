@@ -4653,6 +4653,37 @@ static void mp_send_mission_journal( int sid )
     }
 }
 
+static void mp_send_mission_turnins( int sid, npc &av, npc &other )
+{
+    std::string payload;
+    for( mission *m : mp_session_missions[sid] ) {
+        if( m == nullptr || m->get_assigned_player_id() != av.getID() ||
+            m->get_status() == mission::mission_status::success ) {
+            continue;
+        }
+        const auto assigned = std::find( other.chatbin.missions_assigned.begin(),
+                                         other.chatbin.missions_assigned.end(), m );
+        if( assigned == other.chatbin.missions_assigned.end() ) {
+            continue;
+        }
+        if( !m->is_complete( other.getID(), av ) ) {
+            continue;
+        }
+        if( !payload.empty() ) {
+            payload += '\x1f';
+        }
+        payload += std::to_string( m->get_id() );
+        payload += '\x1e';
+        payload += m->name();
+    }
+    if( payload.empty() ) {
+        netplay::host_send_event_to_sid( sid, fork_text( "No missions to turn in." ),
+                                         static_cast<int>( m_info ) );
+    } else {
+        netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_MISSION_TURNIN );
+    }
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -4784,11 +4815,58 @@ void host_pump_intents()
                     if( m != nullptr && !m->is_assigned() ) {
                         m->assign( *av );
                         other->chatbin.missions.erase( other->chatbin.missions.begin() + idx );
+                        other->chatbin.missions_assigned.push_back( m );
                         mp_session_missions[in.sid].push_back( m );
                         netplay::host_send_event_to_sid(
                             in.sid,
                             string_format( fork_text( "Mission accepted: %s" ), m->name() ),
                             static_cast<int>( m_good ) );
+                    }
+                }
+            }
+            continue;
+        }
+        if( in.action == "mission_turnin_list" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                if( other != nullptr && other != av && !other->is_enemy() ) {
+                    mp_send_mission_turnins( in.sid, *av, *other );
+                }
+            }
+            continue;
+        }
+        if( in.action == "mission_turnin" && in.args.size() >= 3 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                const int uid = in.args[2];
+                if( other != nullptr && other != av ) {
+                    for( mission *m : mp_session_missions[in.sid] ) {
+                        if( m == nullptr || m->get_id() != uid ||
+                            m->get_assigned_player_id() != av->getID() ) {
+                            continue;
+                        }
+                        const auto assigned = std::find( other->chatbin.missions_assigned.begin(),
+                                                         other->chatbin.missions_assigned.end(), m );
+                        if( assigned == other->chatbin.missions_assigned.end() ||
+                            !m->is_complete( other->getID(), *av ) ) {
+                            break;
+                        }
+                        m->wrap_up( *av );
+                        other->chatbin.missions_assigned.erase( assigned );
+                        netplay::host_send_event_to_sid(
+                            in.sid,
+                            string_format( fork_text( "Mission completed: %s" ), m->name() ),
+                            static_cast<int>( m_good ) );
+                        mp_send_mission_journal( in.sid );
+                        break;
                     }
                 }
             }

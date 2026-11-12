@@ -429,10 +429,14 @@ void mission::assign( Character &u )
 
 void mission::fail()
 {
+    fail( get_avatar() );
+}
+
+void mission::fail( Character &player )
+{
     status = mission_status::failure;
-    avatar &player_character = get_avatar();
-    if( player_character.getID() == player_id ) {
-        player_character.on_mission_finished( *this );
+    if( player.getID() == player_id && player.is_avatar() ) {
+        player.as_avatar()->on_mission_finished( *this );
     }
     // Tracks completion/failure
     deadline = calendar::turn;
@@ -473,7 +477,11 @@ void mission::step_complete( const int _step )
 
 void mission::wrap_up()
 {
-    avatar &player_character = get_avatar();
+    wrap_up( get_avatar() );
+}
+
+void mission::wrap_up( Character &player_character )
+{
     if( player_character.getID() != player_id ) {
         // This is called from npctalk.cpp, the npc should only offer the option to wrap up mission
         // that have been assigned to the current player.
@@ -482,7 +490,9 @@ void mission::wrap_up()
     }
 
     status = mission_status::success;
-    player_character.on_mission_finished( *this );
+    if( player_character.is_avatar() ) {
+        player_character.as_avatar()->on_mission_finished( *this );
+    }
     std::vector<item_comp> comps;
     switch( type->goal ) {
         case MGOAL_FIND_ITEM_GROUP: {
@@ -572,11 +582,15 @@ void mission::wrap_up()
 
 bool mission::is_complete( const character_id &_npc_id ) const
 {
+    return is_complete( _npc_id, get_avatar() );
+}
+
+bool mission::is_complete( const character_id &_npc_id, const Character &player_character ) const
+{
     if( status == mission_status::success ) {
         return true;
     }
 
-    avatar &player_character = get_avatar();
     switch( type->goal ) {
         case MGOAL_GO_TO: {
             const tripoint_abs_omt cur_pos = player_character.pos_abs_omt();
@@ -720,14 +734,19 @@ bool mission::is_complete( const character_id &_npc_id ) const
                         miss.emplace_back( mission );
                     }
                 }
-            } else {
-                for( mission *&mission : player_character.get_active_missions() ) {
+            } else if( player_character.is_avatar() ) {
+                for( mission *&mission : player_character.as_avatar()->get_active_missions() ) {
                     if( mission->type->id == type->id ) {
                         miss.emplace_back( mission );
                     }
                 }
+            } else {
+                // A session avatar has no avatar-only mission list here; the
+                // host's per-session ledger handles its missions.
+                return false;
             }
-            dialogue cc( get_talker_for( player_character ), std::move( beta ) );
+            dialogue cc( get_talker_for( const_cast<Character &>( player_character ) ),
+                         std::move( beta ) );
             cc.missions_assigned = std::move( miss );
 
             return type->test_goal_condition( cc );
