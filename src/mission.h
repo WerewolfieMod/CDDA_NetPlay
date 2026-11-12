@@ -20,6 +20,7 @@
 #include "translation.h"
 #include "type_id.h"
 
+class Character;
 class Creature;
 class JsonArray;
 class JsonObject;
@@ -361,6 +362,10 @@ class mission
          * player.
          */
         character_id get_assigned_player_id() const;
+        /// DDA MP v4.0a-191: public status accessor for the session journal.
+        mission_status get_status() const {
+            return status;
+        }
         /*@}*/
 
         /**
@@ -377,6 +382,9 @@ class mission
 
         /** Assigns the mission to the player. */
         void assign( avatar &u );
+        /// DDA MP v4.0a-191: assign to any Character (a session avatar is an
+        /// npc). Avatar-only notification is skipped for non-avatars.
+        void assign( Character &u );
 
         /** Called when the mission has failed, calls the mission fail callback. */
         void fail();

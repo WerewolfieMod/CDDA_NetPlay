@@ -390,6 +390,11 @@ mission *mission::reserve_random( const mission_origin origin, const tripoint_ab
 
 void mission::assign( avatar &u )
 {
+    assign( static_cast<Character &>( u ) );
+}
+
+void mission::assign( Character &u )
+{
     if( player_id == u.getID() ) {
         debugmsg( "strange: player is already assigned to mission %d", uid );
         return;
@@ -400,7 +405,9 @@ void mission::assign( avatar &u )
         return;
     }
     player_id = u.getID();
-    u.on_mission_assignment( *this );
+    if( u.is_avatar() ) {
+        u.as_avatar()->on_mission_assignment( *this );
+    }
     if( status == mission_status::yet_to_start ) {
         const kill_tracker &kills = g->get_kill_tracker();
         if( type->goal == MGOAL_KILL_MONSTER_TYPE && monster_type != mtype_id::NULL_ID() ) {

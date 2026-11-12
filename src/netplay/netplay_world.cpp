@@ -4129,6 +4129,10 @@ static std::map<int, int> mp_help_pairs; // helper character id -> target charac
 static int mp_help_tick = 0;
 /// DDA MP v4.0a-189: one active network dialogue per client session.
 static std::map<int, std::unique_ptr<dialogue>> mp_dialogues;
+/// DDA MP v4.0a-191: missions assigned to each session avatar. The engine's
+/// mission storage is avatar-only, so the host keeps the per-session list and
+/// streams it as a journal.
+static std::map<int, std::vector<mission *>> mp_session_missions;
 /// DDA MP v4.0a-180: progress line shown at the top of the host's screen while
 /// the host itself is helping a client. Empty when the host is not helping.
 static std::string mp_host_help_hint;
@@ -4143,6 +4147,7 @@ void host_help_shutdown()
     mp_help_pairs.clear();
     mp_host_help_hint.clear();
     mp_dialogues.clear();
+    mp_session_missions.clear();
 }
 
 static Character *mp_character_by_id( int id )
@@ -4587,6 +4592,67 @@ static void mp_start_dialogue( int sid, npc &av, npc &other )
     mp_send_dialogue_state( sid );
 }
 
+static std::string mp_mission_status_text( mission::mission_status st )
+{
+    switch( st ) {
+        case mission::mission_status::success:
+            return _( "Completed" );
+        case mission::mission_status::failure:
+            return _( "Failed" );
+        case mission::mission_status::in_progress:
+            return _( "In progress" );
+        default:
+            return _( "Available" );
+    }
+}
+
+static void mp_send_mission_offers( int sid, npc &other )
+{
+    std::string payload;
+    for( size_t i = 0; i < other.chatbin.missions.size(); i++ ) {
+        mission *m = other.chatbin.missions[i];
+        if( m == nullptr || m->is_assigned() ) {
+            continue;
+        }
+        if( !payload.empty() ) {
+            payload += '\x1f';
+        }
+        payload += std::to_string( i );
+        payload += '\x1e';
+        payload += m->name();
+    }
+    if( payload.empty() ) {
+        netplay::host_send_event_to_sid( sid, fork_text( "No missions available." ),
+                                         static_cast<int>( m_info ) );
+    } else {
+        netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_MISSION_OFFERS );
+    }
+}
+
+static void mp_send_mission_journal( int sid )
+{
+    std::string payload;
+    for( mission *m : mp_session_missions[sid] ) {
+        if( m == nullptr ) {
+            continue;
+        }
+        if( !payload.empty() ) {
+            payload += '\x1f';
+        }
+        payload += m->name();
+        payload += '\x1e';
+        payload += mp_mission_status_text( m->get_status() );
+        payload += '\x1e';
+        payload += m->get_description();
+    }
+    if( payload.empty() ) {
+        netplay::host_send_event_to_sid( sid, fork_text( "No active missions." ),
+                                         static_cast<int>( m_info ) );
+    } else {
+        netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_MISSION_JOURNAL );
+    }
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -4684,6 +4750,52 @@ void host_pump_intents()
                 host_help_nearby( *av );
                 av_send_status( in.sid );
             }
+            continue;
+        }
+        // DDA MP v4.0a-191: per-session mission ledger. The client lists the
+        // NPC's unassigned missions, accepts one with the index, and can open
+        // its own journal at any time.
+        if( in.action == "mission_offers" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                if( other != nullptr && other != av && !other->is_enemy() &&
+                    !mp_is_player_creature( other ) ) {
+                    other->chatbin.check_missions();
+                    mp_send_mission_offers( in.sid, *other );
+                }
+            }
+            continue;
+        }
+        if( in.action == "mission_accept" && in.args.size() >= 3 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                const int idx = in.args[2];
+                if( other != nullptr && other != av && idx >= 0 &&
+                    idx < static_cast<int>( other->chatbin.missions.size() ) ) {
+                    mission *m = other->chatbin.missions[idx];
+                    if( m != nullptr && !m->is_assigned() ) {
+                        m->assign( *av );
+                        other->chatbin.missions.erase( other->chatbin.missions.begin() + idx );
+                        mp_session_missions[in.sid].push_back( m );
+                        netplay::host_send_event_to_sid(
+                            in.sid,
+                            string_format( fork_text( "Mission accepted: %s" ), m->name() ),
+                            static_cast<int>( m_good ) );
+                    }
+                }
+            }
+            continue;
+        }
+        if( in.action == "mission_journal" ) {
+            mp_send_mission_journal( in.sid );
             continue;
         }
         // DDA MP v4.0a-189: network NPC dialogue. The client sends the target

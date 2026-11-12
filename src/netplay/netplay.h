@@ -420,6 +420,12 @@ constexpr int EVENT_NPC = 203;
 /// "<line>\x1f<index>\x1e<option>\x1f<index>\x1e<option>..." (indices into the
 /// host dialogue's response list). An empty option list closes the dialogue.
 constexpr int EVENT_DIALOGUE = 204;
+/// DDA MP v4.0a-191: NPC mission offers. Payload:
+/// "<index>\x1e<mission name>\x1f<index>\x1e<mission name>...".
+constexpr int EVENT_MISSION_OFFERS = 205;
+/// DDA MP v4.0a-191: session mission journal. Payload:
+/// "<name>\x1e<status>\x1e<description>\x1f...".
+constexpr int EVENT_MISSION_JOURNAL = 206;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

@@ -2943,6 +2943,9 @@ static constexpr int MP_ACTION_HELP_NEARBY = 91000;
 /// confirmation). The host is authoritative: EVENT_HELP resets it when the
 /// assistance ends or a request is refused.
 static bool mp_client_helping = false;
+/// DDA MP v4.0a-191: NPC used by the last mission-offer request.
+static int mp_mission_dx = 0;
+static int mp_mission_dy = 0;
 
 /* DDA MP v4.0a-176: walking into another player shows the interaction menu
  * instead of attacking, like walking into an NPC in single player. */
@@ -3002,6 +3005,7 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
     uilist menu;
     menu.text = string_format( netplay::fork_text( "NPC: %s" ), name );
     menu.addentry( netplay::fork_text( "Talk" ) );
+    menu.addentry( netplay::fork_text( "Missions" ) );
     menu.addentry( netplay::fork_text( "Look" ) );
     menu.addentry( netplay::fork_text( "Close" ) );
     mp_inv_log( string_format( "npc interact open: %s %d,%d", name, dx, dy ) );
@@ -3013,6 +3017,11 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
         netplay::client_send_intent( "talk_npc", 0, { dx, dy } );
         mp_inv_log( string_format( "npc talk requested: %s %d,%d", name, dx, dy ) );
     } else if( menu.ret == 1 ) {
+        mp_mission_dx = dx;
+        mp_mission_dy = dy;
+        netplay::client_send_intent( "mission_offers", 0, { dx, dy } );
+        mp_inv_log( string_format( "npc missions requested: %s %d,%d", name, dx, dy ) );
+    } else if( menu.ret == 2 ) {
         mp_cursor = mp_cursor_mode::look;
         mp_cursor_dx = dx;
         mp_cursor_dy = dy;
@@ -3064,6 +3073,95 @@ static void mp_run_dialogue( const std::string &payload )
     mp_inv_log( string_format( "dialogue: line=%d options=%d chosen=%d",
                                static_cast<int>( line.size() ),
                                static_cast<int>( options.size() ), chosen ) );
+}
+
+/* DDA MP v4.0a-191: mission offer list from an NPC. Payload entries are
+ * "<index>\x1e<name>"; accepting sends the host index back. */
+static void mp_run_mission_offers( const std::string &payload )
+{
+    std::vector<std::pair<int, std::string>> offers;
+    std::string::size_type pos = 0;
+    while( pos <= payload.size() ) {
+        const std::string::size_type sep = payload.find( '\x1f', pos );
+        const std::string item = payload.substr( pos, sep == std::string::npos
+                                                  ? std::string::npos : sep - pos );
+        const std::string::size_type us = item.find( '\x1e' );
+        if( us != std::string::npos ) {
+            offers.emplace_back( std::atoi( item.substr( 0, us ).c_str() ),
+                                 item.substr( us + 1 ) );
+        }
+        if( sep == std::string::npos ) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    if( offers.empty() ) {
+        return;
+    }
+    uilist menu;
+    menu.text = netplay::fork_text( "Available missions" );
+    for( const auto &offer : offers ) {
+        menu.addentry( offer.second );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( string_format( "missions: offers=%d ret=%d",
+                               static_cast<int>( offers.size() ), menu.ret ) );
+    if( menu.ret >= 0 && menu.ret < static_cast<int>( offers.size() ) ) {
+        netplay::client_send_intent(
+            "mission_accept", 0,
+            { mp_mission_dx, mp_mission_dy, offers[menu.ret].first } );
+    }
+}
+
+/* DDA MP v4.0a-191: read-only journal of missions assigned to this session. */
+static void mp_run_mission_journal( const std::string &payload )
+{
+    struct journal_entry {
+        std::string name;
+        std::string status;
+        std::string desc;
+    };
+    std::vector<journal_entry> entries;
+    std::string::size_type pos = 0;
+    while( pos <= payload.size() ) {
+        const std::string::size_type sep = payload.find( '\x1f', pos );
+        const std::string item = payload.substr( pos, sep == std::string::npos
+                                                  ? std::string::npos : sep - pos );
+        const std::string::size_type s1 = item.find( '\x1e' );
+        const std::string::size_type s2 = s1 == std::string::npos
+                                          ? std::string::npos : item.find( '\x1e', s1 + 1 );
+        if( s2 != std::string::npos ) {
+            entries.push_back( { item.substr( 0, s1 ),
+                                 item.substr( s1 + 1, s2 - s1 - 1 ),
+                                 item.substr( s2 + 1 ) } );
+        }
+        if( sep == std::string::npos ) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    if( entries.empty() ) {
+        return;
+    }
+    uilist menu;
+    menu.text = netplay::fork_text( "Mission journal" );
+    for( const journal_entry &e : entries ) {
+        menu.addentry( e.name + " (" + e.status + ")" );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "missions: journal open entries=%d",
+                               static_cast<int>( entries.size() ) ) );
+    menu.query();
+    if( menu.ret >= 0 && menu.ret < static_cast<int>( entries.size() ) ) {
+        const journal_entry &e = entries[menu.ret];
+        popup( e.status + "\n\n" + e.desc );
+    }
+    mp_inv_log( string_format( "missions: journal=%d ret=%d",
+                               static_cast<int>( entries.size() ), menu.ret ) );
 }
 
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
@@ -3207,6 +3305,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             if( mp_native_avatar_ready ) {
                 game_menus::inv::compare( std::nullopt );
             }
+            break;
+        case ACTION_MISSIONS:
+            // DDA MP v4.0a-191: the host streams this session's mission list.
+            netplay::client_send_intent( "mission_journal", 0, {} );
+            mp_inv_log( "missions: journal requested" );
             break;
         case ACTION_PICK_STYLE:
             // DDA MP v4.0a-187: pick the style on the mirror, then tell the
@@ -3449,9 +3552,8 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_BODYSTATUS );
             MP_REGISTER_ACTION( ACTION_MEDICAL );
             MP_REGISTER_ACTION( ACTION_FACTIONS );
-#if 0
+            // DDA MP v4.0a-191: the mission journal is streamed from the host.
             MP_REGISTER_ACTION( ACTION_MISSIONS );
-#endif
             MP_REGISTER_ACTION( ACTION_MESSAGES );
 #if 0
             MP_REGISTER_ACTION( ACTION_DIARY );
@@ -4872,6 +4974,15 @@ void run_view_loop()
                         mp_run_dialogue( mp_ev_text );
                         continue;
                     }
+                    // DDA MP v4.0a-191: mission offers / journal.
+                    if( mp_ev_type == netplay::EVENT_MISSION_OFFERS ) {
+                        mp_run_mission_offers( mp_ev_text );
+                        continue;
+                    }
+                    if( mp_ev_type == netplay::EVENT_MISSION_JOURNAL ) {
+                        mp_run_mission_journal( mp_ev_text );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -5854,6 +5965,10 @@ void run_view_loop()
                             "1" "\x1e" "Option B" "\x1f" "-1" "\x1e" "Close" );
                     } else if( action_name == "npc_talk" ) {
                         netplay::client_send_intent( "talk_npc", 0, { 0, -1 } );
+                    } else if( action_name == "missions" ) {
+                        mp_run_mission_journal(
+                            "Test mission" "\x1e" "In progress" "\x1e" "Do the thing" "\x1f"
+                            "Second mission" "\x1e" "Completed" "\x1e" "Already done" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {
