@@ -3241,6 +3241,8 @@ static void mp_run_trade( const std::string &payload )
         int index = 0;
         std::string name;
         int price = 0;
+        int count = 1;
+        bool charge = false;
     };
     std::vector<trade_entry> entries;
     if( first != std::string::npos ) {
@@ -3251,10 +3253,16 @@ static void mp_run_trade( const std::string &payload )
             const std::string::size_type s1 = item.find( '\x1e' );
             const std::string::size_type s2 = s1 == std::string::npos
                                               ? std::string::npos : item.find( '\x1e', s1 + 1 );
-            if( s2 != std::string::npos ) {
+            const std::string::size_type s3 = s2 == std::string::npos
+                                              ? std::string::npos : item.find( '\x1e', s2 + 1 );
+            const std::string::size_type s4 = s3 == std::string::npos
+                                              ? std::string::npos : item.find( '\x1e', s3 + 1 );
+            if( s4 != std::string::npos ) {
                 entries.push_back( { std::atoi( item.substr( 0, s1 ).c_str() ),
                                      item.substr( s1 + 1, s2 - s1 - 1 ),
-                                     std::atoi( item.substr( s2 + 1 ).c_str() ) } );
+                                     std::atoi( item.substr( s2 + 1, s3 - s2 - 1 ).c_str() ),
+                                     std::atoi( item.substr( s3 + 1, s4 - s3 - 1 ).c_str() ),
+                                     item.substr( s4 + 1 ) == "1" } );
             }
             if( sep == std::string::npos ) {
                 break;
@@ -3274,7 +3282,12 @@ static void mp_run_trade( const std::string &payload )
                          format_money( reward_credit ) );
     }
     for( const trade_entry &e : entries ) {
-        menu.addentry( e.name + "  —  " + format_money( e.price ) );
+        std::string label = e.name;
+        if( e.charge && e.count > 1 ) {
+            label += string_format( " x%d", e.count );
+        }
+        label += "  -  " + format_money( e.price );
+        menu.addentry( label );
     }
     menu.addentry( mode == 1 ? netplay::fork_text( "Buy" ) : netplay::fork_text( "Sell" ) );
     menu.addentry( netplay::fork_text( "Close" ) );
@@ -3286,8 +3299,31 @@ static void mp_run_trade( const std::string &payload )
     }
     const int n = static_cast<int>( entries.size() );
     if( menu.ret >= 0 && menu.ret < n ) {
+        const trade_entry &e = entries[menu.ret];
+        int amount = 1;
+        if( e.charge && e.count > 1 ) {
+            std::vector<int> qty;
+            for( const int q : { 1, 5, 10, e.count } ) {
+                if( q >= 1 && q <= e.count &&
+                    std::find( qty.begin(), qty.end(), q ) == qty.end() ) {
+                    qty.push_back( q );
+                }
+            }
+            uilist qmenu;
+            qmenu.text = netplay::fork_text( "Quantity" );
+            for( const int q : qty ) {
+                qmenu.addentry( string_format( "%d", q ) );
+            }
+            qmenu.addentry( netplay::fork_text( "Close" ) );
+            qmenu.query();
+            if( qmenu.ret < 0 || qmenu.ret >= static_cast<int>( qty.size() ) ) {
+                mp_inv_log( "trade: quantity cancelled" );
+                return;
+            }
+            amount = qty[qmenu.ret];
+        }
         netplay::client_send_intent( mode == 1 ? "trade_sell" : "trade_buy", 0,
-                                     { mp_trade_dx, mp_trade_dy, entries[menu.ret].index } );
+                                     { mp_trade_dx, mp_trade_dy, e.index, amount } );
     } else if( menu.ret == n ) {
         netplay::client_send_intent( "trade_list", 0,
                                      { mp_trade_dx, mp_trade_dy, mode == 1 ? 0 : 1 } );
@@ -6110,8 +6146,9 @@ void run_view_loop()
                             "Second mission" "\x1e" "Completed" "\x1e" "Already done" );
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
-                            "0" "\x1f" "0" "\x1f" "0" "\x1e" "Test item" "\x1e" "100" "\x1f"
-                            "1" "\x1e" "Second item" "\x1e" "250" );
+                            "0" "\x1f" "0" "\x1f" "0" "\x1e" "Test item" "\x1e" "100"
+                            "\x1e" "1" "\x1e" "0" "\x1f"
+                            "1" "\x1e" "Second item" "\x1e" "250" "\x1e" "1" "\x1e" "0" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {

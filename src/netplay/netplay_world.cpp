@@ -12,6 +12,7 @@
 #include "netplay/inventory_source.h"
 #include "netplay/netplay_region.h"
 
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cstdio>
@@ -4138,6 +4139,8 @@ static std::map<int, std::vector<mission *>> mp_session_missions;
 struct mp_trade_entry {
     item *it = nullptr;
     int price = 0;
+    int count = 1;
+    bool charge = false;
 };
 static std::map<int, std::vector<mp_trade_entry>> mp_trade_items;
 static std::map<int, int> mp_trade_mode;
@@ -4712,13 +4715,17 @@ static void mp_send_trade_list( int sid, npc &av, npc &other, int mode )
         if( it == nullptr || shown >= 80 ) {
             return;
         }
-        mp_trade_items[sid].push_back( { it, price } );
+        mp_trade_items[sid].push_back( { it, price, it->count(), it->count_by_charges() } );
         payload += '\x1f';
         payload += std::to_string( shown );
         payload += '\x1e';
         payload += it->tname();
         payload += '\x1e';
         payload += std::to_string( price );
+        payload += '\x1e';
+        payload += std::to_string( it->count() );
+        payload += '\x1e';
+        payload += it->count_by_charges() ? "1" : "0";
         ++shown;
     };
     if( mode == 0 ) {
@@ -4745,6 +4752,29 @@ static void mp_send_trade_list( int sid, npc &av, npc &other, int mode )
         return;
     }
     netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_TRADE_LIST );
+}
+
+static bool mp_take_item_part( Character &from, item *it, int amount, item &out )
+{
+    if( it == nullptr || amount < 1 ) {
+        return false;
+    }
+    if( it->count_by_charges() ) {
+        out = *it;
+        if( amount >= it->charges ) {
+            item_location( from, it ).remove_item();
+        } else {
+            out.charges = amount;
+            it->charges -= amount;
+        }
+        return true;
+    }
+    if( amount != 1 ) {
+        return false;
+    }
+    out = *it;
+    item_location( from, it ).remove_item();
+    return true;
 }
 
 void host_pump_intents()
@@ -4976,45 +5006,62 @@ void host_pump_intents()
                     mp_trade_npc_id[in.sid] == other->getID().get_value() &&
                     idx >= 0 && idx < static_cast<int>( mp_trade_items[in.sid].size() ) ) {
                     const mp_trade_entry entry = mp_trade_items[in.sid][idx];
+                    const int max_amount = entry.charge ? entry.count : 1;
+                    const int amount = std::clamp(
+                                           in.args.size() >= 4 ? in.args[3] : 1, 1, max_amount );
                     if( in.action == "trade_buy" ) {
-                        const int credit_used = std::min( entry.price, mp_trade_credit[in.sid] );
-                        const int pay = entry.price - credit_used;
+                        const int price = entry.charge
+                                          ? npc_trading::adjusted_price( entry.it, amount, *av, *other )
+                                          : entry.price;
+                        const int credit_used = std::min( price, mp_trade_credit[in.sid] );
+                        const int pay = price - credit_used;
                         if( av->cash < pay ) {
                             netplay::host_send_event_to_sid(
                                 in.sid, fork_text( "You don't have enough money." ),
                                 static_cast<int>( m_bad ) );
                         } else {
-                            item gift = *entry.it;
-                            item_location loc( *other, entry.it );
-                            loc.remove_item();
-                            av->i_add_or_drop( gift );
-                            mp_trade_credit[in.sid] -= credit_used;
-                            av->cash -= pay;
-                            other->cash += pay;
-                            netplay::host_send_event_to_sid(
-                                in.sid,
-                                string_format( fork_text( "You buy %s for %s." ),
-                                               gift.tname(), format_money( entry.price ) ),
-                                static_cast<int>( m_good ) );
+                            item gift;
+                            if( !mp_take_item_part( *other, entry.it, amount, gift ) ) {
+                                netplay::host_send_event_to_sid(
+                                    in.sid, fork_text( "That item moved. Reopen the trade." ),
+                                    static_cast<int>( m_bad ) );
+                            } else {
+                                av->i_add_or_drop( gift );
+                                mp_trade_credit[in.sid] -= credit_used;
+                                av->cash -= pay;
+                                other->cash += pay;
+                                netplay::host_send_event_to_sid(
+                                    in.sid,
+                                    string_format( fork_text( "You buy %s for %s." ),
+                                                   gift.tname(), format_money( price ) ),
+                                    static_cast<int>( m_good ) );
+                            }
                         }
                         mp_send_trade_list( in.sid, *av, *other, 0 );
                     } else {
-                        if( other->cash < entry.price ) {
+                        const int price = entry.charge
+                                          ? npc_trading::adjusted_price( entry.it, amount, *other, *av )
+                                          : entry.price;
+                        if( other->cash < price ) {
                             netplay::host_send_event_to_sid(
                                 in.sid, fork_text( "The trader doesn't have enough money." ),
                                 static_cast<int>( m_bad ) );
                         } else {
-                            item gift = *entry.it;
-                            item_location loc( *av, entry.it );
-                            loc.remove_item();
-                            other->i_add( gift );
-                            av->cash += entry.price;
-                            other->cash -= entry.price;
-                            netplay::host_send_event_to_sid(
-                                in.sid,
-                                string_format( fork_text( "You sell %s for %s." ),
-                                               gift.tname(), format_money( entry.price ) ),
-                                static_cast<int>( m_good ) );
+                            item gift;
+                            if( !mp_take_item_part( *av, entry.it, amount, gift ) ) {
+                                netplay::host_send_event_to_sid(
+                                    in.sid, fork_text( "That item moved. Reopen the trade." ),
+                                    static_cast<int>( m_bad ) );
+                            } else {
+                                other->i_add( gift );
+                                av->cash += price;
+                                other->cash -= price;
+                                netplay::host_send_event_to_sid(
+                                    in.sid,
+                                    string_format( fork_text( "You sell %s for %s." ),
+                                                   gift.tname(), format_money( price ) ),
+                                    static_cast<int>( m_good ) );
+                            }
                         }
                         mp_send_trade_list( in.sid, *av, *other, 1 );
                     }

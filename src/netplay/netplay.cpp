@@ -1696,6 +1696,8 @@ std::string fork_text( const char *msgid )
             { "The trader doesn't have enough money.", "У торговца недостаточно денег." },
             { "You buy %s for %s.", "Вы покупаете %s за %s." },
             { "You sell %s for %s.", "Вы продаёте %s за %s." },
+            { "Quantity", "Количество" },
+            { "That item moved. Reopen the trade.", "Предмет переместился. Откройте торговлю заново." },
             { "Conversation", "Разговор" },
             { "Conversation ended.", "Разговор окончен." },
             { "Look", "Осмотреть" },
