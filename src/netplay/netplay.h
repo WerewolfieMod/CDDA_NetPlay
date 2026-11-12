@@ -429,6 +429,9 @@ constexpr int EVENT_MISSION_JOURNAL = 206;
 /// DDA MP v4.0a-192: missions ready to turn in at this NPC. Payload:
 /// "<uid>\x1e<mission name>\x1f...".
 constexpr int EVENT_MISSION_TURNIN = 207;
+/// DDA MP v4.0a-193: custom barter list. Payload:
+/// "<mode 0=buy/1=sell>\x1f<index>\x1e<name>\x1e<price cents>\x1f...".
+constexpr int EVENT_TRADE_LIST = 208;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

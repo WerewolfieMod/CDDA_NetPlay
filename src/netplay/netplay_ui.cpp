@@ -2946,6 +2946,9 @@ static bool mp_client_helping = false;
 /// DDA MP v4.0a-191: NPC used by the last mission-offer request.
 static int mp_mission_dx = 0;
 static int mp_mission_dy = 0;
+/// DDA MP v4.0a-193: NPC used by the last barter request.
+static int mp_trade_dx = 0;
+static int mp_trade_dy = 0;
 
 /* DDA MP v4.0a-176: walking into another player shows the interaction menu
  * instead of attacking, like walking into an NPC in single player. */
@@ -3008,6 +3011,7 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
     menu.addentry( netplay::fork_text( "Missions" ) );
     menu.addentry( netplay::fork_text( "Turn in" ) );
     menu.addentry( netplay::fork_text( "Look" ) );
+    menu.addentry( netplay::fork_text( "Trade" ) );
     menu.addentry( netplay::fork_text( "Close" ) );
     mp_inv_log( string_format( "npc interact open: %s %d,%d", name, dx, dy ) );
     {
@@ -3031,6 +3035,11 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
         mp_cursor = mp_cursor_mode::look;
         mp_cursor_dx = dx;
         mp_cursor_dy = dy;
+    } else if( menu.ret == 4 ) {
+        mp_trade_dx = dx;
+        mp_trade_dy = dy;
+        netplay::client_send_intent( "trade_list", 0, { dx, dy, 0 } );
+        mp_inv_log( string_format( "npc trade requested: %s %d,%d", name, dx, dy ) );
     }
 }
 
@@ -3210,6 +3219,67 @@ static void mp_run_mission_journal( const std::string &payload )
     }
     mp_inv_log( string_format( "missions: journal=%d ret=%d",
                                static_cast<int>( entries.size() ), menu.ret ) );
+}
+
+/* DDA MP v4.0a-193: custom barter window. Payload:
+ * "<mode>\x1f<index>\x1e<name>\x1e<price>\x1f..."; mode 0 buys from the NPC,
+ * mode 1 sells to it. */
+static void mp_run_trade( const std::string &payload )
+{
+    const std::string::size_type first = payload.find( '\x1f' );
+    const int mode = std::atoi( payload.substr( 0, first ).c_str() );
+    struct trade_entry {
+        int index = 0;
+        std::string name;
+        int price = 0;
+    };
+    std::vector<trade_entry> entries;
+    if( first != std::string::npos ) {
+        std::string::size_type pos = first + 1;
+        while( pos <= payload.size() ) {
+            const std::string::size_type sep = payload.find( '\x1f', pos );
+            const std::string item = payload.substr( pos, sep == std::string::npos
+                                                      ? std::string::npos : sep - pos );
+            const std::string::size_type s1 = item.find( '\x1e' );
+            const std::string::size_type s2 = s1 == std::string::npos
+                                              ? std::string::npos : item.find( '\x1e', s1 + 1 );
+            if( s2 != std::string::npos ) {
+                entries.push_back( { std::atoi( item.substr( 0, s1 ).c_str() ),
+                                     item.substr( s1 + 1, s2 - s1 - 1 ),
+                                     std::atoi( item.substr( s2 + 1 ).c_str() ) } );
+            }
+            if( sep == std::string::npos ) {
+                break;
+            }
+            pos = sep + 1;
+        }
+    }
+    if( entries.empty() ) {
+        return;
+    }
+    uilist menu;
+    menu.text = mode == 1 ? netplay::fork_text( "Trade: sell" )
+                : netplay::fork_text( "Trade: buy" );
+    for( const trade_entry &e : entries ) {
+        menu.addentry( e.name + "  —  " + format_money( e.price ) );
+    }
+    menu.addentry( mode == 1 ? netplay::fork_text( "Buy" ) : netplay::fork_text( "Sell" ) );
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "trade open: mode=%d entries=%d",
+                               mode, static_cast<int>( entries.size() ) ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    const int n = static_cast<int>( entries.size() );
+    if( menu.ret >= 0 && menu.ret < n ) {
+        netplay::client_send_intent( mode == 1 ? "trade_sell" : "trade_buy", 0,
+                                     { mp_trade_dx, mp_trade_dy, entries[menu.ret].index } );
+    } else if( menu.ret == n ) {
+        netplay::client_send_intent( "trade_list", 0,
+                                     { mp_trade_dx, mp_trade_dy, mode == 1 ? 0 : 1 } );
+    }
+    mp_inv_log( string_format( "trade: mode=%d entries=%d ret=%d", mode, n, menu.ret ) );
 }
 
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
@@ -5035,6 +5105,10 @@ void run_view_loop()
                         mp_run_mission_turnins( mp_ev_text );
                         continue;
                     }
+                    if( mp_ev_type == netplay::EVENT_TRADE_LIST ) {
+                        mp_run_trade( mp_ev_text );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -6021,6 +6095,10 @@ void run_view_loop()
                         mp_run_mission_journal(
                             "Test mission" "\x1e" "In progress" "\x1e" "Do the thing" "\x1f"
                             "Second mission" "\x1e" "Completed" "\x1e" "Already done" );
+                    } else if( action_name == "trade" ) {
+                        mp_run_trade(
+                            "0" "\x1f" "0" "\x1e" "Test item" "\x1e" "100" "\x1f"
+                            "1" "\x1e" "Second item" "\x1e" "250" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "butcher" ) {

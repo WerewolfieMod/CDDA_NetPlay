@@ -51,6 +51,7 @@
 #include "memory_fast.h"
 #include "mission.h"
 #include "monster.h"
+#include "npctrade.h"
 #include "mtype.h"
 #include "npc.h"
 #include "output.h"
@@ -4133,6 +4134,14 @@ static std::map<int, std::unique_ptr<dialogue>> mp_dialogues;
 /// mission storage is avatar-only, so the host keeps the per-session list and
 /// streams it as a journal.
 static std::map<int, std::vector<mission *>> mp_session_missions;
+/// DDA MP v4.0a-193: custom barter lists per session.
+struct mp_trade_entry {
+    item *it = nullptr;
+    int price = 0;
+};
+static std::map<int, std::vector<mp_trade_entry>> mp_trade_items;
+static std::map<int, int> mp_trade_mode;
+static std::map<int, int> mp_trade_npc_id;
 /// DDA MP v4.0a-180: progress line shown at the top of the host's screen while
 /// the host itself is helping a client. Empty when the host is not helping.
 static std::string mp_host_help_hint;
@@ -4148,6 +4157,9 @@ void host_help_shutdown()
     mp_host_help_hint.clear();
     mp_dialogues.clear();
     mp_session_missions.clear();
+    mp_trade_items.clear();
+    mp_trade_mode.clear();
+    mp_trade_npc_id.clear();
 }
 
 static Character *mp_character_by_id( int id )
@@ -4684,6 +4696,52 @@ static void mp_send_mission_turnins( int sid, npc &av, npc &other )
     }
 }
 
+static void mp_send_trade_list( int sid, npc &av, npc &other, int mode )
+{
+    mp_trade_items[sid].clear();
+    mp_trade_mode[sid] = mode;
+    mp_trade_npc_id[sid] = other.getID().get_value();
+    std::string payload = std::to_string( mode );
+    int shown = 0;
+    const auto add = [&]( item *it, int price ) {
+        if( it == nullptr || shown >= 80 ) {
+            return;
+        }
+        mp_trade_items[sid].push_back( { it, price } );
+        payload += '\x1f';
+        payload += std::to_string( shown );
+        payload += '\x1e';
+        payload += it->tname();
+        payload += '\x1e';
+        payload += std::to_string( price );
+        ++shown;
+    };
+    if( mode == 0 ) {
+        for( item *it : other.items_with( []( const item & i ) {
+        return !i.made_of( phase_id::LIQUID );
+        } ) ) {
+            const int price = npc_trading::adjusted_price( it, it->count(), av, other );
+            if( price >= 0 && other.wants_to_sell( item_location( other, it ), price ).success() ) {
+                add( it, price );
+            }
+        }
+    } else {
+        for( item *it : av.inv_dump() ) {
+            const int price = npc_trading::adjusted_price( it, it->count(), other, av );
+            if( price >= 0 && other.wants_to_buy( *it, price ).success() ) {
+                add( it, price );
+            }
+        }
+    }
+    if( shown == 0 ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( mode == 0 ? "Nothing to buy." : "Nothing to sell." ),
+            static_cast<int>( m_info ) );
+        return;
+    }
+    netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_TRADE_LIST );
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -4874,6 +4932,78 @@ void host_pump_intents()
         }
         if( in.action == "mission_journal" ) {
             mp_send_mission_journal( in.sid );
+            continue;
+        }
+        // DDA MP v4.0a-193: custom barter. Lists are built by the host with
+        // engine pricing; the client only sees names/prices and item indices.
+        if( in.action == "trade_list" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                const int mode = in.args.size() >= 3 ? in.args[2] : 0;
+                if( other != nullptr && other != av && !other->is_enemy() ) {
+                    mp_send_trade_list( in.sid, *av, *other, mode == 1 ? 1 : 0 );
+                }
+            }
+            continue;
+        }
+        if( ( in.action == "trade_buy" || in.action == "trade_sell" ) &&
+            in.args.size() >= 3 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const tripoint_bub_ms p = av->pos_bub() +
+                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                Creature *cr = get_creature_tracker().creature_at( p );
+                npc *other = dynamic_cast<npc *>( cr );
+                const int idx = in.args[2];
+                if( other != nullptr && other != av &&
+                    mp_trade_npc_id[in.sid] == other->getID().get_value() &&
+                    idx >= 0 && idx < static_cast<int>( mp_trade_items[in.sid].size() ) ) {
+                    const mp_trade_entry entry = mp_trade_items[in.sid][idx];
+                    if( in.action == "trade_buy" ) {
+                        if( av->cash < entry.price ) {
+                            netplay::host_send_event_to_sid(
+                                in.sid, fork_text( "You don't have enough money." ),
+                                static_cast<int>( m_bad ) );
+                        } else {
+                            item gift = *entry.it;
+                            item_location loc( *other, entry.it );
+                            loc.remove_item();
+                            av->i_add_or_drop( gift );
+                            av->cash -= entry.price;
+                            other->cash += entry.price;
+                            netplay::host_send_event_to_sid(
+                                in.sid,
+                                string_format( fork_text( "You buy %s for %s." ),
+                                               gift.tname(), format_money( entry.price ) ),
+                                static_cast<int>( m_good ) );
+                        }
+                        mp_send_trade_list( in.sid, *av, *other, 0 );
+                    } else {
+                        if( other->cash < entry.price ) {
+                            netplay::host_send_event_to_sid(
+                                in.sid, fork_text( "The trader doesn't have enough money." ),
+                                static_cast<int>( m_bad ) );
+                        } else {
+                            item gift = *entry.it;
+                            item_location loc( *av, entry.it );
+                            loc.remove_item();
+                            other->i_add( gift );
+                            av->cash += entry.price;
+                            other->cash -= entry.price;
+                            netplay::host_send_event_to_sid(
+                                in.sid,
+                                string_format( fork_text( "You sell %s for %s." ),
+                                               gift.tname(), format_money( entry.price ) ),
+                                static_cast<int>( m_good ) );
+                        }
+                        mp_send_trade_list( in.sid, *av, *other, 1 );
+                    }
+                }
+            }
             continue;
         }
         // DDA MP v4.0a-189: network NPC dialogue. The client sends the target
