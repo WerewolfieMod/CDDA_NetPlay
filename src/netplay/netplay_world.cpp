@@ -4142,6 +4142,8 @@ struct mp_trade_entry {
 static std::map<int, std::vector<mp_trade_entry>> mp_trade_items;
 static std::map<int, int> mp_trade_mode;
 static std::map<int, int> mp_trade_npc_id;
+/// DDA MP v4.0a-194: mission-reward credit usable in the barter window.
+static std::map<int, int> mp_trade_credit;
 /// DDA MP v4.0a-180: progress line shown at the top of the host's screen while
 /// the host itself is helping a client. Empty when the host is not helping.
 static std::string mp_host_help_hint;
@@ -4160,6 +4162,7 @@ void host_help_shutdown()
     mp_trade_items.clear();
     mp_trade_mode.clear();
     mp_trade_npc_id.clear();
+    mp_trade_credit.clear();
 }
 
 static Character *mp_character_by_id( int id )
@@ -4702,6 +4705,8 @@ static void mp_send_trade_list( int sid, npc &av, npc &other, int mode )
     mp_trade_mode[sid] = mode;
     mp_trade_npc_id[sid] = other.getID().get_value();
     std::string payload = std::to_string( mode );
+    payload += '\x1f';
+    payload += std::to_string( mp_trade_credit[sid] );
     int shown = 0;
     const auto add = [&]( item *it, int price ) {
         if( it == nullptr || shown >= 80 ) {
@@ -4923,6 +4928,14 @@ void host_pump_intents()
                             in.sid,
                             string_format( fork_text( "Mission completed: %s" ), m->name() ),
                             static_cast<int>( m_good ) );
+                        if( m->has_generic_rewards() && m->get_value() > 0 ) {
+                            mp_trade_credit[in.sid] += m->get_value();
+                            netplay::host_send_event_to_sid(
+                                in.sid,
+                                string_format( fork_text( "Reward credit: %s" ),
+                                               format_money( m->get_value() ) ),
+                                static_cast<int>( m_good ) );
+                        }
                         mp_send_mission_journal( in.sid );
                         break;
                     }
@@ -4964,7 +4977,9 @@ void host_pump_intents()
                     idx >= 0 && idx < static_cast<int>( mp_trade_items[in.sid].size() ) ) {
                     const mp_trade_entry entry = mp_trade_items[in.sid][idx];
                     if( in.action == "trade_buy" ) {
-                        if( av->cash < entry.price ) {
+                        const int credit_used = std::min( entry.price, mp_trade_credit[in.sid] );
+                        const int pay = entry.price - credit_used;
+                        if( av->cash < pay ) {
                             netplay::host_send_event_to_sid(
                                 in.sid, fork_text( "You don't have enough money." ),
                                 static_cast<int>( m_bad ) );
@@ -4973,8 +4988,9 @@ void host_pump_intents()
                             item_location loc( *other, entry.it );
                             loc.remove_item();
                             av->i_add_or_drop( gift );
-                            av->cash -= entry.price;
-                            other->cash += entry.price;
+                            mp_trade_credit[in.sid] -= credit_used;
+                            av->cash -= pay;
+                            other->cash += pay;
                             netplay::host_send_event_to_sid(
                                 in.sid,
                                 string_format( fork_text( "You buy %s for %s." ),

@@ -1684,6 +1684,7 @@ std::string fork_text( const char *msgid )
             { "Turn in", "Сдать задание" },
             { "No missions to turn in.", "Нет заданий, готовых к сдаче." },
             { "Mission completed: %s", "Задание выполнено: %s." },
+            { "Reward credit: %s", "Награда: %s" },
             { "Trade", "Торговля" },
             { "Trade: buy", "Торговля: покупка" },
             { "Trade: sell", "Торговля: продажа" },

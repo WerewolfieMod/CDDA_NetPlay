@@ -3228,6 +3228,15 @@ static void mp_run_trade( const std::string &payload )
 {
     const std::string::size_type first = payload.find( '\x1f' );
     const int mode = std::atoi( payload.substr( 0, first ).c_str() );
+    int reward_credit = 0;
+    std::string::size_type pos = payload.size();
+    if( first != std::string::npos ) {
+        const std::string::size_type second = payload.find( '\x1f', first + 1 );
+        reward_credit = std::atoi( payload.substr( first + 1,
+                                 second == std::string::npos
+                                 ? std::string::npos : second - first - 1 ).c_str() );
+        pos = second == std::string::npos ? payload.size() : second + 1;
+    }
     struct trade_entry {
         int index = 0;
         std::string name;
@@ -3235,7 +3244,6 @@ static void mp_run_trade( const std::string &payload )
     };
     std::vector<trade_entry> entries;
     if( first != std::string::npos ) {
-        std::string::size_type pos = first + 1;
         while( pos <= payload.size() ) {
             const std::string::size_type sep = payload.find( '\x1f', pos );
             const std::string item = payload.substr( pos, sep == std::string::npos
@@ -3260,6 +3268,11 @@ static void mp_run_trade( const std::string &payload )
     uilist menu;
     menu.text = mode == 1 ? netplay::fork_text( "Trade: sell" )
                 : netplay::fork_text( "Trade: buy" );
+    if( reward_credit > 0 ) {
+        menu.text += "  |  " + string_format(
+                         netplay::fork_text( "Reward credit: %s" ),
+                         format_money( reward_credit ) );
+    }
     for( const trade_entry &e : entries ) {
         menu.addentry( e.name + "  —  " + format_money( e.price ) );
     }
@@ -6097,7 +6110,7 @@ void run_view_loop()
                             "Second mission" "\x1e" "Completed" "\x1e" "Already done" );
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
-                            "0" "\x1f" "0" "\x1e" "Test item" "\x1e" "100" "\x1f"
+                            "0" "\x1f" "0" "\x1f" "0" "\x1e" "Test item" "\x1e" "100" "\x1f"
                             "1" "\x1e" "Second item" "\x1e" "250" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
