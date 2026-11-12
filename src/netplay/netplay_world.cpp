@@ -4867,6 +4867,34 @@ void host_pump_intents()
             }
             continue;
         }
+        // DDA MP v4.0a-196: hauling state lives on Character, so the session
+        // avatar can haul through the same engine calls the host player uses.
+        if( in.action == "haul_toggle" || in.action == "haul_here" ||
+            in.action == "haul_stop" || in.action == "autohaul_on" ||
+            in.action == "autohaul_off" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                const std::size_t msg_before = Messages::generation();
+                if( in.action == "haul_toggle" ) {
+                    av->toggle_hauling();
+                } else if( in.action == "haul_here" ) {
+                    av->start_hauling( get_map().get_haulable_items( av->pos_bub() ) );
+                } else if( in.action == "haul_stop" ) {
+                    av->stop_hauling();
+                } else if( in.action == "autohaul_on" ) {
+                    av->start_autohaul();
+                } else {
+                    av->stop_autohaul();
+                }
+                mp_forward_new_messages( in.sid, msg_before );
+                av_send_status( in.sid );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
         // DDA MP v4.0a-174: help with another player's long activity.
         if( in.action == "help" ) {
             npc *av = av_session_npc( in.sid );

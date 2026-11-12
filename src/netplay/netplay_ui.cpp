@@ -25,6 +25,8 @@
 #include "cursesdef.h"
 #include "cursesport.h"
 #include "avatar.h"      // get_avatar (native character creation)
+#include "bionics.h"     // read-only bionic list on the client mirror
+#include "mutation.h"    // read-only mutation list on the client mirror
 #include "character_martial_arts.h" // style picker on the client mirror
 #include "crafting_gui.h" // select_crafter_and_crafting_recipe (client craft)
 #include "recipe.h"       // recipe::ident (craft intent)
@@ -3331,6 +3333,119 @@ static void mp_run_trade( const std::string &payload )
     mp_inv_log( string_format( "trade: mode=%d entries=%d ret=%d", mode, n, menu.ret ) );
 }
 
+/* DDA MP v4.0a-196: read-only bionic list built from the avatar mirror. The
+ * engine's own bionics screen activates CBMs through the host avatar in a few
+ * paths (ranged bionics, water extractor queries), so it is not mirrored: the
+ * client only shows what is installed and its state. */
+static void mp_run_bionics()
+{
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "ui: status mirror not ready" );
+        return;
+    }
+    avatar &you = get_avatar();
+    uilist menu;
+    menu.desc_enabled = true;
+    menu.title = netplay::fork_text( "Bionics" );
+    menu.text = string_format( netplay::fork_text( "Bionic power: %s" ),
+                               units::display( you.get_power_level() ) );
+    int rows = 0;
+    for( const bionic &bio : *you.my_bionics ) {
+        std::string label = bio.info().name.translated();
+        if( !bio.info().activated ) {
+            label += "  (" + netplay::fork_text( "passive" ) + ")";
+        } else if( bio.powered ) {
+            label += "  (" + netplay::fork_text( "active" ) + ")";
+        } else {
+            label += "  (" + netplay::fork_text( "ready" ) + ")";
+        }
+        menu.addentry_desc( static_cast<int>( menu.entries.size() ), false, MENU_AUTOASSIGN,
+                            label, bio.info().description.translated() );
+        menu.entries.back().text_color = bio.powered ? c_light_green
+                                        : bio.info().activated ? c_light_gray : c_dark_gray;
+        ++rows;
+    }
+    if( rows == 0 ) {
+        menu.text += "\n" + netplay::fork_text( "No bionics installed." );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "ui: bionics open entries=%d", rows ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( "ui: bionics closed" );
+}
+
+/* DDA MP v4.0a-196: read-only mutation list from the mirror. Activated
+ * mutations are marked, but toggling them stays on the host: some activations
+ * run effect-on-conditions against the host player. */
+static void mp_run_mutations()
+{
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "ui: status mirror not ready" );
+        return;
+    }
+    avatar &you = get_avatar();
+    uilist menu;
+    menu.desc_enabled = true;
+    menu.title = netplay::fork_text( "Mutations" );
+    int rows = 0;
+    for( const auto &mut : you.my_mutations ) {
+        if( mut.second.corrupted > 0 || !mut.first->player_display ) {
+            continue;
+        }
+        std::string label = you.mutation_name( mut.first );
+        if( mut.first->activated ) {
+            label += mut.second.powered ? "  (" + netplay::fork_text( "active" ) + ")"
+                     : "  (" + netplay::fork_text( "ready" ) + ")";
+        } else {
+            label += "  (" + netplay::fork_text( "passive" ) + ")";
+        }
+        menu.addentry_desc( static_cast<int>( menu.entries.size() ), false, MENU_AUTOASSIGN,
+                            label, you.mutation_desc( mut.first ) );
+        menu.entries.back().text_color = mut.second.powered ? c_light_green
+                                        : mut.first->activated ? c_light_gray : c_dark_gray;
+        ++rows;
+    }
+    if( rows == 0 ) {
+        menu.text = netplay::fork_text( "No mutations." );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "ui: mutations open entries=%d", rows ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( "ui: mutations closed" );
+}
+
+/* DDA MP v4.0a-196: haul orders. The engine keeps haul state on Character, so
+ * the session avatar can haul like the host player; item selection by hand
+ * stays local to the host for now. */
+static void mp_run_haul()
+{
+    uilist menu;
+    menu.text = netplay::fork_text( "Hauling" );
+    menu.addentry( netplay::fork_text( "Haul everything here" ) );
+    menu.addentry( netplay::fork_text( "Stop hauling" ) );
+    menu.addentry( netplay::fork_text( "Enable autohaul" ) );
+    menu.addentry( netplay::fork_text( "Disable autohaul" ) );
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    static const char *const orders[] = { "haul_here", "haul_stop",
+                                          "autohaul_on", "autohaul_off"
+                                        };
+    if( menu.ret >= 0 &&
+        menu.ret < static_cast<int>( sizeof( orders ) / sizeof( orders[0] ) ) ) {
+        netplay::client_send_intent( orders[menu.ret], 0, {} );
+        mp_inv_log( string_format( "action: %s", orders[menu.ret] ) );
+    }
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -3477,6 +3592,22 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             // DDA MP v4.0a-191: the host streams this session's mission list.
             netplay::client_send_intent( "mission_journal", 0, {} );
             mp_inv_log( "missions: journal requested" );
+            break;
+        case ACTION_BIONICS:
+            // DDA MP v4.0a-196: read-only bionic list on the mirror.
+            mp_run_bionics();
+            break;
+        case ACTION_MUTATIONS:
+            // DDA MP v4.0a-196: read-only mutation list on the mirror.
+            mp_run_mutations();
+            break;
+        case ACTION_HAUL:
+            // DDA MP v4.0a-196: haul orders run on the host for this avatar.
+            mp_run_haul();
+            break;
+        case ACTION_HAUL_TOGGLE:
+            netplay::client_send_intent( "haul_toggle", 0, {} );
+            mp_inv_log( "action: haul_toggle" );
             break;
         case ACTION_PICK_STYLE:
             // DDA MP v4.0a-187: pick the style on the mirror, then tell the
@@ -3634,12 +3765,13 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_CHAT );
             MP_REGISTER_ACTION( ACTION_PICKUP );
             MP_REGISTER_ACTION( ACTION_PICKUP_ALL );
-            // DDA MP v4.0a-181: grab/haul need host-side hauling state.
+            // DDA MP v4.0a-181: grab needs avatar-only dragging state; haul is
+            // Character state and works through host intents (v4.0a-196).
 #if 0
             MP_REGISTER_ACTION( ACTION_GRAB );
+#endif
             MP_REGISTER_ACTION( ACTION_HAUL );
             MP_REGISTER_ACTION( ACTION_HAUL_TOGGLE );
-#endif
             MP_REGISTER_ACTION( ACTION_BUTCHER );
             MP_REGISTER_ACTION( ACTION_LOOT );
         } else if( category == _( "Inventory" ) ) {
@@ -3728,10 +3860,12 @@ static int mp_client_action_menu()
         } else if( category == _( "Misc" ) ) {
             MP_REGISTER_ACTION( ACTION_WAIT );
             MP_REGISTER_ACTION( ACTION_SLEEP );
-#if 0
-            MP_REGISTER_ACTION( ACTION_WORKOUT );
+            // DDA MP v4.0a-196: bionics and mutations are read-only lists on
+            // the mirror; workout still needs the host's intensity/duration UI.
             MP_REGISTER_ACTION( ACTION_BIONICS );
             MP_REGISTER_ACTION( ACTION_MUTATIONS );
+#if 0
+            MP_REGISTER_ACTION( ACTION_WORKOUT );
 #endif
             MP_REGISTER_ACTION( ACTION_CONTROL_VEHICLE );
             MP_REGISTER_ACTION( ACTION_ITEMACTION );
@@ -6151,6 +6285,12 @@ void run_view_loop()
                             "1" "\x1e" "Second item" "\x1e" "250" "\x1e" "1" "\x1e" "0" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
+                    } else if( action_name == "haul" ) {
+                        netplay::client_send_intent( "haul_toggle", 0, {} );
+                    } else if( action_name == "bionics" ) {
+                        mp_client_dispatch_action( ACTION_BIONICS, "", "" );
+                    } else if( action_name == "mutations" ) {
+                        mp_client_dispatch_action( ACTION_MUTATIONS, "", "" );
                     } else if( action_name == "butcher" ) {
                         netplay::client_send_intent( "butcher", 0, { 0, 0 } );
                     } else if( action_name == "construct" ) {
