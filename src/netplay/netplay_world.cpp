@@ -4627,7 +4627,10 @@ static std::string mp_mission_status_text( mission::mission_status st )
 static void mp_send_mission_offers( int sid, npc &other )
 {
     std::string payload;
+    int total = 0;
+    int shown = 0;
     for( size_t i = 0; i < other.chatbin.missions.size(); i++ ) {
+        ++total;
         mission *m = other.chatbin.missions[i];
         if( m == nullptr || m->is_assigned() ) {
             continue;
@@ -4638,6 +4641,12 @@ static void mp_send_mission_offers( int sid, npc &other )
         payload += std::to_string( i );
         payload += '\x1e';
         payload += m->name();
+        ++shown;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "missions offers sid=%d npc=%s total=%d shown=%d\n",
+                      sid, other.get_name().c_str(), total, shown );
+        std::fclose( f );
     }
     if( payload.empty() ) {
         netplay::host_send_event_to_sid( sid, fork_text( "No missions available." ),
@@ -4916,8 +4925,22 @@ void host_pump_intents()
                 npc *other = dynamic_cast<npc *>( cr );
                 if( other != nullptr && other != av && !other->is_enemy() &&
                     !mp_is_player_creature( other ) ) {
+                    if( const char *test_mission = std::getenv( "DDA_MP_TEST_NPC_MISSION" );
+                        test_mission != nullptr && test_mission[0] != '\0' &&
+                        other->chatbin.missions.empty() ) {
+                        mission *m = mission::reserve_random( ORIGIN_ANY_NPC,
+                                                              other->pos_abs_omt(),
+                                                              other->getID() );
+                        if( m != nullptr ) {
+                            other->chatbin.missions.push_back( m );
+                        }
+                    }
                     other->chatbin.check_missions();
                     mp_send_mission_offers( in.sid, *other );
+                } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "missions request sid=%d dx=%d dy=%d result=no_npc\n",
+                                  in.sid, in.args[0], in.args[1] );
+                    std::fclose( f );
                 }
             }
             continue;
@@ -4938,11 +4961,20 @@ void host_pump_intents()
                         other->chatbin.missions.erase( other->chatbin.missions.begin() + idx );
                         other->chatbin.missions_assigned.push_back( m );
                         mp_session_missions[in.sid].push_back( m );
+                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "mission accept sid=%d npc=%s mission=%s result=ok\n",
+                                          in.sid, other->get_name().c_str(), m->name().c_str() );
+                            std::fclose( f );
+                        }
                         netplay::host_send_event_to_sid(
                             in.sid,
                             string_format( fork_text( "Mission accepted: %s" ), m->name() ),
                             static_cast<int>( m_good ) );
                     }
+                } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "mission accept sid=%d dx=%d dy=%d idx=%d result=no_npc\n",
+                                  in.sid, in.args[0], in.args[1], idx );
+                    std::fclose( f );
                 }
             }
             continue;
@@ -5016,6 +5048,10 @@ void host_pump_intents()
                 npc *other = dynamic_cast<npc *>( cr );
                 const int mode = in.args.size() >= 3 ? in.args[2] : 0;
                 if( other != nullptr && other != av && !other->is_enemy() ) {
+                    if( const char *test_cash = std::getenv( "DDA_MP_TEST_NPC_CASH" );
+                        test_cash != nullptr && test_cash[0] != '\0' ) {
+                        other->cash = std::max( other->cash, std::atoi( test_cash ) );
+                    }
                     mp_send_trade_list( in.sid, *av, *other, mode == 1 ? 1 : 0 );
                 }
             }
@@ -5030,6 +5066,16 @@ void host_pump_intents()
                 Creature *cr = get_creature_tracker().creature_at( p );
                 npc *other = dynamic_cast<npc *>( cr );
                 const int idx = in.args[2];
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "trade request sid=%d action=%s dx=%d dy=%d idx=%d "
+                                  "npc=%s npc_id=%d cached_id=%d items=%d\n",
+                                  in.sid, in.action.c_str(), in.args[0], in.args[1], idx,
+                                  other != nullptr ? other->get_name().c_str() : "none",
+                                  other != nullptr ? other->getID().get_value() : -1,
+                                  mp_trade_npc_id[in.sid],
+                                  static_cast<int>( mp_trade_items[in.sid].size() ) );
+                    std::fclose( f );
+                }
                 if( other != nullptr && other != av &&
                     mp_trade_npc_id[in.sid] == other->getID().get_value() &&
                     idx >= 0 && idx < static_cast<int>( mp_trade_items[in.sid].size() ) ) {
@@ -5043,7 +5089,12 @@ void host_pump_intents()
                                           : entry.price;
                         const int credit_used = std::min( price, mp_trade_credit[in.sid] );
                         const int pay = price - credit_used;
-                        if( av->cash < pay ) {
+                        if( pay > 0 && av->cash < pay ) {
+                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "trade buy sid=%d price=%d pay=%d credit=%d cash=%d result=no_money\n",
+                                              in.sid, price, pay, credit_used, av->cash );
+                                std::fclose( f );
+                            }
                             netplay::host_send_event_to_sid(
                                 in.sid, fork_text( "You don't have enough money." ),
                                 static_cast<int>( m_bad ) );
@@ -5058,6 +5109,11 @@ void host_pump_intents()
                                 mp_trade_credit[in.sid] -= credit_used;
                                 av->cash -= pay;
                                 other->cash += pay;
+                                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                    std::fprintf( f, "trade buy sid=%d price=%d pay=%d credit=%d cash=%d result=ok\n",
+                                                  in.sid, price, pay, credit_used, av->cash );
+                                    std::fclose( f );
+                                }
                                 netplay::host_send_event_to_sid(
                                     in.sid,
                                     string_format( fork_text( "You buy %s for %s." ),
@@ -5070,7 +5126,12 @@ void host_pump_intents()
                         const int price = entry.charge
                                           ? npc_trading::adjusted_price( entry.it, amount, *other, *av )
                                           : entry.price;
-                        if( other->cash < price ) {
+                        if( price > 0 && other->cash < price ) {
+                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "trade sell sid=%d price=%d npc_cash=%d cash=%d result=no_money\n",
+                                              in.sid, price, other->cash, av->cash );
+                                std::fclose( f );
+                            }
                             netplay::host_send_event_to_sid(
                                 in.sid, fork_text( "The trader doesn't have enough money." ),
                                 static_cast<int>( m_bad ) );
@@ -5084,6 +5145,11 @@ void host_pump_intents()
                                 other->i_add( gift );
                                 av->cash += price;
                                 other->cash -= price;
+                                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                    std::fprintf( f, "trade sell sid=%d price=%d npc_cash=%d cash=%d result=ok\n",
+                                                  in.sid, price, other->cash, av->cash );
+                                    std::fclose( f );
+                                }
                                 netplay::host_send_event_to_sid(
                                     in.sid,
                                     string_format( fork_text( "You sell %s for %s." ),
@@ -5108,6 +5174,11 @@ void host_pump_intents()
                 npc *other = dynamic_cast<npc *>( cr );
                 if( other != nullptr && other != av && !other->is_enemy() &&
                     !mp_is_player_creature( other ) ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "npc talk sid=%d npc=%s dx=%d dy=%d\n",
+                                      in.sid, other->get_name().c_str(), in.args[0], in.args[1] );
+                        std::fclose( f );
+                    }
                     mp_start_dialogue( in.sid, *av, *other );
                 }
             }

@@ -3115,6 +3115,21 @@ static void mp_run_mission_offers( const std::string &payload )
     if( offers.empty() ) {
         return;
     }
+    // DDA MP test hook: accept the first offer without opening the menu.
+    if( const char *auto_mission = std::getenv( "DDA_MP_TEST_MISSION_AUTO" );
+        auto_mission != nullptr && auto_mission[0] != '\0' ) {
+        static bool mp_test_mission_done = false;
+        if( mp_test_mission_done ) {
+            return;
+        }
+        mp_test_mission_done = true;
+        netplay::client_send_intent(
+            "mission_accept", 0,
+            { mp_mission_dx, mp_mission_dy, offers.front().first } );
+        mp_inv_log( string_format( "missions auto-accept: index=%d offers=%d",
+                                   offers.front().first, static_cast<int>( offers.size() ) ) );
+        return;
+    }
     uilist menu;
     menu.text = netplay::fork_text( "Available missions" );
     for( const auto &offer : offers ) {
@@ -3273,6 +3288,45 @@ static void mp_run_trade( const std::string &payload )
         }
     }
     if( entries.empty() ) {
+        return;
+    }
+    for( const trade_entry &e : entries ) {
+        mp_inv_log( string_format( "trade entry: %s price=%d count=%d charge=%d",
+                                   e.name, e.price, e.count, e.charge ? 1 : 0 ) );
+    }
+    // DDA MP test hook: perform one transaction without opening the menu so
+    // the host-side transfer path can be checked automatically.
+    if( const char *auto_trade = std::getenv( "DDA_MP_TEST_TRADE_AUTO" );
+        auto_trade != nullptr && auto_trade[0] != '\0' ) {
+        static bool mp_test_trade_done = false;
+        if( mp_test_trade_done ) {
+            return;
+        }
+        mp_test_trade_done = true;
+        if( mode == 1 ) {
+            const trade_entry *pick = &entries.front();
+            for( const trade_entry &e : entries ) {
+                if( e.price == 0 ) {
+                    pick = &e;
+                    break;
+                }
+            }
+            netplay::client_send_intent( "trade_sell", 0,
+                                         { mp_trade_dx, mp_trade_dy, pick->index, 1 } );
+            mp_inv_log( string_format( "trade auto-sell: index=%d price=%d",
+                                       pick->index, pick->price ) );
+            return;
+        }
+        for( const trade_entry &e : entries ) {
+            if( e.price == 0 ) {
+                netplay::client_send_intent( "trade_buy", 0,
+                                             { mp_trade_dx, mp_trade_dy, e.index, 1 } );
+                mp_inv_log( string_format( "trade auto-buy: index=%d price=%d",
+                                           e.index, e.price ) );
+                return;
+            }
+        }
+        mp_inv_log( "trade auto-buy: no zero-price entry" );
         return;
     }
     uilist menu;
@@ -6230,6 +6284,30 @@ void run_view_loop()
                     }
                 }
             }
+            // DDA MP test hook: report NPC frames once the first snapshots are
+            // in, so an automated run can tell whether the test world has one.
+            if( const char *test_npcs = std::getenv( "DDA_MP_TEST_LOG_NPCS" );
+                test_npcs != nullptr && test_npcs[0] != '\0' ) {
+                static bool mp_test_npcs_done = false;
+                static int mp_test_npc_frames = 0;
+                if( !mp_test_npcs_done && ++mp_test_npc_frames >= 10 ) {
+                    mp_test_npcs_done = true;
+                    const tripoint_abs_ms avpos = get_avatar().pos_abs();
+                    int found = 0;
+                    for( const snapshot::creature_frame &cf : snap.creatures ) {
+                        if( cf.kind != 1 ) {
+                            continue;
+                        }
+                        ++found;
+                        mp_inv_log( string_format(
+                                        "test: npc dx=%d dy=%d json=%.160s",
+                                        cf.ax - avpos.x(), cf.ay - avpos.y(), cf.json.c_str() ) );
+                    }
+                    if( found == 0 ) {
+                        mp_inv_log( "test: npc none" );
+                    }
+                }
+            }
             // DDA MP test hook: put the client into long wait/AFK so the host
             // can advance rounds without it.
             if( const char *test_afk = std::getenv( "DDA_MP_TEST_CLIENT_AFK" );
@@ -6250,6 +6328,17 @@ void run_view_loop()
                 if( !mp_test_action_once && mp_native_avatar_ready ) {
                     const std::string action_name( test_action );
                     bool sent = true;
+                    const auto mp_test_find_npc = [&]( int &dx, int &dy ) -> bool {
+                        const tripoint_abs_ms avpos = get_avatar().pos_abs();
+                        for( const snapshot::creature_frame &cf : snap.creatures ) {
+                            if( cf.kind == 1 ) {
+                                dx = cf.ax - avpos.x();
+                                dy = cf.ay - avpos.y();
+                                return true;
+                            }
+                        }
+                        return false;
+                    };
                     if( action_name == "smash" ) {
                         netplay::client_send_client_action( ACTION_SMASH );
                     } else if( action_name == "cycle_move" ) {
@@ -6274,6 +6363,32 @@ void run_view_loop()
                             "1" "\x1e" "Option B" "\x1f" "-1" "\x1e" "Close" );
                     } else if( action_name == "npc_talk" ) {
                         netplay::client_send_intent( "talk_npc", 0, { 0, -1 } );
+                    } else if( action_name == "npc_real_talk" ||
+                               action_name == "npc_real_missions" ||
+                               action_name == "npc_real_trade" ||
+                               action_name == "npc_real_sell" ) {
+                        int dx = 0;
+                        int dy = 0;
+                        if( mp_test_find_npc( dx, dy ) ) {
+                            if( action_name == "npc_real_talk" ) {
+                                netplay::client_send_intent( "talk_npc", 0, { dx, dy } );
+                            } else if( action_name == "npc_real_missions" ) {
+                                mp_mission_dx = dx;
+                                mp_mission_dy = dy;
+                                netplay::client_send_intent( "mission_offers", 0, { dx, dy } );
+                            } else if( action_name == "npc_real_sell" ) {
+                                mp_trade_dx = dx;
+                                mp_trade_dy = dy;
+                                netplay::client_send_intent( "trade_list", 0, { dx, dy, 1 } );
+                            } else {
+                                mp_trade_dx = dx;
+                                mp_trade_dy = dy;
+                                netplay::client_send_intent( "trade_list", 0, { dx, dy, 0 } );
+                            }
+                            mp_inv_log( string_format( "test: npc target %d,%d", dx, dy ) );
+                        } else {
+                            sent = false;
+                        }
                     } else if( action_name == "missions" ) {
                         mp_run_mission_journal(
                             "Test mission" "\x1e" "In progress" "\x1e" "Do the thing" "\x1f"
