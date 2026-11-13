@@ -70,6 +70,7 @@
 #include "trap.h"
 #include "ui_manager.h"
 #include "uilist.h"
+#include "vehicle.h"
 #include "weather.h"
 #include "overmapbuffer.h"
 #include "worldfactory.h"
@@ -4719,6 +4720,10 @@ static void mp_send_trade_list( int sid, npc &av, npc &other, int mode )
     std::string payload = std::to_string( mode );
     payload += '\x1f';
     payload += std::to_string( mp_trade_credit[sid] );
+    payload += '\x1f';
+    payload += std::to_string( av.cash );
+    payload += '\x1f';
+    payload += std::to_string( other.cash );
     int shown = 0;
     const auto add = [&]( item *it, int price ) {
         if( it == nullptr || shown >= 80 ) {
@@ -4873,6 +4878,54 @@ void host_pump_intents()
             av_send_status( in.sid );
             if( !netplay::host_avatar_keys_pending() ) {
                 g->mp_anchor_map_on( get_avatar() );
+            }
+            continue;
+        }
+        // DDA MP v4.0a-198: read-only vehicle status for the session avatar.
+        if( in.action == "vehicle_info" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+                if( !vp ) {
+                    netplay::host_send_event_to_sid(
+                        in.sid, fork_text( "You are not in a vehicle." ),
+                        static_cast<int>( m_info ) );
+                } else {
+                    vehicle &veh = vp->vehicle();
+                    const std::pair<int, int> bat = veh.battery_power_level();
+                    int damaged = 0;
+                    for( int i = 0; i < veh.part_count(); ++i ) {
+                        if( veh.part( i ).damage() > 0 ) {
+                            ++damaged;
+                        }
+                    }
+                    std::string payload = veh.name;
+                    payload += '\x1e';
+                    payload += std::to_string( veh.velocity / 100 );
+                    payload += '\x1e';
+                    payload += std::to_string( veh.cruise_velocity / 100 );
+                    payload += '\x1e';
+                    payload += veh.engine_on ? "1" : "0";
+                    payload += '\x1e';
+                    payload += std::to_string( bat.first );
+                    payload += '\x1e';
+                    payload += std::to_string( bat.second );
+                    payload += '\x1e';
+                    payload += std::to_string( veh.part_count() );
+                    payload += '\x1e';
+                    payload += std::to_string( damaged );
+                    for( const std::pair<const itype_id, int> &fuel : veh.fuels_left() ) {
+                        if( fuel.first == itype_id( "battery" ) || fuel.second <= 0 ) {
+                            continue;
+                        }
+                        payload += '\x1f';
+                        payload += fuel.first.str();
+                        payload += '\x1e';
+                        payload += std::to_string( fuel.second );
+                    }
+                    netplay::host_send_event_to_sid( in.sid, payload,
+                                                     netplay::EVENT_VEHICLE_INFO );
+                }
             }
             continue;
         }

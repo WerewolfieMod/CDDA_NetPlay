@@ -2941,6 +2941,8 @@ static void mp_run_client_construct()
 /* DDA MP v4.0a-174: custom action-menu id for "help the busy player". It is
  * higher than NUM_ACTIONS but handled before the category checks. */
 static constexpr int MP_ACTION_HELP_NEARBY = 91000;
+/// DDA MP v4.0a-198: read-only vehicle status entry.
+static constexpr int MP_ACTION_VEHICLE_INFO = 91001;
 /// Whether this client believes it is currently helping (drives the stop
 /// confirmation). The host is authoritative: EVENT_HELP resets it when the
 /// assistance ends or a request is refused.
@@ -3246,6 +3248,8 @@ static void mp_run_trade( const std::string &payload )
     const std::string::size_type first = payload.find( '\x1f' );
     const int mode = std::atoi( payload.substr( 0, first ).c_str() );
     int reward_credit = 0;
+    int own_cash = 0;
+    int trader_cash = 0;
     std::string::size_type pos = payload.size();
     if( first != std::string::npos ) {
         const std::string::size_type second = payload.find( '\x1f', first + 1 );
@@ -3253,6 +3257,20 @@ static void mp_run_trade( const std::string &payload )
                                  second == std::string::npos
                                  ? std::string::npos : second - first - 1 ).c_str() );
         pos = second == std::string::npos ? payload.size() : second + 1;
+        if( second != std::string::npos ) {
+            const std::string::size_type third = payload.find( '\x1f', second + 1 );
+            own_cash = std::atoi( payload.substr( second + 1,
+                                                  third == std::string::npos
+                                                  ? std::string::npos : third - second - 1 ).c_str() );
+            pos = third == std::string::npos ? payload.size() : third + 1;
+            if( third != std::string::npos ) {
+                const std::string::size_type fourth = payload.find( '\x1f', third + 1 );
+                trader_cash = std::atoi( payload.substr( third + 1,
+                                        fourth == std::string::npos
+                                        ? std::string::npos : fourth - third - 1 ).c_str() );
+                pos = fourth == std::string::npos ? payload.size() : fourth + 1;
+            }
+        }
     }
     struct trade_entry {
         int index = 0;
@@ -3332,11 +3350,15 @@ static void mp_run_trade( const std::string &payload )
     uilist menu;
     menu.text = mode == 1 ? netplay::fork_text( "Trade: sell" )
                 : netplay::fork_text( "Trade: buy" );
+    menu.text += "\n" + string_format( netplay::fork_text( "Money: %s   Trader: %s" ),
+                                       format_money( own_cash ),
+                                       format_money( trader_cash ) );
     if( reward_credit > 0 ) {
         menu.text += "  |  " + string_format(
                          netplay::fork_text( "Reward credit: %s" ),
                          format_money( reward_credit ) );
     }
+    const int funds = own_cash + reward_credit;
     for( const trade_entry &e : entries ) {
         std::string label = e.name;
         if( e.charge && e.count > 1 ) {
@@ -3344,11 +3366,20 @@ static void mp_run_trade( const std::string &payload )
         }
         label += "  -  " + format_money( e.price );
         menu.addentry( label );
+        // Charge stacks can be bought in smaller amounts, so only whole-item
+        // prices are checked here; the host still validates the final deal.
+        const bool too_expensive = !e.charge && e.price > 0 &&
+                                   ( mode == 1 ? e.price > trader_cash : e.price > funds );
+        if( too_expensive ) {
+            menu.entries.back().enabled = false;
+            menu.entries.back().text_color = c_dark_gray;
+        }
     }
     menu.addentry( mode == 1 ? netplay::fork_text( "Buy" ) : netplay::fork_text( "Sell" ) );
     menu.addentry( netplay::fork_text( "Close" ) );
-    mp_inv_log( string_format( "trade open: mode=%d entries=%d",
-                               mode, static_cast<int>( entries.size() ) ) );
+    mp_inv_log( string_format( "trade open: mode=%d entries=%d own=%d trader=%d credit=%d",
+                               mode, static_cast<int>( entries.size() ),
+                               own_cash, trader_cash, reward_credit ) );
     {
         ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
         menu.query();
@@ -3500,6 +3531,69 @@ static void mp_run_haul()
     }
 }
 
+/* DDA MP v4.0a-198: read-only vehicle status window. The host sends the
+ * numbers and fuel ids; the client resolves names from its own data. */
+static void mp_run_vehicle_info( const std::string &payload )
+{
+    const std::string::size_type split = payload.find( '\x1f' );
+    std::string header = payload.substr( 0, split );
+    std::vector<std::string> fields;
+    std::string::size_type pos = 0;
+    while( pos <= header.size() ) {
+        const std::string::size_type sep = header.find( '\x1e', pos );
+        fields.push_back( header.substr( pos, sep == std::string::npos
+                                        ? std::string::npos : sep - pos ) );
+        if( sep == std::string::npos ) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    if( fields.size() < 8 ) {
+        return;
+    }
+    uilist menu;
+    menu.title = netplay::fork_text( "Vehicle" );
+    menu.text = fields[0];
+    menu.text += "\n" + string_format( netplay::fork_text( "Speed: %d mph   Cruise: %d mph" ),
+                                       std::atoi( fields[1].c_str() ),
+                                       std::atoi( fields[2].c_str() ) );
+    menu.text += "\n" + ( std::atoi( fields[3].c_str() ) != 0
+                          ? netplay::fork_text( "Engine: on" )
+                          : netplay::fork_text( "Engine: off" ) );
+    menu.text += "\n" + string_format( netplay::fork_text( "Battery: %d/%d kJ" ),
+                                       std::atoi( fields[4].c_str() ),
+                                       std::atoi( fields[5].c_str() ) );
+    menu.text += "\n" + string_format( netplay::fork_text( "Parts: %d   Damaged: %d" ),
+                                       std::atoi( fields[6].c_str() ),
+                                       std::atoi( fields[7].c_str() ) );
+    if( split != std::string::npos ) {
+        std::string::size_type fuel_pos = split + 1;
+        while( fuel_pos <= payload.size() ) {
+            const std::string::size_type sep = payload.find( '\x1f', fuel_pos );
+            const std::string fuel = payload.substr( fuel_pos, sep == std::string::npos
+                                                    ? std::string::npos : sep - fuel_pos );
+            const std::string::size_type us = fuel.find( '\x1e' );
+            if( us != std::string::npos && us > 0 ) {
+                const itype_id fid( fuel.substr( 0, us ) );
+                menu.text += "\n" + string_format( netplay::fork_text( "Fuel: %s %d" ),
+                                                   item::nname( fid ),
+                                                   std::atoi( fuel.substr( us + 1 ).c_str() ) );
+            }
+            if( sep == std::string::npos ) {
+                break;
+            }
+            fuel_pos = sep + 1;
+        }
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "ui: vehicle info open parts=%s", fields[6].c_str() ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( "ui: vehicle info closed" );
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -3517,6 +3611,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         }
         netplay::client_send_intent( "help", 0, {} );
         mp_client_helping = !mp_client_helping;
+        return;
+    }
+    if( act == MP_ACTION_VEHICLE_INFO ) {
+        netplay::client_send_intent( "vehicle_info", 0, {} );
+        mp_inv_log( "action: vehicle_info" );
         return;
     }
     switch( static_cast<action_id>( act ) ) {
@@ -3922,6 +4021,9 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_WORKOUT );
 #endif
             MP_REGISTER_ACTION( ACTION_CONTROL_VEHICLE );
+            // DDA MP v4.0a-198: read-only vehicle status from host data.
+            entries.emplace_back( MP_ACTION_VEHICLE_INFO, true, -1,
+                                  netplay::fork_text( "Vehicle status" ) );
             MP_REGISTER_ACTION( ACTION_ITEMACTION );
 #if 0
             MP_REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
@@ -3961,6 +4063,9 @@ static int mp_client_action_menu()
         // handling below (their ids also live above NUM_ACTIONS).
         if( selection == MP_ACTION_HELP_NEARBY ) {
             return MP_ACTION_HELP_NEARBY;
+        }
+        if( selection == MP_ACTION_VEHICLE_INFO ) {
+            return MP_ACTION_VEHICLE_INFO;
         }
 
         if( selection < 0 || selection == NUM_ACTIONS ) {
@@ -5346,6 +5451,10 @@ void run_view_loop()
                         mp_run_trade( mp_ev_text );
                         continue;
                     }
+                    if( mp_ev_type == netplay::EVENT_VEHICLE_INFO ) {
+                        mp_run_vehicle_info( mp_ev_text );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -6395,13 +6504,16 @@ void run_view_loop()
                             "Second mission" "\x1e" "Completed" "\x1e" "Already done" );
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
-                            "0" "\x1f" "0" "\x1f" "0" "\x1e" "Test item" "\x1e" "100"
+                            "0" "\x1f" "0" "\x1f" "0" "\x1f" "0" "\x1f"
+                            "0" "\x1e" "Test item" "\x1e" "100"
                             "\x1e" "1" "\x1e" "0" "\x1f"
                             "1" "\x1e" "Second item" "\x1e" "250" "\x1e" "1" "\x1e" "0" );
                     } else if( action_name == "morale" ) {
                         mp_client_dispatch_action( ACTION_MORALE, "", "" );
                     } else if( action_name == "haul" ) {
                         netplay::client_send_intent( "haul_toggle", 0, {} );
+                    } else if( action_name == "vehicle_info" ) {
+                        netplay::client_send_intent( "vehicle_info", 0, {} );
                     } else if( action_name == "bionics" ) {
                         mp_client_dispatch_action( ACTION_BIONICS, "", "" );
                     } else if( action_name == "mutations" ) {
