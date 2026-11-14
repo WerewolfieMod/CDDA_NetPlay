@@ -4058,9 +4058,8 @@ static int mp_client_action_menu()
             entries.emplace_back( MP_ACTION_VEHICLE_INFO, true, -1,
                                   netplay::fork_text( "Vehicle status" ) );
             MP_REGISTER_ACTION( ACTION_ITEMACTION );
-#if 0
+            // DDA MP v4.0a-200: per-character theft mode cycles on the host.
             MP_REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
-#endif
             // DDA MP v4.0a-174: assistance for a nearby busy player.
             entries.emplace_back( MP_ACTION_HELP_NEARBY, true, 'H',
                                   netplay::fork_text( "Help the busy player" ) );
@@ -6549,6 +6548,8 @@ void run_view_loop()
                         netplay::client_send_intent( "vehicle_info", 0, {} );
                     } else if( action_name == "workout" ) {
                         netplay::client_send_intent( "workout", 0, { 1, 5 } );
+                    } else if( action_name == "thief" ) {
+                        netplay::client_send_client_action( ACTION_TOGGLE_THIEF_MODE );
                     } else if( action_name == "bionics" ) {
                         mp_client_dispatch_action( ACTION_BIONICS, "", "" );
                     } else if( action_name == "mutations" ) {

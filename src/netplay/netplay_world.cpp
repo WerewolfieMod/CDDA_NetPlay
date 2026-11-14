@@ -3520,6 +3520,38 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_TOGGLE_THIEF_MODE: {
+                // DDA MP v4.0a-200: THIEF_MODE is a per-character value, so the
+                // session avatar can cycle it like the host player does.
+                const std::string mode = av->get_value( "THIEF_MODE" ).str();
+                std::string next = "THIEF_ASK";
+                std::string msgid;
+                if( mode == "THIEF_ASK" ) {
+                    next = "THIEF_HONEST";
+                    msgid = "Thief mode: Always Honest - you will not pick up others' belongings.";
+                } else if( mode == "THIEF_HONEST" ) {
+                    next = "THIEF_STEAL";
+                    msgid = "Thief mode: Always Steal - you will pick up others' belongings without prompting.";
+                } else if( mode == "THIEF_STEAL" ) {
+                    next = "THIEF_ASK";
+                    msgid = "Thief mode: Default - you will be prompted when picking up owned items.";
+                }
+                av->set_value( "THIEF_MODE", next );
+                if( msgid.empty() ) {
+                    netplay::host_send_event_fmt_to_sid(
+                        sid, "THIEF_MODE CONTAINED BAD VALUE [ %s ]!", { mode },
+                        static_cast<int>( m_info ) );
+                } else {
+                    netplay::host_send_event_fmt_to_sid(
+                        sid, msgid, {}, static_cast<int>( m_info ) );
+                }
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "thief mode sid=%d value=%s\n", sid, next.c_str() );
+                    std::fclose( f );
+                }
+                changed = true;
+                break;
+            }
             case ACTION_CYCLE_MOVE:
             case ACTION_CYCLE_MOVE_REVERSE: {
                 // DDA MP v4.0a-181: the action-menu cycle entry used to fall
