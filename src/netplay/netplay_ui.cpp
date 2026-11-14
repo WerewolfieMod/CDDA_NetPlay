@@ -2943,6 +2943,8 @@ static void mp_run_client_construct()
 static constexpr int MP_ACTION_HELP_NEARBY = 91000;
 /// DDA MP v4.0a-198: read-only vehicle status entry.
 static constexpr int MP_ACTION_VEHICLE_INFO = 91001;
+/// DDA MP v4.0a-201: refuel vehicle from carried fuel.
+static constexpr int MP_ACTION_VEHICLE_REFUEL = 91002;
 /// Whether this client believes it is currently helping (drives the stop
 /// confirmation). The host is authoritative: EVENT_HELP resets it when the
 /// assistance ends or a request is refused.
@@ -3648,6 +3650,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         mp_inv_log( "action: vehicle_info" );
         return;
     }
+    if( act == MP_ACTION_VEHICLE_REFUEL ) {
+        netplay::client_send_intent( "vehicle_refuel", 0, {} );
+        mp_inv_log( "action: vehicle_refuel" );
+        return;
+    }
     switch( static_cast<action_id>( act ) ) {
         case ACTION_INVENTORY:
         case ACTION_ADVANCEDINV:
@@ -4057,6 +4064,9 @@ static int mp_client_action_menu()
             // DDA MP v4.0a-198: read-only vehicle status from host data.
             entries.emplace_back( MP_ACTION_VEHICLE_INFO, true, -1,
                                   netplay::fork_text( "Vehicle status" ) );
+            // DDA MP v4.0a-201: refuel from carried fuel.
+            entries.emplace_back( MP_ACTION_VEHICLE_REFUEL, true, -1,
+                                  netplay::fork_text( "Refuel vehicle" ) );
             MP_REGISTER_ACTION( ACTION_ITEMACTION );
             // DDA MP v4.0a-200: per-character theft mode cycles on the host.
             MP_REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
@@ -4098,6 +4108,9 @@ static int mp_client_action_menu()
         }
         if( selection == MP_ACTION_VEHICLE_INFO ) {
             return MP_ACTION_VEHICLE_INFO;
+        }
+        if( selection == MP_ACTION_VEHICLE_REFUEL ) {
+            return MP_ACTION_VEHICLE_REFUEL;
         }
 
         if( selection < 0 || selection == NUM_ACTIONS ) {
@@ -6546,6 +6559,8 @@ void run_view_loop()
                         netplay::client_send_intent( "haul_toggle", 0, {} );
                     } else if( action_name == "vehicle_info" ) {
                         netplay::client_send_intent( "vehicle_info", 0, {} );
+                    } else if( action_name == "vehicle_refuel" ) {
+                        netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
                     } else if( action_name == "workout" ) {
                         netplay::client_send_intent( "workout", 0, { 1, 5 } );
                     } else if( action_name == "thief" ) {

@@ -71,6 +71,8 @@
 #include "ui_manager.h"
 #include "uilist.h"
 #include "vehicle.h"
+#include "veh_interact.h"
+#include "veh_type.h"
 #include "weather.h"
 #include "overmapbuffer.h"
 #include "worldfactory.h"
@@ -4823,6 +4825,180 @@ static bool mp_take_item_part( Character &from, item *it, int amount, item &out 
     return true;
 }
 
+/* DDA MP v4.0a-201: refuel a vehicle from the session avatar's inventory.
+ * Mirrors veh_interact::do_refill: pick the first refillable part with a
+ * compatible item and let the engine's vehicle activity do the transfer. */
+static void mp_vehicle_refuel( int sid, npc &av )
+{
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    if( !vp ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "vehicle refuel sid=%d result=no_vehicle\n", sid );
+            std::fclose( f );
+        }
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "You are not in a vehicle." ), static_cast<int>( m_info ) );
+        return;
+    }
+    vehicle &veh = vp->vehicle();
+    if( veh.velocity != 0 ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "vehicle refuel sid=%d result=moving velocity=%d\n",
+                          sid, veh.velocity );
+            std::fclose( f );
+        }
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "You can't refuel a moving vehicle." ), static_cast<int>( m_info ) );
+        return;
+    }
+    int part_idx = -1;
+    item_location refill;
+    for( int i = 0; i < veh.part_count() && part_idx < 0; ++i ) {
+        vehicle_part &pt = veh.part( i );
+        if( !pt.is_available() ) {
+            continue;
+        }
+        const bool tank = pt.is_tank();
+        if( !tank && !pt.is_fuel_store() ) {
+            continue;
+        }
+        for( item *it : av.items_with( []( const item & ) {
+        return true;
+        } ) ) {
+            if( it == nullptr ) {
+                continue;
+            }
+            bool ok = false;
+            if( tank ) {
+                if( it->is_watertight_container() && it->num_item_stacks() == 1 ) {
+                    ok = pt.can_reload( it->only_item() );
+                }
+            } else {
+                ok = pt.can_reload( *it ) || pt.get_base().can_reload_with( *it, true );
+            }
+            if( ok ) {
+                part_idx = i;
+                refill = item_location( av, it );
+                break;
+            }
+        }
+    }
+    if( part_idx < 0 ) {
+        int tanks = 0;
+        int stores = 0;
+        for( int i = 0; i < veh.part_count(); ++i ) {
+            const vehicle_part &pt = veh.part( i );
+            if( pt.is_tank() ) {
+                ++tanks;
+            }
+            if( pt.is_fuel_store() ) {
+                ++stores;
+            }
+        }
+        int gas = 0;
+        for( item *it : av.items_with( []( const item & ) {
+        return true;
+        } ) ) {
+            if( it != nullptr && it->typeId() == itype_id( "gasoline" ) ) {
+                ++gas;
+            }
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "vehicle refuel sid=%d result=no_fuel parts=%d tanks=%d stores=%d gas=%d\n",
+                          sid, veh.part_count(), tanks, stores, gas );
+            std::fclose( f );
+        }
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "You have no fuel for this vehicle." ),
+            static_cast<int>( m_info ) );
+        return;
+    }
+    vehicle_part &pt = veh.part( part_idx );
+    const point_rel_ms q = veh.coord_translate( pt.mount );
+    const int idx = veh.index_of_part( &pt );
+    const int64_t fuel_before = veh.fuel_left( here, itype_id( "gasoline" ) );
+    av.set_moves( 100 );
+    av.assign_activity( vehicle_activity_actor(
+                            VEHICLE_REFILL, 0_seconds, &veh, veh.pos_abs() + q,
+                            tripoint_rel_ms( pt.mount, 0 ), idx, pt.info().id, refill ) );
+    // The refill activity has no duration; finish it right away so the client
+    // sees the result without waiting for the next turn boundary.
+    static const activity_id mp_act_vehicle( "ACT_VEHICLE" );
+    for( int guard = 0; guard < 10 && av.activity && av.activity.id() == mp_act_vehicle;
+         ++guard ) {
+        av.process_activity();
+    }
+    av.set_moves( 0 );
+    const int64_t fuel_after = veh.fuel_left( here, itype_id( "gasoline" ) );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "vehicle refuel sid=%d part=%d index=%d before=%lld after=%lld activity=%d\n",
+                      sid, part_idx, idx, static_cast<long long>( fuel_before ),
+                      static_cast<long long>( fuel_after ), av.activity ? 1 : 0 );
+        std::fclose( f );
+    }
+}
+
+/* DDA MP test hook: put a pristine car under the session avatar and give it a
+ * gasoline item, so the refuel activity can be exercised without a real save. */
+static void mp_test_spawn_car( npc &av )
+{
+    map &here = get_map();
+    if( here.veh_at( av.pos_bub() ) ) {
+        return;
+    }
+    static const point offsets[] = {
+        { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
+    };
+    vehicle *veh = nullptr;
+    tripoint_bub_ms spawn = av.pos_bub();
+    for( const point &off : offsets ) {
+        const tripoint_bub_ms p = av.pos_bub() + tripoint_rel_ms( off.x, off.y, 0 );
+        if( !here.inbounds( p ) || here.veh_at( p ) ) {
+            continue;
+        }
+        veh = here.add_vehicle( vproto_id( "car" ), p, 0_degrees,
+                                0, veh_spawn_status::PRISTINE, false, true );
+        if( veh != nullptr ) {
+            spawn = p;
+            break;
+        }
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "test spawn car pos=%d,%d result=%d\n",
+                      spawn.x(), spawn.y(), veh != nullptr ? 1 : 0 );
+        std::fclose( f );
+    }
+    if( veh != nullptr ) {
+        av.setpos( here, spawn, false );
+        // The test avatar has only worn clothes; give it a backpack so the
+        // fuel container is not dropped on the ground.
+        av.wear_item( item( itype_id( "backpack" ) ), false );
+        item can( itype_id( "bottle_plastic" ) );
+        item gas( itype_id( "gasoline" ), calendar::turn, 200 );
+        can.put_in( gas, pocket_type::CONTAINER );
+        const int can_stacks = can.num_item_stacks();
+        av.i_add_or_drop( can );
+        std::string inv;
+        int inv_count = 0;
+        for( item *it : av.inv_dump() ) {
+            if( it == nullptr ) {
+                continue;
+            }
+            if( inv_count < 12 ) {
+                inv += it->typeId().str();
+                inv += ',';
+            }
+            ++inv_count;
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "test spawn car can_stacks=%d inv=%d types=%s\n",
+                          can_stacks, inv_count, inv.c_str() );
+            std::fclose( f );
+        }
+    }
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -4930,6 +5106,27 @@ void host_pump_intents()
                                   in.sid, intensity, minutes );
                     std::fclose( f );
                 }
+                av_send_status( in.sid );
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-201: refuel from the session avatar's inventory.
+        if( in.action == "vehicle_refuel" || in.action == "test_vehicle_refuel" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                if( in.action == "test_vehicle_refuel" ) {
+                    const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
+                    if( spawn != nullptr && spawn[0] != '\0' ) {
+                        mp_test_spawn_car( *av );
+                    }
+                }
+                mp_vehicle_refuel( in.sid, *av );
+                av_mark_acted( in.sid );
                 av_send_status( in.sid );
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 if( !netplay::host_avatar_keys_pending() ) {
