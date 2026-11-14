@@ -3594,6 +3594,36 @@ static void mp_run_vehicle_info( const std::string &payload )
     mp_inv_log( "ui: vehicle info closed" );
 }
 
+/* DDA MP v4.0a-199: training intensity/duration chosen on the client; the host
+ * runs the engine workout actor without its own menus. */
+static void mp_run_workout()
+{
+    uilist menu;
+    menu.title = netplay::fork_text( "Workout" );
+    menu.text = netplay::fork_text( "Choose training intensity:" );
+    menu.addentry( netplay::fork_text( "Light" ) );
+    menu.addentry( netplay::fork_text( "Moderate" ) );
+    menu.addentry( netplay::fork_text( "Active" ) );
+    menu.addentry( netplay::fork_text( "High" ) );
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret < 0 || menu.ret > 3 ) {
+        return;
+    }
+    int minutes = 0;
+    if( !query_int( minutes, false,
+                    netplay::fork_text( "Train for how long (minutes): " ) ) ||
+        minutes <= 0 ) {
+        return;
+    }
+    netplay::client_send_intent( "workout", 0, { menu.ret + 1, minutes } );
+    mp_inv_log( string_format( "action: workout intensity=%d minutes=%d",
+                               menu.ret + 1, minutes ) );
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -3753,6 +3783,10 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_MUTATIONS:
             // DDA MP v4.0a-196: read-only mutation list on the mirror.
             mp_run_mutations();
+            break;
+        case ACTION_WORKOUT:
+            // DDA MP v4.0a-199: client picks intensity/duration, host trains.
+            mp_run_workout();
             break;
         case ACTION_HAUL:
             // DDA MP v4.0a-196: haul orders run on the host for this avatar.
@@ -4013,13 +4047,12 @@ static int mp_client_action_menu()
         } else if( category == _( "Misc" ) ) {
             MP_REGISTER_ACTION( ACTION_WAIT );
             MP_REGISTER_ACTION( ACTION_SLEEP );
-            // DDA MP v4.0a-196: bionics and mutations are read-only lists on
-            // the mirror; workout still needs the host's intensity/duration UI.
+            // DDA MP v4.0a-196/199: bionics and mutations are read-only lists on
+            // the mirror; workout picks intensity/duration on the client and
+            // runs the engine actor on the host.
             MP_REGISTER_ACTION( ACTION_BIONICS );
             MP_REGISTER_ACTION( ACTION_MUTATIONS );
-#if 0
             MP_REGISTER_ACTION( ACTION_WORKOUT );
-#endif
             MP_REGISTER_ACTION( ACTION_CONTROL_VEHICLE );
             // DDA MP v4.0a-198: read-only vehicle status from host data.
             entries.emplace_back( MP_ACTION_VEHICLE_INFO, true, -1,
@@ -6514,6 +6547,8 @@ void run_view_loop()
                         netplay::client_send_intent( "haul_toggle", 0, {} );
                     } else if( action_name == "vehicle_info" ) {
                         netplay::client_send_intent( "vehicle_info", 0, {} );
+                    } else if( action_name == "workout" ) {
+                        netplay::client_send_intent( "workout", 0, { 1, 5 } );
                     } else if( action_name == "bionics" ) {
                         mp_client_dispatch_action( ACTION_BIONICS, "", "" );
                     } else if( action_name == "mutations" ) {

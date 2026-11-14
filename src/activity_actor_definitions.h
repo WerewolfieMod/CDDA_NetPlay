@@ -2118,6 +2118,7 @@ class workout_activity_actor : public activity_actor
 {
     private:
         bool disable_query = false; // disables query, continue as long as possible
+        bool single_session = false; // stop after the configured duration
         bool rest_mode = false; // work or rest during training session
         time_duration duration;
         tripoint_bub_ms location;
@@ -2128,6 +2129,10 @@ class workout_activity_actor : public activity_actor
 
     public:
         explicit workout_activity_actor( const tripoint_bub_ms &loc ) : location( loc ) {}
+
+        /// DDA MP v4.0a-199: configure the session from a client menu instead
+        /// of the host's intensity/duration dialogs.
+        void configure( int intensity, time_duration len );
 
         // can assume different sub-activities
         const activity_id &get_type() const override {

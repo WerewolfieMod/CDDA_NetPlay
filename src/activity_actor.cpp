@@ -7016,6 +7016,28 @@ std::unique_ptr<activity_actor> multi_craft_activity_actor::deserialize( JsonVal
     return actor.clone();
 }
 
+void workout_activity_actor::configure( int intensity, time_duration len )
+{
+    intensity_modifier = std::clamp( intensity, 1, 4 );
+    switch( intensity_modifier ) {
+        case 4:
+            act_id = activity_id( "ACT_WORKOUT_HARD" );
+            break;
+        case 3:
+            act_id = activity_id( "ACT_WORKOUT_ACTIVE" );
+            break;
+        case 2:
+            act_id = activity_id( "ACT_WORKOUT_MODERATE" );
+            break;
+        default:
+            act_id = activity_id( "ACT_WORKOUT_LIGHT" );
+            break;
+    }
+    duration = len;
+    disable_query = true;
+    single_session = true;
+}
+
 void workout_activity_actor::start( player_activity &act, Character &who )
 {
     if( who.get_sleepiness() > sleepiness_levels::DEAD_TIRED ) {
@@ -7067,51 +7089,53 @@ void workout_activity_actor::start( player_activity &act, Character &who )
         act.set_to_null();
         return;
     }
-    uilist workout_query;
-    workout_query.desc_enabled = true;
-    workout_query.text =
-        _( "Physical effort determines workout efficiency, but also rate of exhaustion." );
-    workout_query.title = _( "Choose training intensity:" );
-    workout_query.addentry_desc( 1, true, 'l', pgettext( "training intensity", "Light" ),
-                                 _( "Light exercise comparable in intensity to walking, but more focused and methodical." ) );
-    workout_query.addentry_desc( 2, true, 'm', pgettext( "training intensity", "Moderate" ),
-                                 _( "Moderate exercise without excessive exertion, but with enough effort to break a sweat." ) );
-    workout_query.addentry_desc( 3, true, 'a', pgettext( "training intensity", "Active" ),
-                                 _( "Active exercise with full involvement.  Strenuous, but in a controlled manner." ) );
-    workout_query.addentry_desc( 4, true, 'h', pgettext( "training intensity", "High" ),
-                                 _( "High intensity exercise with maximum effort and full power.  Exhausting in the long run." ) );
-    workout_query.query();
-    switch( workout_query.ret ) {
-        case UILIST_CANCEL:
-            act.set_to_null();
+    if( !disable_query ) {
+        uilist workout_query;
+        workout_query.desc_enabled = true;
+        workout_query.text =
+            _( "Physical effort determines workout efficiency, but also rate of exhaustion." );
+        workout_query.title = _( "Choose training intensity:" );
+        workout_query.addentry_desc( 1, true, 'l', pgettext( "training intensity", "Light" ),
+                                     _( "Light exercise comparable in intensity to walking, but more focused and methodical." ) );
+        workout_query.addentry_desc( 2, true, 'm', pgettext( "training intensity", "Moderate" ),
+                                     _( "Moderate exercise without excessive exertion, but with enough effort to break a sweat." ) );
+        workout_query.addentry_desc( 3, true, 'a', pgettext( "training intensity", "Active" ),
+                                     _( "Active exercise with full involvement.  Strenuous, but in a controlled manner." ) );
+        workout_query.addentry_desc( 4, true, 'h', pgettext( "training intensity", "High" ),
+                                     _( "High intensity exercise with maximum effort and full power.  Exhausting in the long run." ) );
+        workout_query.query();
+        switch( workout_query.ret ) {
+            case UILIST_CANCEL:
+                act.set_to_null();
+                act_id = activity_id::NULL_ID();
+                return;
+            case 4:
+                act_id = ACT_WORKOUT_HARD;
+                intensity_modifier = 4;
+                break;
+            case 3:
+                act_id = ACT_WORKOUT_ACTIVE;
+                intensity_modifier = 3;
+                break;
+            case 2:
+                act_id = ACT_WORKOUT_MODERATE;
+                intensity_modifier = 2;
+                break;
+            case 1:
+            default:
+                act_id = ACT_WORKOUT_LIGHT;
+                intensity_modifier = 1;
+                break;
+        }
+        int length = 0;
+        query_int( length, false, _( "Train for how long (minutes): " ) );
+        if( length > 0 ) {
+            duration = length * 1_minutes;
+        } else {
             act_id = activity_id::NULL_ID();
+            act.set_to_null();
             return;
-        case 4:
-            act_id = ACT_WORKOUT_HARD;
-            intensity_modifier = 4;
-            break;
-        case 3:
-            act_id = ACT_WORKOUT_ACTIVE;
-            intensity_modifier = 3;
-            break;
-        case 2:
-            act_id = ACT_WORKOUT_MODERATE;
-            intensity_modifier = 2;
-            break;
-        case 1:
-        default:
-            act_id = ACT_WORKOUT_LIGHT;
-            intensity_modifier = 1;
-            break;
-    }
-    int length = 0;
-    query_int( length, false, _( "Train for how long (minutes): " ) );
-    if( length > 0 ) {
-        duration = length * 1_minutes;
-    } else {
-        act_id = activity_id::NULL_ID();
-        act.set_to_null();
-        return;
+        }
     }
     act.moves_total = to_moves<int>( duration );
     act.moves_left = act.moves_total;
@@ -7180,6 +7204,10 @@ void workout_activity_actor::canceled( player_activity &/*act*/, Character &/*wh
 
 bool workout_activity_actor::query_keep_training( player_activity &act, Character &who )
 {
+    if( single_session ) {
+        act.set_to_null();
+        return false;
+    }
     if( disable_query || !who.is_avatar() ) {
         elapsed += act.moves_total - act.moves_left;
         act.moves_total = to_moves<int>( 60_minutes );
@@ -7224,6 +7252,7 @@ void workout_activity_actor::serialize( JsonOut &jsout ) const
     jsout.start_object();
 
     jsout.member( "disable_query", disable_query );
+    jsout.member( "single_session", single_session );
     jsout.member( "act_id", act_id );
     jsout.member( "duration", duration );
     jsout.member( "location", location );
@@ -7242,6 +7271,7 @@ std::unique_ptr<activity_actor> workout_activity_actor::deserialize( JsonValue &
     JsonObject data = jsin.get_object();
 
     data.read( "disable_query", actor.disable_query );
+    data.read( "single_session", actor.single_session );
     data.read( "act_id", actor.act_id );
     data.read( "duration", actor.duration );
     data.read( "location", actor.location );

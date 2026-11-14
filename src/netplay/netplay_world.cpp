@@ -4881,6 +4881,31 @@ void host_pump_intents()
             }
             continue;
         }
+        // DDA MP v4.0a-199: training chosen on the client. The host configures
+        // the engine workout actor directly, so no host dialogs are shown.
+        if( in.action == "workout" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const int intensity = std::clamp( in.args[0], 1, 4 );
+                const int minutes = std::clamp( in.args[1], 1, 24 * 60 );
+                g->mp_anchor_map_on( *av, true );
+                workout_activity_actor workout( av->pos_bub() );
+                workout.configure( intensity, minutes * 1_minutes );
+                av->assign_activity( workout );
+                av_mark_acted( in.sid );
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "workout start sid=%d intensity=%d minutes=%d\n",
+                                  in.sid, intensity, minutes );
+                    std::fclose( f );
+                }
+                av_send_status( in.sid );
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
         // DDA MP v4.0a-198: read-only vehicle status for the session avatar.
         if( in.action == "vehicle_info" ) {
             npc *av = av_session_npc( in.sid );
