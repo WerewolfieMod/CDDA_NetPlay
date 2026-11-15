@@ -6977,6 +6977,8 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_DIARY, "", "" );
                     } else if( action_name == "spells" ) {
                         mp_client_dispatch_action( ACTION_CAST_SPELL, "", "" );
+                    } else if( action_name == "spell_cast" ) {
+                        netplay::client_send_intent( "test_spell_cast", 0, {} );
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
                             "0" "\x1f" "0" "\x1f" "0" "\x1f" "0" "\x1f"

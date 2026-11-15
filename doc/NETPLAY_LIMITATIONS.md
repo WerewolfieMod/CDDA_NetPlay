@@ -55,11 +55,18 @@ Last updated: v4.0a-207 (2026-11-15).
 
 ## Playtest 2026-11-15
 
-Automated host+client scenarios (31 total, all completed without a crash or
+Automated host+client scenarios (57 total, all completed without a crash or
 timeout): movement and round gate, cycle-move, drop, haul, workout, thief,
 grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
 sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
-trade buy/sell, language mismatch, long wait, auto-turn and help.
+trade buy/sell, language mismatch, long wait, auto-turn, help, diary, spellbook,
+armor sorting, auto features/safe mode and suicide.
+
+The stock test world has no spellbook, so spell casting was verified with a
+test-only hook that teaches `bio_nl_antigravity_jump_spell` to the session
+character: `test spell cast ... ok=1`. The normal client path (spellbook list,
+targeting cursor, host-side `spell::targetable_locations` validation) uses the
+same host handler; a world with real spells was not part of the automation.
 
 Observed warnings (not caused by the netplay features):
 - the tileset reports no `unknown` tile;

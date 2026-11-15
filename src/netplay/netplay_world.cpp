@@ -5410,6 +5410,30 @@ void host_pump_intents()
             }
             continue;
         }
+        // DDA MP v4.0a-210: test-only spell cast for a world without spell data.
+        if( in.action == "test_spell_cast" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const spell_id id( "bio_nl_antigravity_jump_spell" );
+                if( id.is_valid() ) {
+                    av->magic->learn_spell( id, *av, true );
+                    spell &sp = av->magic->get_spell( id );
+                    const tripoint_bub_ms target =
+                        av->pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+                    const bool ok = av->cast_spell(
+                                        sp, false,
+                                        std::optional<tripoint_bub_ms>( target ) );
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "test spell cast sid=%d id=%s ok=%d\n",
+                                      in.sid, id.str().c_str(), ok ? 1 : 0 );
+                        std::fclose( f );
+                    }
+                    av_mark_acted( in.sid );
+                    av_send_status( in.sid );
+                }
+            }
+            continue;
+        }
         // DDA MP v4.0a-210: cast a spell at an explicit client cursor target.
         if( in.action == "cast_spell" && in.args.size() >= 2 && !in.data.empty() ) {
             npc *av = av_session_npc( in.sid );
