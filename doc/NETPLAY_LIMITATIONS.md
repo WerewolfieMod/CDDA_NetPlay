@@ -94,7 +94,8 @@ Observed warnings (not caused by the netplay features):
   fallback, and the mirror deserialize logs a second `setID` warning.
 
 Not covered automatically: two clients at once, successful mission turn-in
-with a completable objective, and repair completion with real tools/materials.
+with a completable objective, repair completion with real tools/materials, and
+the client `w` (wield) action after the `npc::wield()` finding above.
 
 ## Vehicle servicing
 
