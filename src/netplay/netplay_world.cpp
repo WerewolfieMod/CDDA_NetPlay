@@ -50,6 +50,7 @@
 #include "lightmap.h"
 #include "map.h"
 #include "map_memory.h"
+#include "magic.h"
 #include "map_selector.h"
 #include "memory_fast.h"
 #include "mission.h"
@@ -3560,6 +3561,49 @@ void host_pump_client_actions()
                 changed = true;
                 break;
             }
+            case ACTION_TOGGLE_SAFEMODE: {
+                // DDA MP v4.0a-210: safe mode is a host-global setting.
+                const bool turning_on = g->safe_mode == SAFE_MODE_OFF;
+                g->safe_mode = turning_on ? SAFE_MODE_ON : SAFE_MODE_OFF;
+                netplay::host_send_event_fmt_to_sid(
+                    sid, turning_on ? "Safe mode ON!" : "Safe mode OFF!", {},
+                    static_cast<int>( m_info ) );
+                changed = true;
+                break;
+            }
+            case ACTION_TOGGLE_AUTOSAFE:
+            case ACTION_TOGGLE_AUTO_FEATURES:
+            case ACTION_TOGGLE_AUTO_PULP_BUTCHER:
+            case ACTION_TOGGLE_AUTO_MINING:
+            case ACTION_TOGGLE_AUTO_FORAGING: {
+                const char *option = action == ACTION_TOGGLE_AUTOSAFE ? "AUTOSAFEMODE"
+                                     : action == ACTION_TOGGLE_AUTO_FEATURES ? "AUTO_FEATURES"
+                                     : action == ACTION_TOGGLE_AUTO_PULP_BUTCHER ? "AUTO_PULP_BUTCHER"
+                                     : action == ACTION_TOGGLE_AUTO_MINING ? "AUTO_MINING"
+                                     : "AUTO_FORAGING";
+                get_options().get_option( option ).setNext();
+                get_options().save();
+                netplay::host_send_event_fmt_to_sid(
+                    sid, "Set %s to %s.",
+                    { get_options().get_option( option ).getMenuText(),
+                      get_options().get_option( option ).getValueName() },
+                    static_cast<int>( m_info ) );
+                changed = true;
+                break;
+            }
+            case ACTION_TOGGLE_AUTO_TRAVEL_MODE:
+                g->auto_travel_mode = !g->auto_travel_mode;
+                netplay::host_send_event_fmt_to_sid(
+                    sid, g->auto_travel_mode ? "Auto travel mode ON!" : "Auto travel mode OFF!",
+                    {}, static_cast<int>( m_info ) );
+                changed = true;
+                break;
+            case ACTION_IGNORE_ENEMY:
+                g->safe_mode = SAFE_MODE_ON;
+                netplay::host_send_event_fmt_to_sid(
+                    sid, "Ignoring enemy!", {}, static_cast<int>( m_info ) );
+                changed = true;
+                break;
             case ACTION_TOGGLE_THIEF_MODE: {
                 // DDA MP v4.0a-200: THIEF_MODE is a per-character value, so the
                 // session avatar can cycle it like the host player does.
@@ -5366,7 +5410,92 @@ void host_pump_intents()
             }
             continue;
         }
-        // DDA MP v4.0a-209: movement-mode picker from the client.
+        // DDA MP v4.0a-210: cast a spell at an explicit client cursor target.
+        if( in.action == "cast_spell" && in.args.size() >= 2 && !in.data.empty() ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const spell_id id( in.data );
+                if( !id.is_valid() || !av->magic->knows_spell( id ) ) {
+                    netplay::host_send_event_fmt_to_sid(
+                        in.sid, "You don't know that spell.", {},
+                        static_cast<int>( m_info ) );
+                } else {
+                    spell &sp = av->magic->get_spell( id );
+                    const tripoint_bub_ms target =
+                        av->pos_bub() + tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                    const std::vector<tripoint_bub_ms> valid =
+                        sp.targetable_locations( *av );
+                    if( target != av->pos_bub() &&
+                        std::find( valid.begin(), valid.end(), target ) == valid.end() ) {
+                        netplay::host_send_event_fmt_to_sid(
+                            in.sid, "Invalid target.", {},
+                            static_cast<int>( m_info ) );
+                    } else if( av->cast_spell( sp, false,
+                                               std::optional<tripoint_bub_ms>( target ) ) ) {
+                        av_mark_acted( in.sid );
+                        av_send_status( in.sid );
+                        av_send_session_picture( in.sid, av->pos_bub(), av );
+                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "spell cast sid=%d id=%s dx=%d dy=%d\n",
+                                          in.sid, id.str().c_str(), in.args[0], in.args[1] );
+                            std::fclose( f );
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-210: suicide confirmed on the client; the host applies
+        // the engine death path to the session NPC.
+        if( in.action == "suicide" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr && !av->is_dead_state() ) {
+                map &here = get_map();
+                g->mp_anchor_map_on( *av, true );
+                av->set_moves( 0 );
+                av->die( &here, nullptr );
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "suicide sid=%d\n", in.sid );
+                    std::fclose( f );
+                }
+                av_send_status( in.sid );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-210: armor sorting from the mirror's uid order.
+        if( in.action == "sort_armor" && !in.data.empty() ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                std::vector<std::string> uids;
+                std::string::size_type start = 0;
+                while( start <= in.data.size() ) {
+                    const std::string::size_type sep = in.data.find( ',', start );
+                    const std::string uid = in.data.substr(
+                                                start, sep == std::string::npos
+                                                ? std::string::npos : sep - start );
+                    if( !uid.empty() ) {
+                        uids.push_back( uid );
+                    }
+                    if( sep == std::string::npos ) {
+                        break;
+                    }
+                    start = sep + 1;
+                }
+                av->worn.reorder_worn( uids );
+                av->calc_encumbrance();
+                av_send_status( in.sid );
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "sort armor sid=%d items=%d\n",
+                                  in.sid, static_cast<int>( uids.size() ) );
+                    std::fclose( f );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-210: movement-mode picker from the client.
         if( in.action == "movement_mode" && !in.data.empty() ) {
             npc *av = av_session_npc( in.sid );
             if( av != nullptr ) {

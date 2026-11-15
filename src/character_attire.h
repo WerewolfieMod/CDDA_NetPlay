@@ -85,6 +85,8 @@ class outfit
     public:
         outfit() = default;
         explicit outfit( const std::list<item> &items ) : worn( items ) {}
+        /// DDA MP v4.0a-210: reorder worn items by netplay uid order.
+        void reorder_worn( const std::vector<std::string> &uids );
         bool is_worn( const item &clothing ) const;
         bool is_worn( const itype_id &clothing ) const;
         bool is_worn_module( const item &thing ) const;

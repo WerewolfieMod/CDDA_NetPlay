@@ -51,6 +51,7 @@
 #include "messages.h"    // client journal mirrored into the game's message list
 #include "construction.h"        // client-side construction list (data only)
 #include "construction_group.h"  // construction group names
+#include "diary.h"        // session-local diary for remote characters
 #include "overmapbuffer.h" // weather/overmap context for map::load
 #include "overmap_ui.h"    // client-side sky/time window
 
@@ -108,6 +109,9 @@ namespace netplay
 /// DDA MP v4.0a-186: full-screen map view built from the streamed overmap
 /// minimap block. Opened from the client action menu, closed by any key.
 static bool mp_map_open = false;
+/// DDA MP v4.0a-210: diary is session-local; session characters have no avatar
+/// diary object on the host.
+static std::unique_ptr<diary> mp_session_diary;
 
 /* DDA MP v4.0a-86: one-line long-wait notice, drawn by the host under the
  * "Waiting for other players..." line. No-op while the mode is off. */
@@ -1137,9 +1141,14 @@ static int mp_throw_dy = 0;
 enum class mp_cursor_mode : int {
     none = 0,
     look,
-    fire
+    fire,
+    spell
 };
 static mp_cursor_mode mp_cursor = mp_cursor_mode::none;
+static std::string mp_pending_spell;
+static std::string mp_last_spell;
+static int mp_last_spell_dx = 0;
+static int mp_last_spell_dy = 0;
 static int mp_cursor_dx = 0;
 static int mp_cursor_dy = 0;
 static bool mp_look_fast_scroll = false;
@@ -2652,6 +2661,7 @@ static void mp_draw_cursor_info( const snapshot &snap )
     draw_border( win );
     const std::string title = mp_throw_active ? netplay::fork_text( "< <color_green>Throwing</color> >" ) :
                         mp_cursor == mp_cursor_mode::fire ? netplay::fork_text( "< <color_green>Aiming</color> >" ) :
+                        mp_cursor == mp_cursor_mode::spell ? netplay::fork_text( "< <color_green>Casting</color> >" ) :
                         _( "< <color_green>Look around</color> >" );
     center_print( win, 0, c_white, title );
     {
@@ -3564,6 +3574,69 @@ static void mp_run_mutations()
     mp_inv_log( "ui: mutations closed" );
 }
 
+/* DDA MP v4.0a-210: spellbook on the mirror; the chosen spell enters the
+ * normal netplay cursor so the client can pick a target tile. */
+static void mp_run_spellbook( bool recast )
+{
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "ui: status mirror not ready" );
+        return;
+    }
+    if( recast ) {
+        if( mp_last_spell.empty() ) {
+            mp_inv_log( "spell: no previous spell" );
+            return;
+        }
+        netplay::client_send_intent( "cast_spell", 0,
+                                     { mp_last_spell_dx, mp_last_spell_dy },
+                                     mp_last_spell );
+        mp_inv_log( "action: cast_spell recast " + mp_last_spell );
+        return;
+    }
+    avatar &you = get_avatar();
+    std::vector<spell_id> ids;
+    uilist menu;
+    menu.title = netplay::fork_text( "Spells" );
+    for( const auto &entry : you.magic->get_spellbook() ) {
+        if( !entry.second.is_valid() ) {
+            continue;
+        }
+        ids.push_back( entry.first );
+        menu.addentry( entry.second.name() + "  -  " +
+                       entry.second.energy_cost_string( you ) );
+    }
+    if( ids.empty() ) {
+        menu.addentry( netplay::fork_text( "No spells." ) );
+        menu.entries.back().enabled = false;
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret < 0 || menu.ret >= static_cast<int>( ids.size() ) ) {
+        return;
+    }
+    mp_pending_spell = ids[menu.ret].str();
+    mp_cursor = mp_cursor_mode::spell;
+    mp_cursor_dx = 0;
+    mp_cursor_dy = 0;
+    mp_inv_log( "spell: select target for " + mp_pending_spell );
+}
+
+/* DDA MP v4.0a-210: confirm and ask the host to kill the session character. */
+static void mp_run_suicide()
+{
+    if( !query_yn( netplay::fork_text( "Abandon this character?" ) ) ) {
+        return;
+    }
+    if( !query_yn( netplay::fork_text( "This will kill your character. Continue?" ) ) ) {
+        return;
+    }
+    netplay::client_send_intent( "suicide", 0, {} );
+    mp_inv_log( "action: suicide" );
+}
+
 /* DDA MP v4.0a-209: movement-mode picker; the choice is applied on the host. */
 static void mp_run_movement_mode()
 {
@@ -3594,7 +3667,41 @@ static void mp_run_movement_mode()
     }
 }
 
-/* DDA MP v4.0a-209: directional drop. Pick a direction, then a multidrop set
+/* DDA MP v4.0a-210: armor sorting runs on the mirror; the resulting worn order
+ * is sent to the host as stable item uids. */
+static void mp_run_sort_armor()
+{
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "ui: status mirror not ready" );
+        return;
+    }
+    avatar &you = get_avatar();
+    you.worn.sort_armor( you );
+    std::vector<item *> items;
+    you.worn.inv_dump( items );
+    std::string uids;
+    for( item *it : items ) {
+        if( it == nullptr ) {
+            continue;
+        }
+        const std::string uid = it->get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            mp_inv_log( "action: sort_armor aborted, missing uid" );
+            return;
+        }
+        if( !uids.empty() ) {
+            uids += ',';
+        }
+        uids += uid;
+    }
+    if( !uids.empty() ) {
+        netplay::client_send_intent( "sort_armor", 0, {}, uids );
+    }
+    mp_inv_log( string_format( "action: sort_armor items=%d",
+                               static_cast<int>( items.size() ) ) );
+}
+
+/* DDA MP v4.0a-210: directional drop. Pick a direction, then a multidrop set
  * on the mirror; each item is dropped at the target by the host. */
 static void mp_run_dir_drop()
 {
@@ -4064,6 +4171,17 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             netplay::client_send_intent( "mission_journal", 0, {} );
             mp_inv_log( "missions: journal requested" );
             break;
+        case ACTION_DIARY:
+            // DDA MP v4.0a-210: session-local diary on the client mirror.
+            if( mp_native_avatar_ready ) {
+                if( !mp_session_diary ) {
+                    mp_session_diary = std::make_unique<diary>();
+                }
+                mp_inv_log( "ui: diary open" );
+                diary::show_diary_ui( mp_session_diary.get() );
+                mp_inv_log( "ui: diary closed" );
+            }
+            break;
         case ACTION_BIONICS:
             // DDA MP v4.0a-196: read-only bionic list on the mirror.
             mp_run_bionics();
@@ -4075,6 +4193,9 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_WORKOUT:
             // DDA MP v4.0a-199: client picks intensity/duration, host trains.
             mp_run_workout();
+            break;
+        case ACTION_SUICIDE:
+            mp_run_suicide();
             break;
         case ACTION_HAUL:
             // DDA MP v4.0a-196: haul orders run on the host for this avatar.
@@ -4131,6 +4252,9 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_DIR_DROP:
             mp_run_dir_drop();
             break;
+        case ACTION_SORT_ARMOR:
+            mp_run_sort_armor();
+            break;
         case ACTION_DROP:
         case ACTION_EAT:
         case ACTION_WEAR:
@@ -4146,10 +4270,15 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_UNLOAD_CONTAINER:
         case ACTION_OPEN_CONSUME:
         case ACTION_UNLOAD:
-        case ACTION_SORT_ARMOR:
         case ACTION_ORGANIZE:
         case ACTION_ITEMACTION:
             mp_run_host_inventory( inv_text );
+            break;
+        case ACTION_CAST_SPELL:
+            mp_run_spellbook( false );
+            break;
+        case ACTION_RECAST_SPELL:
+            mp_run_spellbook( true );
             break;
 
         case ACTION_ZOOM_IN:
@@ -4263,8 +4392,7 @@ static int mp_client_action_menu()
             // organize opens the mirror inventory (letters via '='), and
             // directional drop has its own direction + multidrop flow.
             MP_REGISTER_ACTION( ACTION_COMPARE );
-            // Armor sorting needs the private outfit order; keep it hidden
-            // until the host-side reorder protocol exists.
+            MP_REGISTER_ACTION( ACTION_SORT_ARMOR );
             MP_REGISTER_ACTION( ACTION_DIR_DROP );
             MP_REGISTER_ACTION( ACTION_ORGANIZE );
             MP_REGISTER_ACTION( ACTION_INSERT_ITEM );
@@ -4291,10 +4419,9 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_RELOAD_ITEM );
             MP_REGISTER_ACTION( ACTION_RELOAD_WEAPON );
             MP_REGISTER_ACTION( ACTION_RELOAD_WIELDED );
-#if 0
+            // DDA MP v4.0a-210: spellbook + netplay targeting cursor.
             MP_REGISTER_ACTION( ACTION_CAST_SPELL );
             MP_REGISTER_ACTION( ACTION_RECAST_SPELL );
-#endif
             MP_REGISTER_ACTION( ACTION_SELECT_FIRE_MODE );
             // DDA MP v4.0a-187: style and default-ammo pickers run on the
             // mirror and send the choice to the host.
@@ -4303,7 +4430,8 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_THROW );
             MP_REGISTER_ACTION( ACTION_THROW_WIELDED );
             MP_REGISTER_ACTION( ACTION_FIRE_BURST );
-#if 0
+            // DDA MP v4.0a-210: these are host-global settings; the host
+            // applies them and announces the new value.
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_TRAVEL_MODE );
             MP_REGISTER_ACTION( ACTION_TOGGLE_SAFEMODE );
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTOSAFE );
@@ -4312,7 +4440,6 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_PULP_BUTCHER );
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_MINING );
             MP_REGISTER_ACTION( ACTION_TOGGLE_AUTO_FORAGING );
-#endif
         } else if( category == _( "Craft" ) ) {
             MP_REGISTER_ACTION( ACTION_CRAFT );
             MP_REGISTER_ACTION( ACTION_RECRAFT );
@@ -4332,12 +4459,13 @@ static int mp_client_action_menu()
             // DDA MP v4.0a-191: the mission journal is streamed from the host.
             MP_REGISTER_ACTION( ACTION_MISSIONS );
             MP_REGISTER_ACTION( ACTION_MESSAGES );
-#if 0
+            // DDA MP v4.0a-210: session-local diary on the mirror.
             MP_REGISTER_ACTION( ACTION_DIARY );
-#endif
         } else if( category == _( "Misc" ) ) {
             MP_REGISTER_ACTION( ACTION_WAIT );
             MP_REGISTER_ACTION( ACTION_SLEEP );
+            // DDA MP v4.0a-210: character lifecycle action, confirmed twice.
+            MP_REGISTER_ACTION( ACTION_SUICIDE );
             // DDA MP v4.0a-196/199: bionics and mutations are read-only lists on
             // the mirror; workout picks intensity/duration on the client and
             // runs the engine actor on the host.
@@ -6845,6 +6973,10 @@ void run_view_loop()
                         mp_run_mission_journal(
                             "Test mission" "\x1e" "In progress" "\x1e" "Do the thing" "\x1f"
                             "Second mission" "\x1e" "Completed" "\x1e" "Already done" );
+                    } else if( action_name == "diary" ) {
+                        mp_client_dispatch_action( ACTION_DIARY, "", "" );
+                    } else if( action_name == "spells" ) {
+                        mp_client_dispatch_action( ACTION_CAST_SPELL, "", "" );
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
                             "0" "\x1f" "0" "\x1f" "0" "\x1f" "0" "\x1f"
@@ -6869,6 +7001,29 @@ void run_view_loop()
                         netplay::client_send_intent( "test_grab_drag", 0, {} );
                     } else if( action_name == "movement" ) {
                         netplay::client_send_intent( "movement_mode", 0, {}, "run" );
+                    } else if( action_name == "sort_armor" ) {
+                        std::vector<item *> items;
+                        get_avatar().worn.inv_dump( items );
+                        std::string data;
+                        for( auto rit = items.rbegin(); rit != items.rend(); ++rit ) {
+                            if( *rit == nullptr ) {
+                                continue;
+                            }
+                            const std::string uid =
+                                ( *rit )->get_var( "mp_uid", std::string() );
+                            if( uid.empty() ) {
+                                continue;
+                            }
+                            if( !data.empty() ) {
+                                data += ',';
+                            }
+                            data += uid;
+                        }
+                        if( data.empty() ) {
+                            sent = false;
+                        } else {
+                            netplay::client_send_intent( "sort_armor", 0, {}, data );
+                        }
                     } else if( action_name == "dir_drop" ) {
                         sent = false;
                         for( item *it : get_avatar().inv_dump() ) {
@@ -6884,6 +7039,12 @@ void run_view_loop()
                         }
                     } else if( action_name == "zones" ) {
                         netplay::client_send_intent( "zones", 0, {} );
+                    } else if( action_name == "suicide" ) {
+                        netplay::client_send_intent( "suicide", 0, {} );
+                    } else if( action_name == "autofeatures" ) {
+                        netplay::client_send_client_action( ACTION_TOGGLE_AUTO_FEATURES );
+                    } else if( action_name == "safemode" ) {
+                        netplay::client_send_client_action( ACTION_TOGGLE_SAFEMODE );
                     } else if( action_name == "workout" ) {
                         netplay::client_send_intent( "workout", 0, { 1, 5 } );
                     } else if( action_name == "thief" ) {
@@ -7051,6 +7212,16 @@ void run_view_loop()
                         netplay::client_send_intent(
                             "fire", 0, { mp_cursor_dx, mp_cursor_dy, 1 } );
                         mp_inv_log( string_format( "fire: target %d,%d",
+                                                   mp_cursor_dx, mp_cursor_dy ) );
+                    } else if( mp_cursor == mp_cursor_mode::spell ) {
+                        mp_last_spell = mp_pending_spell;
+                        mp_last_spell_dx = mp_cursor_dx;
+                        mp_last_spell_dy = mp_cursor_dy;
+                        netplay::client_send_intent(
+                            "cast_spell", 0, { mp_cursor_dx, mp_cursor_dy },
+                            mp_pending_spell );
+                        mp_inv_log( string_format( "spell: cast %s at %d,%d",
+                                                   mp_pending_spell.c_str(),
                                                    mp_cursor_dx, mp_cursor_dy ) );
                     }
                     mp_cursor = mp_cursor_mode::none;

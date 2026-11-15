@@ -598,6 +598,20 @@ static void draw_grid( const catacurses::window &w, int left_pane_w, int mid_pan
     wnoutrefresh( w );
 }
 
+void outfit::reorder_worn( const std::vector<std::string> &uids )
+{
+    std::list<item> old = std::move( worn );
+    for( const std::string &uid : uids ) {
+        for( auto it = old.begin(); it != old.end(); ++it ) {
+            if( it->get_var( "mp_uid", std::string() ) == uid ) {
+                worn.splice( worn.end(), old, it );
+                break;
+            }
+        }
+    }
+    worn.splice( worn.end(), old );
+}
+
 void outfit::sort_armor( Character &guy )
 {
     // FIXME: get_all_body_parts() doesn't return a sorted list

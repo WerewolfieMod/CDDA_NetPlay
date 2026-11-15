@@ -43,15 +43,15 @@ Last updated: v4.0a-207 (2026-11-15).
 ## Action menu parity
 
 - Added for clients: movement-mode picker, directional drop, inventory
-  organize (letter changes via `=` in the inventory).
-- Still host-only or hidden:
-  - armor sorting: `outfit::worn` is private and there is no host-side reorder
-    protocol yet;
-  - spells: casting needs a spellbook and a targeting flow for remote
-    characters;
-  - auto features/safe mode/auto travel: global host options, not per-character;
-  - diary: stored only on `avatar`, session characters have none;
-  - save/load, debug tools and suicide: host/character lifecycle actions.
+  organize (letter changes via `=` in the inventory), armor sorting by uid
+  order, spellbook with the netplay targeting cursor, session-local diary,
+  suicide, and the host-global auto/safe-mode toggles.
+- Auto features, safe mode and auto travel are host-global settings; toggling
+  them from a client changes the setting for the shared world and is announced.
+- Save/load remain host-side by design; debug tools stay host-only.
+- Diary is session-local: it is not persisted after leaving the session.
+- Spells require a client target; the host validates it against
+  `spell::targetable_locations` before starting the spellcasting activity.
 
 ## Playtest 2026-11-15
 
