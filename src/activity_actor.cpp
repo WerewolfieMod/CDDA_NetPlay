@@ -8035,25 +8035,29 @@ std::unique_ptr<activity_actor> move_furniture_on_vehicle_activity_actor::deseri
     return actor.clone();
 }
 
-void move_furniture_activity_actor::start( player_activity &act, Character & )
+void move_furniture_activity_actor::start( player_activity &act, Character &who )
 {
-    int moves = g->grabbed_furn_move_time( dp );
+    int moves = g->grabbed_furn_move_time( dp, who );
     act.moves_left = moves;
     act.moves_total = moves;
 }
 
 void move_furniture_activity_actor::finish( player_activity &act, Character &who )
 {
-    if( !g->grabbed_furn_move( dp ) ) {
-        g->walk_move( who.pos_bub() + dp, via_ramp, true );
+    if( !g->grabbed_furn_move( dp, who ) ) {
+        if( who.is_avatar() ) {
+            g->walk_move( who.pos_bub() + dp, via_ramp, true );
+        } else if( get_map().passable( who.pos_bub() + dp ) ) {
+            who.setpos( get_map(), who.pos_bub() + dp, false );
+        }
     }
     act.set_to_null();
 }
 
-void move_furniture_activity_actor::canceled( player_activity &, Character & )
+void move_furniture_activity_actor::canceled( player_activity &, Character &who )
 {
-    add_msg( m_warning, _( "You let go of the grabbed object." ) );
-    get_avatar().grab( object_type::NONE );
+    who.add_msg_if_player( m_warning, _( "You let go of the grabbed object." ) );
+    who.grab( object_type::NONE );
 }
 
 void move_furniture_activity_actor::serialize( JsonOut &jsout ) const

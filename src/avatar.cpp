@@ -785,23 +785,24 @@ bool avatar::read( item_location &book, item_location ereader )
     return true;
 }
 
-void avatar::grab( object_type grab_type_new, const tripoint_rel_ms &grab_point_new )
+void Character::grab( object_type new_type, const tripoint_rel_ms &new_point )
 {
     const auto update_memory =
     [this]( const object_type gtype, const tripoint_rel_ms & gpoint, const bool erase ) {
         map &m = get_map();
+        avatar *you = as_avatar();
         if( gtype == object_type::VEHICLE ) {
             if( const optional_vpart_position ovp = m.veh_at( pos_bub() + gpoint ) ) {
                 for( const tripoint_abs_ms &target : ovp->vehicle().get_points() ) {
-                    if( erase ) {
-                        memorize_clear_decoration( target, /* prefix = */ "vp_" );
+                    if( erase && you != nullptr ) {
+                        you->memorize_clear_decoration( target, /* prefix = */ "vp_" );
                     }
                     m.memory_cache_dec_set_dirty( m.get_bub( target ), true );
                 }
             }
         } else if( gtype != object_type::NONE ) {
-            if( erase ) {
-                memorize_clear_decoration( m.get_abs( pos_bub() + gpoint ) );
+            if( erase && you != nullptr ) {
+                you->memorize_clear_decoration( m.get_abs( pos_bub() + gpoint ) );
             }
             m.memory_cache_dec_set_dirty( pos_bub() + gpoint, true );
         }
@@ -809,8 +810,8 @@ void avatar::grab( object_type grab_type_new, const tripoint_rel_ms &grab_point_
     // Mark the area covered by the previous vehicle/furniture/etc for re-memorizing.
     update_memory( grab_type, grab_point, /* erase = */ false );
 
-    grab_type = grab_type_new;
-    grab_point = grab_point_new;
+    grab_type = new_type;
+    grab_point = new_point;
 
     // Clear the map memory for the area covered by the vehicle/furniture/etc to
     // eliminate ghost vehicles/furnitures/etc.
@@ -819,7 +820,7 @@ void avatar::grab( object_type grab_type_new, const tripoint_rel_ms &grab_point_
     path_settings->avoid_rough_terrain = grab_type != object_type::NONE;
 }
 
-object_type avatar::get_grab_type() const
+object_type Character::get_grab_type() const
 {
     return grab_type;
 }

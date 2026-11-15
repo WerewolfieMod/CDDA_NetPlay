@@ -2256,6 +2256,24 @@ void host_pump_avatar_keys()
                 break;
             }
         }
+        if( npc_ptr->get_grab_type() != object_type::NONE ) {
+            const tripoint_rel_ms gdp = dst - npc_ptr->pos_bub();
+            const object_type grab = npc_ptr->get_grab_type();
+            if( grab == object_type::FURNITURE ) {
+                npc_ptr->assign_activity( move_furniture_activity_actor( gdp, false ) );
+            } else if( grab == object_type::FURNITURE_ON_VEHICLE ) {
+                npc_ptr->assign_activity(
+                    move_furniture_on_vehicle_activity_actor( gdp, false ) );
+            } else {
+                npc_ptr->grab( object_type::NONE );
+            }
+            if( !npc_ptr->activity.is_null() ) {
+                av_mark_acted( sk.sid );
+                av_send_status( sk.sid );
+                av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
+                break;
+            }
+        }
         if( here.inbounds( dst ) && npc_ptr->can_move_to( dst ) ) {
             const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
             npc_ptr->move_to( dst );
@@ -5104,6 +5122,76 @@ static void mp_vehicle_repair( int sid, npc &av, int idx )
     }
 }
 
+/* DDA MP v4.0a-205: grab/release for a session avatar. Furniture dragging is
+ * supported; vehicles still need the avatar-only vehicle drag path. */
+static void mp_session_grab( int sid, npc &av, int dx, int dy )
+{
+    map &here = get_map();
+    if( av.get_grab_type() != object_type::NONE ) {
+        const tripoint_bub_ms p = av.pos_bub() + av.grab_point;
+        if( const optional_vpart_position vp = here.veh_at( p ) ) {
+            av.add_msg_if_player( _( "You release the %s." ), vp->vehicle().name );
+        } else if( here.has_furn( p ) ) {
+            av.add_msg_if_player( _( "You release the %s." ), here.furnname( p ) );
+        }
+        av.grab( object_type::NONE );
+        return;
+    }
+    if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
+        av.add_msg_if_player( m_info, _( "There's nothing to grab there!" ) );
+        return;
+    }
+    const tripoint_rel_ms off( dx, dy, 0 );
+    const tripoint_bub_ms p = av.pos_bub() + off;
+    if( here.veh_at( p ) ) {
+        av.add_msg_if_player( m_info,
+                              _( "Vehicle dragging is not available to remote players yet." ) );
+        return;
+    }
+    if( here.has_furn( p ) ) {
+        if( !here.furn( p ).obj().is_movable() ) {
+            av.add_msg_if_player( m_info, _( "You can not grab the %s." ), here.furnname( p ) );
+            return;
+        }
+        av.grab( object_type::FURNITURE, off );
+        av.add_msg_if_player( _( "You grab the %s." ), here.furnname( p ) );
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "grab sid=%d dx=%d dy=%d result=furniture\n", sid, dx, dy );
+            std::fclose( f );
+        }
+        return;
+    }
+    av.add_msg_if_player( m_info, _( "There's nothing to grab there!" ) );
+}
+
+/* Test hook: put a bench next to the avatar, grab it and push it one tile. */
+static void mp_test_grab_drag( int sid, npc &av )
+{
+    map &here = get_map();
+    const tripoint_rel_ms off( 1, 0, 0 );
+    const tripoint_bub_ms bench_pos = av.pos_bub() + off;
+    if( !here.has_furn( bench_pos ) ) {
+        here.furn_set( bench_pos, furn_str_id( "f_bench" ) );
+    }
+    av.grab( object_type::FURNITURE, off );
+    av.assign_activity( move_furniture_activity_actor( off, false ) );
+    const bool started = !av.activity.is_null();
+    av.set_moves( 1000000 );
+    for( int guard = 0; guard < 20 && av.activity; ++guard ) {
+        av.process_activity();
+    }
+    const tripoint_bub_ms av_pos = av.pos_bub();
+    const bool bench_at_new = here.has_furn( bench_pos + off );
+    av.set_moves( 0 );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "test grab drag sid=%d started=%d bench_new=%d av=%d,%d activity=%d\n",
+                      sid, started ? 1 : 0, bench_at_new ? 1 : 0, av_pos.x(), av_pos.y(),
+                      av.activity ? 1 : 0 );
+        std::fclose( f );
+    }
+    av.grab( object_type::NONE );
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -5216,6 +5304,37 @@ void host_pump_intents()
                 if( !netplay::host_avatar_keys_pending() ) {
                     g->mp_anchor_map_on( get_avatar() );
                 }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-205: grab/release furniture for the session avatar.
+        if( in.action == "grab" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                mp_session_grab( in.sid, *av, in.args[0], in.args[1] );
+                av_send_status( in.sid );
+            }
+            continue;
+        }
+        if( in.action == "grab_release" || in.action == "test_grab_start" ||
+            in.action == "test_grab_drag" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                if( in.action == "grab_release" ) {
+                    mp_session_grab( in.sid, *av, 0, 0 );
+                } else {
+                    const tripoint_bub_ms bench_pos =
+                        av->pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+                    if( !get_map().has_furn( bench_pos ) ) {
+                        get_map().furn_set( bench_pos, furn_str_id( "f_bench" ) );
+                    }
+                    if( in.action == "test_grab_start" ) {
+                        mp_session_grab( in.sid, *av, 1, 0 );
+                    } else {
+                        mp_test_grab_drag( in.sid, *av );
+                    }
+                }
+                av_send_status( in.sid );
             }
             continue;
         }

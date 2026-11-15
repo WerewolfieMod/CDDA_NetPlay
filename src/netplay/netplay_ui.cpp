@@ -3563,9 +3563,36 @@ static void mp_run_mutations()
     mp_inv_log( "ui: mutations closed" );
 }
 
-/* DDA MP v4.0a-196: haul orders. The engine keeps haul state on Character, so
- * the session avatar can haul like the host player; item selection by hand
- * stays local to the host for now. */
+/* DDA MP v4.0a-205: grab/release a furniture item in one of eight directions. */
+static void mp_run_grab()
+{
+    static const int dx[] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    static const int dy[] = { -1, 1, 0, 0, -1, -1, 1, 1 };
+    static const char *const names[] = {
+        "North", "South", "East", "West", "Northeast", "Northwest",
+        "Southeast", "Southwest"
+    };
+    uilist menu;
+    menu.title = netplay::fork_text( "Grab" );
+    for( const char *name : names ) {
+        menu.addentry( netplay::fork_text( name ) );
+    }
+    menu.addentry( netplay::fork_text( "Release" ) );
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret >= 0 && menu.ret < 8 ) {
+        netplay::client_send_intent( "grab", 0, { dx[menu.ret], dy[menu.ret] } );
+        mp_inv_log( string_format( "action: grab %d,%d", dx[menu.ret], dy[menu.ret] ) );
+    } else if( menu.ret == 8 ) {
+        netplay::client_send_intent( "grab_release", 0, {} );
+        mp_inv_log( "action: grab_release" );
+    }
+}
+
+
 static void mp_run_haul()
 {
     uilist menu;
@@ -3929,6 +3956,10 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             // DDA MP v4.0a-196: haul orders run on the host for this avatar.
             mp_run_haul();
             break;
+        case ACTION_GRAB:
+            // DDA MP v4.0a-205: pick a direction, host grabs/releases.
+            mp_run_grab();
+            break;
         case ACTION_HAUL_TOGGLE:
             netplay::client_send_intent( "haul_toggle", 0, {} );
             mp_inv_log( "action: haul_toggle" );
@@ -4089,11 +4120,9 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_CHAT );
             MP_REGISTER_ACTION( ACTION_PICKUP );
             MP_REGISTER_ACTION( ACTION_PICKUP_ALL );
-            // DDA MP v4.0a-181: grab needs avatar-only dragging state; haul is
-            // Character state and works through host intents (v4.0a-196).
-#if 0
+            // DDA MP v4.0a-205: grab state is per-character now; furniture
+            // dragging runs through the engine activity for session avatars.
             MP_REGISTER_ACTION( ACTION_GRAB );
-#endif
             MP_REGISTER_ACTION( ACTION_HAUL );
             MP_REGISTER_ACTION( ACTION_HAUL_TOGGLE );
             MP_REGISTER_ACTION( ACTION_BUTCHER );
@@ -6705,6 +6734,10 @@ void run_view_loop()
                         netplay::client_send_intent( "test_vehicle_parts", 0, {} );
                     } else if( action_name == "vehicle_repair" ) {
                         netplay::client_send_intent( "test_vehicle_repair", 0, {} );
+                    } else if( action_name == "grab" ) {
+                        netplay::client_send_intent( "test_grab_start", 0, {} );
+                    } else if( action_name == "grab_drag" ) {
+                        netplay::client_send_intent( "test_grab_drag", 0, {} );
                     } else if( action_name == "workout" ) {
                         netplay::client_send_intent( "workout", 0, { 1, 5 } );
                     } else if( action_name == "thief" ) {

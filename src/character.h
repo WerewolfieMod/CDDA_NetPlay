@@ -607,6 +607,11 @@ class Character : public Creature, public visitable
 
         // Relative direction of a grab, add to posx, posy to get the coordinates of the grabbed thing.
         tripoint_rel_ms grab_point;
+        /// DDA MP v4.0a-205: grab state is per-character, not avatar-only, so
+        /// session NPC avatars can drag furniture too.
+        object_type grab_type = object_type::NONE;
+        void grab( object_type new_type, const tripoint_rel_ms &new_point = tripoint_rel_ms::zero );
+        object_type get_grab_type() const;
 
         std::optional<city> starting_city;
         std::optional<point_abs_om> world_origin;

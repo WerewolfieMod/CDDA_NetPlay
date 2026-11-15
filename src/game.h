@@ -956,6 +956,9 @@ class game
         // Handle shifting through terrain and walls, with distance defined by enchantment.
         bool phasing_move_enchant( const tripoint_bub_ms &dest, int phase_distance = 0 );
         bool can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp );
+        /// DDA MP v4.0a-205: character-parameterised furniture dragging.
+        bool can_move_furniture( tripoint_bub_ms fdest, const tripoint_rel_ms &dp,
+                                 Character &who );
         // Regular movement. Returns false if it failed for any reason
         bool walk_move( const tripoint_bub_ms &dest, bool via_ramp = false, bool furniture_move = false );
         void on_move_effects();
@@ -996,6 +999,9 @@ class game
         not to step there */
         // Handle pushing during move, returns true if it handled the move
         bool grabbed_move( const tripoint_rel_ms &dp, bool via_ramp, bool stairs_move = false );
+        /// DDA MP v4.0a-205: drag for a specific character (session NPC).
+        bool grabbed_move( const tripoint_rel_ms &dp, bool via_ramp, bool stairs_move,
+                           Character &who );
         bool grabbed_veh_move_helper( const tripoint_rel_ms &dp, bool stairs_move );
         bool grabbed_veh_move_stairs( const tripoint_rel_ms &dp );
         bool grabbed_veh_move( const tripoint_rel_ms &dp );
@@ -1029,7 +1035,9 @@ class game
         bool warn_player_maybe_anger_local_faction( bool really_bad_offense = false,
                 bool asking_for_public_goods = false );
         int grabbed_furn_move_time( const tripoint_rel_ms &dp );
+        int grabbed_furn_move_time( const tripoint_rel_ms &dp, Character &who );
         bool grabbed_furn_move( const tripoint_rel_ms &dp );
+        bool grabbed_furn_move( const tripoint_rel_ms &dp, Character &who );
 
         void reload_item(); // Reload an item
         void reload_wielded( bool prompt = false );
