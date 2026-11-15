@@ -11,6 +11,7 @@
 /// DDA MP v4.0a-165: the client resolves typed event arguments (terrain,
 /// furniture, item type, monster type) from its own data on receipt.
 #include "item.h"
+#include "mission.h"
 #include "item_factory.h"
 #include "mapdata.h"
 #include "monstergenerator.h"
@@ -1586,6 +1587,34 @@ bool host_send_hover_to_sid( int sid, const std::string &text )
     return true;
 }
 
+/* DDA MP v4.0a-202: fork-only UI strings are not in the game catalogs. The
+ * host records every fork_text pair it emits so a plain message can be turned
+ * back into its English msgid + arguments before it goes over the wire. */
+struct fork_text_entry {
+    std::string msgid;
+    std::string text;
+};
+static std::vector<fork_text_entry> fork_text_entries;
+static std::mutex fork_text_mutex;
+
+static void fork_text_register( const std::string &msgid, const std::string &text )
+{
+    if( msgid.empty() || text.empty() ) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk( fork_text_mutex );
+    for( fork_text_entry &entry : fork_text_entries ) {
+        if( entry.msgid == msgid ) {
+            entry.text = text;
+            return;
+        }
+    }
+    fork_text_entries.push_back( { msgid, text } );
+}
+
+static bool capture_fork_message( const std::string &text, std::string &msgid,
+                                  std::vector<std::string> &args );
+
 std::string fork_text( const char *msgid )
 {
     if( msgid == nullptr ) {
@@ -1767,9 +1796,11 @@ std::string fork_text( const char *msgid )
         };
         const auto it = ru.find( msgid );
         if( it != ru.end() ) {
+            fork_text_register( msgid, it->second );
             return it->second;
         }
     }
+    fork_text_register( msgid, msgid );
     return msgid;
 }
 
@@ -1780,9 +1811,33 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type )
     if( it == state.id2sock.end() ) {
         return false;
     }
+    std::string out_text = text;
+    // A plain fork message is still a host-language sentence. Turn it back
+    // into msgid + arguments so the receiving client can use its own language.
+    if( !out_text.empty() &&
+        static_cast<unsigned char>( out_text[0] ) >= 0x20 &&
+        out_text.find( '\x1f' ) == std::string::npos &&
+        out_text.find( '\x1e' ) == std::string::npos ) {
+        std::string msgid;
+        std::vector<std::string> args;
+        const bool captured = capture_fork_message( out_text, msgid, args );
+        if( captured ) {
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "event encode sid=%d msgid=%s\n", sid, msgid.c_str() );
+                std::fclose( f );
+            }
+            out_text.clear();
+            out_text += '\x01';
+            out_text += msgid;
+            for( const std::string &arg : args ) {
+                out_text += '\x1f';
+                out_text += arg;
+            }
+        }
+    }
     std::vector<char> p;
     p.push_back( static_cast<char>( msg_type & 0xff ) );
-    put_str( p, text );
+    put_str( p, out_text );
     if( !send_all( it->second, encode_frame( frame::EVENT_TEXT, p ) ) ) {
         close_socket( it->second );
         state.id2sock.erase( it );
@@ -1902,6 +1957,16 @@ static std::string mp_event_arg( const std::string &raw )
         case 'M': {
             const mtype_id mon( id );
             return mon.is_valid() ? mon->nname() : id;
+        }
+        case 'N': {
+            const mission_type_id mid( id );
+            const mission_type *type = mid.is_valid() ? mission_type::get( mid ) : nullptr;
+            return type != nullptr ? type->tname() : id;
+        }
+        case 'D': {
+            const mission_type_id mid( id );
+            const mission_type *type = mid.is_valid() ? mission_type::get( mid ) : nullptr;
+            return type != nullptr ? type->description.translated() : id;
         }
         default:
             return raw;
@@ -2087,7 +2152,11 @@ static std::string mp_rebuild_message( const std::string &msgid, const std::stri
     mp_split_format( msgid, chunks, slots );
     if( slots.empty() ) {
         // No arguments: the translated msgid is the whole line.
-        return to_translation( msgid ).translated();
+        std::string out = to_translation( msgid ).translated();
+        if( out == msgid ) {
+            out = fork_text( msgid.c_str() );
+        }
+        return out;
     }
     std::vector<std::string> raw_args;
     if( !mp_match_format( chunks, instance, raw_args ) ) {
@@ -2103,11 +2172,59 @@ static std::string mp_rebuild_message( const std::string &msgid, const std::stri
         // language through the name index.
         args[slots[k]] = mp_translate_name_arg( raw_args[k] );
     }
-    return mp_fill_args( to_translation( msgid ).translated(), args );
+    std::string fmt = to_translation( msgid ).translated();
+    if( fmt == msgid ) {
+        fmt = fork_text( msgid.c_str() );
+    }
+    return mp_fill_args( fmt, args );
+}
+
+static bool capture_fork_message( const std::string &text, std::string &msgid,
+                                  std::vector<std::string> &args )
+{
+    std::vector<fork_text_entry> entries;
+    {
+        std::lock_guard<std::mutex> lk( fork_text_mutex );
+        entries = fork_text_entries;
+    }
+    for( const fork_text_entry &entry : entries ) {
+        std::vector<std::string> chunks;
+        std::vector<std::size_t> slots;
+        mp_split_format( entry.text, chunks, slots );
+        if( slots.empty() ) {
+            if( text == entry.text ) {
+                msgid = entry.msgid;
+                args.clear();
+                return true;
+            }
+            continue;
+        }
+        std::vector<std::string> raw_args;
+        if( !mp_match_format( chunks, text, raw_args ) ) {
+            continue;
+        }
+        std::size_t arg_count = 0;
+        for( std::size_t idx : slots ) {
+            arg_count = std::max( arg_count, idx + 1 );
+        }
+        std::vector<std::string> ordered( arg_count );
+        for( std::size_t k = 0; k < slots.size() && k < raw_args.size(); ++k ) {
+            ordered[slots[k]] = raw_args[k];
+        }
+        msgid = entry.msgid;
+        args = std::move( ordered );
+        return true;
+    }
+    return false;
 }
 
 bool capture_msgid_for( const std::string &text, std::string &msgid, std::string &instance )
 {
+    std::vector<std::string> fork_args;
+    if( capture_fork_message( text, msgid, fork_args ) ) {
+        instance = mp_fill_args( msgid, fork_args );
+        return true;
+    }
     if( netplay_msgcap::noted_empty() ) {
         return false;
     }
@@ -2193,7 +2310,11 @@ std::string format_event_text( const std::string &payload )
     for( std::size_t i = 1; i < parts.size(); ++i ) {
         args.push_back( mp_event_arg( parts[i] ) );
     }
-    return mp_fill_args( to_translation( parts[0] ).translated(), args );
+    std::string fmt = to_translation( parts[0] ).translated();
+    if( fmt == parts[0] ) {
+        fmt = fork_text( parts[0].c_str() );
+    }
+    return mp_fill_args( fmt, args );
 }
 
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )

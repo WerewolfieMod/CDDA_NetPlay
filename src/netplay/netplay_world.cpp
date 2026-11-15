@@ -4592,7 +4592,14 @@ static void mp_send_dialogue_state( int sid )
         }
     }
     d.gen_responses( topic );
-    std::string payload = line;
+    std::string line_wire = line;
+    std::string line_msgid;
+    std::string line_instance;
+    if( !line.empty() &&
+        netplay::capture_msgid_for( line, line_msgid, line_instance ) ) {
+        line_wire = "\x0a" + line_msgid + "\x0b" + line_instance;
+    }
+    std::string payload = line_wire;
     int shown = 0;
     for( size_t i = 0; i < d.responses.size(); i++ ) {
         if( d.response_condition_exists[i] && !d.response_condition_eval[i] ) {
@@ -4612,16 +4619,22 @@ static void mp_send_dialogue_state( int sid )
         if( opt.empty() || mp_dialogue_option_unsafe( opt ) ) {
             continue;
         }
+        std::string opt_wire = opt;
+        if( !r.truetext.empty() && opt == r.truetext.translated() ) {
+            opt_wire = "\x05" + r.truetext.msgid();
+        } else if( !r.falsetext.empty() && opt == r.falsetext.translated() ) {
+            opt_wire = "\x05" + r.falsetext.msgid();
+        }
         payload += '\x1f';
         payload += std::to_string( i );
         payload += '\x1e';
-        payload += opt;
+        payload += opt_wire;
         ++shown;
     }
     if( shown == 0 ) {
         payload += '\x1f';
         payload += "-1\x1e";
-        payload += fork_text( "Close" );
+        payload += std::string( "\x05" ) + "Close";
     }
     netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_DIALOGUE );
 }
@@ -4647,15 +4660,16 @@ static void mp_start_dialogue( int sid, npc &av, npc &other )
 
 static std::string mp_mission_status_text( mission::mission_status st )
 {
+    // DDA MP v4.0a-202: return the untranslated msgid; the client translates it.
     switch( st ) {
         case mission::mission_status::success:
-            return _( "Completed" );
+            return "Completed";
         case mission::mission_status::failure:
-            return _( "Failed" );
+            return "Failed";
         case mission::mission_status::in_progress:
-            return _( "In progress" );
+            return "In progress";
         default:
-            return _( "Available" );
+            return "Available";
     }
 }
 
@@ -4675,7 +4689,8 @@ static void mp_send_mission_offers( int sid, npc &other )
         }
         payload += std::to_string( i );
         payload += '\x1e';
-        payload += m->name();
+        payload += '\x07';
+        payload += m->mission_id().str();
         ++shown;
     }
     if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
@@ -4701,11 +4716,16 @@ static void mp_send_mission_journal( int sid )
         if( !payload.empty() ) {
             payload += '\x1f';
         }
-        payload += m->name();
+        std::string name_msgid = m->mission_id().str();
+        std::string desc_msgid = m->mission_id().str();
+        payload += '\x07';
+        payload += name_msgid;
         payload += '\x1e';
+        payload += '\x05';
         payload += mp_mission_status_text( m->get_status() );
         payload += '\x1e';
-        payload += m->get_description();
+        payload += '\x08';
+        payload += desc_msgid;
     }
     if( payload.empty() ) {
         netplay::host_send_event_to_sid( sid, fork_text( "No active missions." ),
@@ -4736,7 +4756,8 @@ static void mp_send_mission_turnins( int sid, npc &av, npc &other )
         }
         payload += std::to_string( m->get_id() );
         payload += '\x1e';
-        payload += m->name();
+        payload += '\x07';
+        payload += m->mission_id().str();
     }
     if( payload.empty() ) {
         netplay::host_send_event_to_sid( sid, fork_text( "No missions to turn in." ),
@@ -4767,7 +4788,8 @@ static void mp_send_trade_list( int sid, npc &av, npc &other, int mode )
         payload += '\x1f';
         payload += std::to_string( shown );
         payload += '\x1e';
-        payload += it->tname();
+        payload += '\x06';
+        payload += it->typeId().str();
         payload += '\x1e';
         payload += std::to_string( price );
         payload += '\x1e';
@@ -5273,9 +5295,9 @@ void host_pump_intents()
                                           in.sid, other->get_name().c_str(), m->name().c_str() );
                             std::fclose( f );
                         }
-                        netplay::host_send_event_to_sid(
-                            in.sid,
-                            string_format( fork_text( "Mission accepted: %s" ), m->name() ),
+                        netplay::host_send_event_fmt_to_sid(
+                            in.sid, "Mission accepted: %s",
+                            { "\x02N" + m->mission_id().str() },
                             static_cast<int>( m_good ) );
                     }
                 } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
@@ -5321,9 +5343,9 @@ void host_pump_intents()
                         }
                         m->wrap_up( *av );
                         other->chatbin.missions_assigned.erase( assigned );
-                        netplay::host_send_event_to_sid(
-                            in.sid,
-                            string_format( fork_text( "Mission completed: %s" ), m->name() ),
+                        netplay::host_send_event_fmt_to_sid(
+                            in.sid, "Mission completed: %s",
+                            { "\x02N" + m->mission_id().str() },
                             static_cast<int>( m_good ) );
                         if( m->has_generic_rewards() && m->get_value() > 0 ) {
                             mp_trade_credit[in.sid] += m->get_value();
@@ -5421,10 +5443,9 @@ void host_pump_intents()
                                                   in.sid, price, pay, credit_used, av->cash );
                                     std::fclose( f );
                                 }
-                                netplay::host_send_event_to_sid(
-                                    in.sid,
-                                    string_format( fork_text( "You buy %s for %s." ),
-                                                   gift.tname(), format_money( price ) ),
+                                netplay::host_send_event_fmt_to_sid(
+                                    in.sid, "You buy %s for %s.",
+                                    { "\x02I" + gift.typeId().str(), format_money( price ) },
                                     static_cast<int>( m_good ) );
                             }
                         }
@@ -5457,10 +5478,9 @@ void host_pump_intents()
                                                   in.sid, price, other->cash, av->cash );
                                     std::fclose( f );
                                 }
-                                netplay::host_send_event_to_sid(
-                                    in.sid,
-                                    string_format( fork_text( "You sell %s for %s." ),
-                                                   gift.tname(), format_money( price ) ),
+                                netplay::host_send_event_fmt_to_sid(
+                                    in.sid, "You sell %s for %s.",
+                                    { "\x02I" + gift.typeId().str(), format_money( price ) },
                                     static_cast<int>( m_good ) );
                             }
                         }

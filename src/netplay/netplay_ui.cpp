@@ -62,6 +62,7 @@
 #include "inventory.h"
 #include "item_category.h"
 #include "itype.h"
+#include "mission.h"
 #include "game_inventory.h"
 #include "flag.h"
 #include "ranged.h"
@@ -3051,10 +3052,20 @@ static void mp_run_npc_interact( const std::string &name, int dx, int dy )
 
 /* DDA MP v4.0a-189: one streamed dialogue step. The host sends the line and
  * numbered options; the chosen host response index goes back as an intent. */
+static std::string mp_localize_field( const std::string &field );
+
 static void mp_run_dialogue( const std::string &payload )
 {
     const std::string::size_type first = payload.find( '\x1f' );
-    const std::string line = first == std::string::npos ? payload : payload.substr( 0, first );
+    std::string line = first == std::string::npos ? payload : payload.substr( 0, first );
+    if( !line.empty() && line[0] == '\x0a' ) {
+        const std::string::size_type sep = line.find( '\x0b', 1 );
+        if( sep != std::string::npos ) {
+            line = netplay::format_event_text(
+                       std::string( "\x03" ) + line.substr( 1, sep - 1 ) + '\x1f' +
+                       line.substr( sep + 1 ) );
+        }
+    }
     std::vector<std::pair<int, std::string>> options;
     if( first != std::string::npos ) {
         const std::string rest = payload.substr( first + 1 );
@@ -3077,11 +3088,14 @@ static void mp_run_dialogue( const std::string &payload )
     uilist menu;
     menu.text = line.empty() ? netplay::fork_text( "Conversation" ) : line;
     for( const auto &opt : options ) {
-        menu.addentry( opt.second );
+        const std::string label = mp_localize_field( opt.second );
+        menu.addentry( label );
+        mp_inv_log( "dialogue option: " + label );
     }
     mp_inv_log( string_format( "dialogue open: line=%d options=%d",
                                static_cast<int>( line.size() ),
                                static_cast<int>( options.size() ) ) );
+    mp_inv_log( "dialogue line: " + line.substr( 0, 160 ) );
     {
         ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
         menu.query();
@@ -3098,6 +3112,8 @@ static void mp_run_dialogue( const std::string &payload )
 
 /* DDA MP v4.0a-191: mission offer list from an NPC. Payload entries are
  * "<index>\x1e<name>"; accepting sends the host index back. */
+static std::string mp_localize_field( const std::string &field );
+
 static void mp_run_mission_offers( const std::string &payload )
 {
     std::vector<std::pair<int, std::string>> offers;
@@ -3119,6 +3135,9 @@ static void mp_run_mission_offers( const std::string &payload )
     if( offers.empty() ) {
         return;
     }
+    for( const auto &offer : offers ) {
+        mp_inv_log( "missions: offer name=" + mp_localize_field( offer.second ) );
+    }
     // DDA MP test hook: accept the first offer without opening the menu.
     if( const char *auto_mission = std::getenv( "DDA_MP_TEST_MISSION_AUTO" );
         auto_mission != nullptr && auto_mission[0] != '\0' ) {
@@ -3137,7 +3156,7 @@ static void mp_run_mission_offers( const std::string &payload )
     uilist menu;
     menu.text = netplay::fork_text( "Available missions" );
     for( const auto &offer : offers ) {
-        menu.addentry( offer.second );
+        menu.addentry( mp_localize_field( offer.second ) );
     }
     menu.addentry( netplay::fork_text( "Close" ) );
     {
@@ -3155,6 +3174,40 @@ static void mp_run_mission_offers( const std::string &payload )
 
 /* DDA MP v4.0a-192: missions ready to turn in. Payload entries are
  * "<uid>\x1e<name>"; the uid identifies the host mission. */
+/* DDA MP v4.0a-202: fields prefixed with \x05 carry an untranslated msgid
+ * (game catalog), fields prefixed with \x06 carry an item type id. Resolve both
+ * with the client's own language/data. */
+static std::string mp_localize_field( const std::string &field )
+{
+    if( field.empty() ) {
+        return field;
+    }
+    if( field[0] == '\x05' ) {
+        const std::string msgid = field.substr( 1 );
+        std::string out = to_translation( msgid ).translated();
+        if( out == msgid ) {
+            out = netplay::fork_text( msgid.c_str() );
+        }
+        return out;
+    }
+    if( field[0] == '\x06' ) {
+        const itype_id id( field.substr( 1 ) );
+        if( item::type_is_defined( id ) ) {
+            return item::nname( id );
+        }
+        return field.substr( 1 );
+    }
+    if( field[0] == '\x07' || field[0] == '\x08' ) {
+        const mission_type_id id( field.substr( 1 ) );
+        const mission_type *type = id.is_valid() ? mission_type::get( id ) : nullptr;
+        if( type != nullptr ) {
+            return field[0] == '\x07' ? type->tname() : type->description.translated();
+        }
+        return field.substr( 1 );
+    }
+    return field;
+}
+
 static void mp_run_mission_turnins( const std::string &payload )
 {
     std::vector<std::pair<int, std::string>> entries;
@@ -3179,7 +3232,7 @@ static void mp_run_mission_turnins( const std::string &payload )
     uilist menu;
     menu.text = netplay::fork_text( "Turn in" );
     for( const auto &e : entries ) {
-        menu.addentry( e.second );
+        menu.addentry( mp_localize_field( e.second ) );
     }
     menu.addentry( netplay::fork_text( "Close" ) );
     {
@@ -3213,9 +3266,9 @@ static void mp_run_mission_journal( const std::string &payload )
         const std::string::size_type s2 = s1 == std::string::npos
                                           ? std::string::npos : item.find( '\x1e', s1 + 1 );
         if( s2 != std::string::npos ) {
-            entries.push_back( { item.substr( 0, s1 ),
-                                 item.substr( s1 + 1, s2 - s1 - 1 ),
-                                 item.substr( s2 + 1 ) } );
+            entries.push_back( { mp_localize_field( item.substr( 0, s1 ) ),
+                                 mp_localize_field( item.substr( s1 + 1, s2 - s1 - 1 ) ),
+                                 mp_localize_field( item.substr( s2 + 1 ) ) } );
         }
         if( sep == std::string::npos ) {
             break;
@@ -3296,7 +3349,7 @@ static void mp_run_trade( const std::string &payload )
                                               ? std::string::npos : item.find( '\x1e', s3 + 1 );
             if( s4 != std::string::npos ) {
                 entries.push_back( { std::atoi( item.substr( 0, s1 ).c_str() ),
-                                     item.substr( s1 + 1, s2 - s1 - 1 ),
+                                     mp_localize_field( item.substr( s1 + 1, s2 - s1 - 1 ) ),
                                      std::atoi( item.substr( s2 + 1, s3 - s2 - 1 ).c_str() ),
                                      std::atoi( item.substr( s3 + 1, s4 - s3 - 1 ).c_str() ),
                                      item.substr( s4 + 1 ) == "1" } );
