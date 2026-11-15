@@ -40,6 +40,19 @@ Last updated: v4.0a-207 (2026-11-15).
 - Vehicle dragging still uses the host-avatar-only vehicle path and is rejected
   for remote sessions.
 
+## Action menu parity
+
+- Added for clients: movement-mode picker, directional drop, inventory
+  organize (letter changes via `=` in the inventory).
+- Still host-only or hidden:
+  - armor sorting: `outfit::worn` is private and there is no host-side reorder
+    protocol yet;
+  - spells: casting needs a spellbook and a targeting flow for remote
+    characters;
+  - auto features/safe mode/auto travel: global host options, not per-character;
+  - diary: stored only on `avatar`, session characters have none;
+  - save/load, debug tools and suicide: host/character lifecycle actions.
+
 ## Playtest 2026-11-15
 
 Automated host+client scenarios (31 total, all completed without a crash or

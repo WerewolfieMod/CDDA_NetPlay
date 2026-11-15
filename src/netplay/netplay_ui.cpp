@@ -1,6 +1,6 @@
-﻿// CataDDA Multiplayer ("DDA MP") вЂ” user-facing flows:
+// CataDDA Multiplayer ("DDA MP") — user-facing flows:
 //  * in-game "Open world to network" host dialog,
-//  * in-game/main-menu "Join by IPвЂ¦" client flow,
+//  * in-game/main-menu "Join by IP…" client flow,
 //  * the remote-session fullscreen ASCII viewer (`run_view_loop`).
 
 #include "netplay.h"
@@ -351,7 +351,7 @@ void show_host_dialog()
 static std::string fat_client_loaded_world;
 
 /* DDA MP v3.9: diagnostics master switch (fat-load notes, tiles frame
- * traces, view probes) пїЅ built-in (mp_diag_dir). Default ON without any
+ * traces, view probes) - built-in (mp_diag_dir). Default ON without any
  * env; DDA_MP_DIAG=0|off disables. */
 static const bool mp_netplay_diag = mp_diag_enabled();
 
@@ -589,7 +589,7 @@ static void run_avatar_join_flow( const std::string &use_nick )
     }
 
     // v4.0a-1: the host keeps one avatar per nick, so the client resumes
-    // the first (only) living entry automatically пїЅ no choice is offered.
+    // the first (only) living entry automatically - no choice is offered.
     netplay::client_send_avatar_resume( use_nick );
 
     const int st = avatar_wait_answer( 10 );
@@ -629,7 +629,7 @@ static void join_load_prefs( std::string &addr, std::string &nick )
         jo.read( "address", addr );
         jo.read( "nick", nick );
     } catch( ... ) {
-        // missing/broken prefs: fall back to the defaults пїЅ never block joining
+        // missing/broken prefs: fall back to the defaults - never block joining
     }
 }
 
@@ -780,7 +780,7 @@ void show_join_dialog()
         return;
     }
 
-    // DDA MP v3.9: ask for the current picture right after the WELCOME пїЅ
+    // DDA MP v3.9: ask for the current picture right after the WELCOME -
     // the host answers while the client loads its world data, so the view
     // loop starts with a frame already buffered and shows tiles instantly.
     // If the host plays during the load, its tick snapshots keep the buffer
@@ -788,7 +788,7 @@ void show_join_dialog()
     netplay::client_request_snapshot();
 
     // DDA MP fat client: the host announced its world in WELCOME. Load its
-    // mod data now вЂ” before entering the fullscreen view вЂ” so the loading
+    // mod data now — before entering the fullscreen view — so the loading
     // starts immediately upon the user's join confirmation, not after the
     // first input is pumped in the view loop.
     fat_client_load_data();
@@ -801,7 +801,7 @@ void show_join_dialog()
 #if defined(TILES)
     // DDA MP v3.9: load the replay tileset now, while the loading screen
     // still owns the window. The view loop would otherwise create it on its
-    // first tile frame пїЅ multi seconds with the stale main-menu frame
+    // first tile frame - multi seconds with the stale main-menu frame
     // sitting on the glass. create() is idempotent (shared instance).
     if( netplay::client_is_connected() ) {
         netplay::tiles_backend_create();
@@ -1379,7 +1379,7 @@ static void mp_overlay_inventory( const std::string &text, bool open, int &sel, 
         std::string last_cat;
         for( int i = first; i < static_cast<int>( rows.size() ); i++ ) {
             const netplay::inv_entry_view *e = rows[i];
-            // Category header row, like the host's "РРЅСЃС‚СЂСѓРјРµРЅС‚С‹"/"РќРѕСЃРёРјС‹Рµ Р’РµС‰Рё".
+            // Category header row, like the host's "Инструменты"/"Носимые Вещи".
             if( e->depth == 0 && e->category != last_cat && !e->category.empty() ) {
                 if( y + lh * 1.35f > body_bot ) {
                     return;
@@ -2847,7 +2847,7 @@ static void mp_run_view_recipe( const item &it )
         }
     }
     if( !is_byproduct ) {
-        add_msg( m_info, _( "You wonder if it's even possible to craft the %s…" ), itname );
+        add_msg( m_info, _( "You wonder if it's even possible to craft the %s..." ), itname );
         return;
     }
     if( !can_craft ) {
@@ -3564,7 +3564,75 @@ static void mp_run_mutations()
     mp_inv_log( "ui: mutations closed" );
 }
 
-/* DDA MP v4.0a-205: grab/release a furniture item in one of eight directions. */
+/* DDA MP v4.0a-209: movement-mode picker; the choice is applied on the host. */
+static void mp_run_movement_mode()
+{
+    struct mode_row {
+        const char *id;
+        const char *label;
+    };
+    static const mode_row modes[] = {
+        { "walk", "Walk" }, { "run", "Run" }, { "crouch", "Crouch" }, { "prone", "Prone" }
+    };
+    avatar &you = get_avatar();
+    uilist menu;
+    menu.title = netplay::fork_text( "Movement mode" );
+    for( const mode_row &mode : modes ) {
+        menu.addentry( netplay::fork_text( mode.label ) );
+        if( you.current_movement_mode() == move_mode_id( mode.id ) ) {
+            menu.entries.back().text_color = c_light_green;
+        }
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret >= 0 && menu.ret < 4 ) {
+        netplay::client_send_intent( "movement_mode", 0, {}, modes[menu.ret].id );
+        mp_inv_log( string_format( "action: movement_mode %s", modes[menu.ret].id ) );
+    }
+}
+
+/* DDA MP v4.0a-209: directional drop. Pick a direction, then a multidrop set
+ * on the mirror; each item is dropped at the target by the host. */
+static void mp_run_dir_drop()
+{
+    static const int dx[] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    static const int dy[] = { -1, 1, 0, 0, -1, -1, 1, 1 };
+    static const char *const names[] = {
+        "North", "South", "East", "West", "Northeast", "Northwest",
+        "Southeast", "Southwest"
+    };
+    uilist menu;
+    menu.title = netplay::fork_text( "Drop where?" );
+    for( const char *name : names ) {
+        menu.addentry( netplay::fork_text( name ) );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret < 0 || menu.ret >= 8 ) {
+        return;
+    }
+    const drop_locations picked = game_menus::inv::multidrop( get_avatar() );
+    int sent = 0;
+    for( const drop_location &dl : picked ) {
+        if( !dl.first ) {
+            continue;
+        }
+        const std::string uid = dl.first->get_var( "mp_uid", std::string() );
+        if( !uid.empty() ) {
+            netplay::client_send_inventory_uid( uid, 'F', {}, { dx[menu.ret], dy[menu.ret] } );
+            ++sent;
+        }
+    }
+    mp_inv_log( string_format( "action: dir_drop %d,%d items=%d",
+                               dx[menu.ret], dy[menu.ret], sent ) );
+}
+
 static void mp_run_grab()
 {
     static const int dx[] = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -4057,6 +4125,12 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         // row menu exposes drop/eat/wear/read/wield/use/reload/disassemble for
         // the chosen item. The same route serves the action-menu entries that
         // have no separate UI on the host.
+        case ACTION_OPEN_MOVEMENT:
+            mp_run_movement_mode();
+            break;
+        case ACTION_DIR_DROP:
+            mp_run_dir_drop();
+            break;
         case ACTION_DROP:
         case ACTION_EAT:
         case ACTION_WEAR:
@@ -4074,7 +4148,6 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_UNLOAD:
         case ACTION_SORT_ARMOR:
         case ACTION_ORGANIZE:
-        case ACTION_DIR_DROP:
         case ACTION_ITEMACTION:
             mp_run_host_inventory( inv_text );
             break;
@@ -4185,15 +4258,15 @@ static int mp_client_action_menu()
         } else if( category == _( "Inventory" ) ) {
             MP_REGISTER_ACTION( ACTION_INVENTORY );
             MP_REGISTER_ACTION( ACTION_ADVANCEDINV );
-            // DDA MP v4.0a-181/185: item comparison runs read-only on the
-            // mirror; sort/organize/directional drop still change host state,
-            // so keep those hidden.
+            // DDA MP v4.0a-181/209: comparison is read-only on the mirror;
+            // armor sorting runs on the mirror and sends the new order;
+            // organize opens the mirror inventory (letters via '='), and
+            // directional drop has its own direction + multidrop flow.
             MP_REGISTER_ACTION( ACTION_COMPARE );
-#if 0
-            MP_REGISTER_ACTION( ACTION_SORT_ARMOR );
+            // Armor sorting needs the private outfit order; keep it hidden
+            // until the host-side reorder protocol exists.
             MP_REGISTER_ACTION( ACTION_DIR_DROP );
             MP_REGISTER_ACTION( ACTION_ORGANIZE );
-#endif
             MP_REGISTER_ACTION( ACTION_INSERT_ITEM );
             MP_REGISTER_ACTION( ACTION_UNLOAD_CONTAINER );
             MP_REGISTER_ACTION( ACTION_DROP );
@@ -4211,12 +4284,9 @@ static int mp_client_action_menu()
             MP_REGISTER_ACTION( ACTION_TOGGLE_RUN );
             MP_REGISTER_ACTION( ACTION_TOGGLE_CROUCH );
             MP_REGISTER_ACTION( ACTION_TOGGLE_PRONE );
-            // DDA MP v4.0a-181: the movement-mode picker, spellbook, default
-            // ammo picker, martial style and auto-* toggles still live on the
-            // host; hide them here instead of reporting "not available".
-#if 0
+            // DDA MP v4.0a-181/209: the movement-mode picker now sends the
+            // chosen mode to the host; spells still need a targeting protocol.
             MP_REGISTER_ACTION( ACTION_OPEN_MOVEMENT );
-#endif
             MP_REGISTER_ACTION( ACTION_FIRE );
             MP_REGISTER_ACTION( ACTION_RELOAD_ITEM );
             MP_REGISTER_ACTION( ACTION_RELOAD_WEAPON );
@@ -5120,7 +5190,7 @@ void run_view_loop()
     } mp_prompts;
     debug_suppress_prompts( true );
     // Track whether the user left on purpose (ESC) to skip the reconnect
-    // offer вЂ” sudden disconnects offer to rejoin instead.
+    // offer — sudden disconnects offer to rejoin instead.
     bool voluntary_quit = false;
     bool mp_dead = false;
 
@@ -5758,7 +5828,7 @@ void run_view_loop()
             // ui adaptors; redraw() regenerates the registered windows here,
             // right before the tileset canvas stamps over them (that covered
             // form is proven stable). Removing it made the invalidated
-            // windows repaint at random moments inside the input pump пїЅ
+            // windows repaint at random moments inside the input pump -
             // the screen alternated between stamped tiles and the cleared
             // black buffer (the observed flicker).
             // DDA MP v4.1: keep the UI redraw and the tileset canvas inside one
@@ -6036,7 +6106,7 @@ void run_view_loop()
                                                               trace_draws, kind, id ) );
                                     }
                                 };
-                                // DDA MP: prepass пїЅ stream every cell's
+                                // DDA MP: prepass - stream every cell's
                                 // light texel color (the host's own
                                 // smooth-lighting values), then bind the lit
                                 // frame so the sprites take the real GPU lit
@@ -6083,7 +6153,7 @@ void run_view_loop()
                                             t.vpart.empty() && !( t.flags & 1 ) ) {
                                             continue;
                                         }
-                                        // DDA MP: pass the cell's real lit_level пїЅ
+                                        // DDA MP: pass the cell's real lit_level -
                                         // the lit frame (or, in the fallback, the
                                         // overlay below) replicas the host's light.
                                         const int mp_lit = static_cast<int>( t.light );
@@ -6270,7 +6340,7 @@ void run_view_loop()
                                         }
                                         if( t.marker != 0 ) {
                                             // DDA MP v4.0a-2: the avatar's own
-                                            // heard-sound "?" пїЅ the host places
+                                            // heard-sound "?" - the host places
                                             // it (deterministically) and
                                             // streams the overlay id; drawn
                                             // exactly like the game's own
@@ -6372,7 +6442,7 @@ void run_view_loop()
                 }
 #endif
             } else {
-                // DDA MP v3.9: no valid picture yet пїЅ hold a quiet
+                // DDA MP v3.9: no valid picture yet - hold a quiet
                 // placeholder over the menu instead of flashing it. redraw()
                 // above already regenerated the registered windows; the
                 // stdscr paint wraps them into the neutral wait screen. Safe
@@ -6797,6 +6867,21 @@ void run_view_loop()
                         netplay::client_send_intent( "test_grab_start", 0, {} );
                     } else if( action_name == "grab_drag" ) {
                         netplay::client_send_intent( "test_grab_drag", 0, {} );
+                    } else if( action_name == "movement" ) {
+                        netplay::client_send_intent( "movement_mode", 0, {}, "run" );
+                    } else if( action_name == "dir_drop" ) {
+                        sent = false;
+                        for( item *it : get_avatar().inv_dump() ) {
+                            if( it == nullptr ) {
+                                continue;
+                            }
+                            const std::string uid = it->get_var( "mp_uid", std::string() );
+                            if( !uid.empty() ) {
+                                netplay::client_send_inventory_uid( uid, 'F', {}, { 1, 0 } );
+                                sent = true;
+                                break;
+                            }
+                        }
                     } else if( action_name == "zones" ) {
                         netplay::client_send_intent( "zones", 0, {} );
                     } else if( action_name == "workout" ) {
