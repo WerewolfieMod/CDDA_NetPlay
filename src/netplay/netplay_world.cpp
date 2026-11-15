@@ -4963,7 +4963,7 @@ static void mp_vehicle_refuel( int sid, npc &av )
 
 /* DDA MP test hook: put a pristine car under the session avatar and give it a
  * gasoline item, so the refuel activity can be exercised without a real save. */
-static void mp_test_spawn_car( npc &av )
+static void mp_test_spawn_car( npc &av, bool damaged = false )
 {
     map &here = get_map();
     if( here.veh_at( av.pos_bub() ) ) {
@@ -4980,15 +4980,16 @@ static void mp_test_spawn_car( npc &av )
             continue;
         }
         veh = here.add_vehicle( vproto_id( "car" ), p, 0_degrees,
-                                0, veh_spawn_status::PRISTINE, false, true );
+                                0, damaged ? veh_spawn_status::DEFAULT_LIGHT_DMG
+                                : veh_spawn_status::PRISTINE, false, true );
         if( veh != nullptr ) {
             spawn = p;
             break;
         }
     }
     if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-        std::fprintf( f, "test spawn car pos=%d,%d result=%d\n",
-                      spawn.x(), spawn.y(), veh != nullptr ? 1 : 0 );
+        std::fprintf( f, "test spawn car pos=%d,%d result=%d damaged=%d\n",
+                      spawn.x(), spawn.y(), veh != nullptr ? 1 : 0, damaged ? 1 : 0 );
         std::fclose( f );
     }
     if( veh != nullptr ) {
@@ -5018,6 +5019,88 @@ static void mp_test_spawn_car( npc &av )
                           can_stacks, inv_count, inv.c_str() );
             std::fclose( f );
         }
+    }
+}
+
+/* DDA MP v4.0a-204: damaged/repairable vehicle parts for the client window. */
+static void mp_send_vehicle_parts( int sid, npc &av )
+{
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "You are not in a vehicle." ), static_cast<int>( m_info ) );
+        return;
+    }
+    vehicle &veh = vp->vehicle();
+    std::string payload;
+    int shown = 0;
+    for( int i = 0; i < veh.part_count() && shown < 40; ++i ) {
+        vehicle_part &pt = veh.part( i );
+        if( pt.damage() <= 0 || !pt.is_repairable() ) {
+            continue;
+        }
+        if( !payload.empty() ) {
+            payload += '\x1f';
+        }
+        payload += std::to_string( i );
+        payload += '\x1e';
+        payload += pt.info().id.str();
+        payload += '\x1e';
+        payload += std::to_string( pt.damage_level() );
+        payload += '\x1e';
+        payload += pt.is_repairable() ? "1" : "0";
+        ++shown;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "vehicle parts sid=%d shown=%d total=%d\n",
+                      sid, shown, veh.part_count() );
+        std::fclose( f );
+    }
+    if( payload.empty() ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "No damaged parts." ), static_cast<int>( m_info ) );
+    } else {
+        netplay::host_send_event_to_sid( sid, payload,
+                                         netplay::EVENT_VEHICLE_PARTS );
+    }
+}
+
+/* DDA MP v4.0a-204: repair one selected part using the engine activity. */
+static void mp_vehicle_repair( int sid, npc &av, int idx )
+{
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "You are not in a vehicle." ), static_cast<int>( m_info ) );
+        return;
+    }
+    vehicle &veh = vp->vehicle();
+    if( idx < 0 || idx >= veh.part_count() ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "That part can't be repaired." ), static_cast<int>( m_info ) );
+        return;
+    }
+    vehicle_part &pt = veh.part( idx );
+    if( pt.damage() <= 0 || !pt.is_repairable() ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "That part can't be repaired." ), static_cast<int>( m_info ) );
+        return;
+    }
+    const vpart_info &vpinfo = pt.info();
+    time_duration time = pt.is_broken()
+                         ? vpinfo.install_time( av )
+                         : vpinfo.repair_time( av ) * pt.get_base().repairable_levels();
+    const point_rel_ms q = veh.coord_translate( pt.mount );
+    av.set_moves( 0 );
+    av.assign_activity( vehicle_activity_actor(
+                            VEHICLE_REPAIR, time, &veh, veh.pos_abs() + q,
+                            tripoint_rel_ms( pt.mount, 0 ), idx, vpinfo.id ) );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "vehicle repair start sid=%d part=%d broken=%d time=%d\n",
+                      sid, idx, pt.is_broken() ? 1 : 0, to_turns<int>( time ) );
+        std::fclose( f );
     }
 }
 
@@ -5128,6 +5211,59 @@ void host_pump_intents()
                                   in.sid, intensity, minutes );
                     std::fclose( f );
                 }
+                av_send_status( in.sid );
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-204: damaged vehicle parts list and repair.
+        if( in.action == "vehicle_parts" || in.action == "test_vehicle_parts" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                if( in.action == "test_vehicle_parts" ) {
+                    const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
+                    if( spawn != nullptr && spawn[0] != '\0' ) {
+                        mp_test_spawn_car( *av, true );
+                    }
+                }
+                mp_send_vehicle_parts( in.sid, *av );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        if( ( in.action == "vehicle_repair" || in.action == "test_vehicle_repair" ) &&
+            ( in.action == "test_vehicle_repair" || !in.args.empty() ) ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                if( in.action == "test_vehicle_repair" ) {
+                    const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
+                    if( spawn != nullptr && spawn[0] != '\0' ) {
+                        mp_test_spawn_car( *av, true );
+                    }
+                }
+                int idx = in.args.empty() ? -1 : in.args[0];
+                if( in.action == "test_vehicle_repair" ) {
+                    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+                    if( vp ) {
+                        vehicle &veh = vp->vehicle();
+                        for( int i = 0; i < veh.part_count(); ++i ) {
+                            if( veh.part( i ).damage() > 0 &&
+                                veh.part( i ).is_repairable() ) {
+                                idx = i;
+                                break;
+                            }
+                        }
+                    }
+                }
+                mp_vehicle_repair( in.sid, *av, idx );
+                av_mark_acted( in.sid );
                 av_send_status( in.sid );
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 if( !netplay::host_avatar_keys_pending() ) {

@@ -63,6 +63,7 @@
 #include "item_category.h"
 #include "itype.h"
 #include "mission.h"
+#include "veh_type.h"
 #include "game_inventory.h"
 #include "flag.h"
 #include "ranged.h"
@@ -2946,6 +2947,8 @@ static constexpr int MP_ACTION_HELP_NEARBY = 91000;
 static constexpr int MP_ACTION_VEHICLE_INFO = 91001;
 /// DDA MP v4.0a-201: refuel vehicle from carried fuel.
 static constexpr int MP_ACTION_VEHICLE_REFUEL = 91002;
+/// DDA MP v4.0a-204: damaged vehicle parts / repair.
+static constexpr int MP_ACTION_VEHICLE_PARTS = 91003;
 /// Whether this client believes it is currently helping (drives the stop
 /// confirmation). The host is authoritative: EVENT_HELP resets it when the
 /// assistance ends or a request is refused.
@@ -3649,6 +3652,75 @@ static void mp_run_vehicle_info( const std::string &payload )
     mp_inv_log( "ui: vehicle info closed" );
 }
 
+/* DDA MP v4.0a-204: damaged vehicle parts; selecting one starts the engine's
+ * repair activity on the host. */
+static void mp_run_vehicle_parts( const std::string &payload )
+{
+    struct part_row {
+        int index = 0;
+        std::string name;
+        int damage = 0;
+        bool repairable = true;
+    };
+    std::vector<part_row> rows;
+    std::string::size_type pos = 0;
+    while( pos <= payload.size() ) {
+        const std::string::size_type sep = payload.find( '\x1f', pos );
+        const std::string item = payload.substr( pos, sep == std::string::npos
+                                                  ? std::string::npos : sep - pos );
+        std::vector<std::string> fields;
+        std::string::size_type fpos = 0;
+        while( fpos <= item.size() ) {
+            const std::string::size_type fsep = item.find( '\x1e', fpos );
+            fields.push_back( item.substr( fpos, fsep == std::string::npos
+                                           ? std::string::npos : fsep - fpos ) );
+            if( fsep == std::string::npos ) {
+                break;
+            }
+            fpos = fsep + 1;
+        }
+        if( fields.size() >= 4 ) {
+            const vpart_id id( fields[1] );
+            rows.push_back( { std::atoi( fields[0].c_str() ),
+                              id.is_valid() ? id.obj().name() : fields[1],
+                              std::atoi( fields[2].c_str() ),
+                              fields[3] != "0" } );
+        }
+        if( sep == std::string::npos ) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    if( rows.empty() ) {
+        return;
+    }
+    uilist menu;
+    menu.title = netplay::fork_text( "Vehicle parts" );
+    menu.text = netplay::fork_text( "Select a damaged part to repair." );
+    for( const part_row &row : rows ) {
+        const std::string label = string_format(
+                                      netplay::fork_text( "%s (damage %d)" ),
+                                      row.name, row.damage );
+        menu.addentry( label );
+        if( !row.repairable ) {
+            menu.entries.back().enabled = false;
+            menu.entries.back().text_color = c_dark_gray;
+        }
+        mp_inv_log( "vehicle part: " + label );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret >= 0 && menu.ret < static_cast<int>( rows.size() ) ) {
+        netplay::client_send_intent( "vehicle_repair", 0, { rows[menu.ret].index } );
+        mp_inv_log( string_format( "action: vehicle_repair index=%d",
+                                   rows[menu.ret].index ) );
+    }
+}
+
+
 /* DDA MP v4.0a-199: training intensity/duration chosen on the client; the host
  * runs the engine workout actor without its own menus. */
 static void mp_run_workout()
@@ -3706,6 +3778,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
     if( act == MP_ACTION_VEHICLE_REFUEL ) {
         netplay::client_send_intent( "vehicle_refuel", 0, {} );
         mp_inv_log( "action: vehicle_refuel" );
+        return;
+    }
+    if( act == MP_ACTION_VEHICLE_PARTS ) {
+        netplay::client_send_intent( "vehicle_parts", 0, {} );
+        mp_inv_log( "action: vehicle_parts" );
         return;
     }
     switch( static_cast<action_id>( act ) ) {
@@ -4120,6 +4197,9 @@ static int mp_client_action_menu()
             // DDA MP v4.0a-201: refuel from carried fuel.
             entries.emplace_back( MP_ACTION_VEHICLE_REFUEL, true, -1,
                                   netplay::fork_text( "Refuel vehicle" ) );
+            // DDA MP v4.0a-204: damaged parts / repair.
+            entries.emplace_back( MP_ACTION_VEHICLE_PARTS, true, -1,
+                                  netplay::fork_text( "Vehicle parts" ) );
             MP_REGISTER_ACTION( ACTION_ITEMACTION );
             // DDA MP v4.0a-200: per-character theft mode cycles on the host.
             MP_REGISTER_ACTION( ACTION_TOGGLE_THIEF_MODE );
@@ -4164,6 +4244,9 @@ static int mp_client_action_menu()
         }
         if( selection == MP_ACTION_VEHICLE_REFUEL ) {
             return MP_ACTION_VEHICLE_REFUEL;
+        }
+        if( selection == MP_ACTION_VEHICLE_PARTS ) {
+            return MP_ACTION_VEHICLE_PARTS;
         }
 
         if( selection < 0 || selection == NUM_ACTIONS ) {
@@ -5553,6 +5636,10 @@ void run_view_loop()
                         mp_run_vehicle_info( mp_ev_text );
                         continue;
                     }
+                    if( mp_ev_type == netplay::EVENT_VEHICLE_PARTS ) {
+                        mp_run_vehicle_parts( mp_ev_text );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -6614,6 +6701,10 @@ void run_view_loop()
                         netplay::client_send_intent( "vehicle_info", 0, {} );
                     } else if( action_name == "vehicle_refuel" ) {
                         netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                    } else if( action_name == "vehicle_parts" ) {
+                        netplay::client_send_intent( "test_vehicle_parts", 0, {} );
+                    } else if( action_name == "vehicle_repair" ) {
+                        netplay::client_send_intent( "test_vehicle_repair", 0, {} );
                     } else if( action_name == "workout" ) {
                         netplay::client_send_intent( "workout", 0, { 1, 5 } );
                     } else if( action_name == "thief" ) {
