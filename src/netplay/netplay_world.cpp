@@ -1716,6 +1716,86 @@ void host_pump_avatar_keys()
             }
         }
     }
+    // DDA MP test hook: wield a fresh item on the session avatar so the
+    // wielded-item commands (`a`, mend) can be exercised.
+    if( const char *test_wield = std::getenv( "DDA_MP_TEST_WIELD" );
+        test_wield != nullptr && test_wield[0] != '\0' ) {
+        static bool mp_test_wield_done = false;
+        if( !mp_test_wield_done ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av != nullptr ) {
+                    mp_test_wield_done = true;
+                    item it( itype_id( test_wield ), calendar::turn );
+                    // Session avatars are npcs; a direct weapon assignment is
+                    // enough for the mirror and the inventory command path.
+                    av->set_wielded_item( it );
+                    const item_location now = av->get_wielded_item();
+                    if( mp_diag_enabled() ) {
+                        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf(
+                                f,
+                                "test: wielded %s sid=%d wielding=%s armed=%d moves=%d\n",
+                                test_wield, sid,
+                                now ? now->typeId().str().c_str() : "none",
+                                av->is_armed() ? 1 : 0, av->get_moves() );
+                            std::fclose( f );
+                        }
+                    }
+                    av_send_status( sid );
+                    break;
+                }
+            }
+        }
+    }
+    // DDA MP test hook: spawn a stunned hostile next to the session avatar so
+    // the host-side autoattack picks a real target. The monster is removed
+    // again after a few host pulses, so the test world stays clean.
+    if( const char *test_spawn = std::getenv( "DDA_MP_TEST_HOST_SPAWN" );
+        test_spawn != nullptr && test_spawn[0] != '\0' ) {
+        static bool mp_test_spawn_done = false;
+        static std::optional<tripoint_bub_ms> mp_test_spawn_pos;
+        static int mp_test_spawn_ticks = 0;
+        if( !mp_test_spawn_done ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av == nullptr ) {
+                    continue;
+                }
+                mp_test_spawn_done = true;
+                monster *mon = g->place_critter_at(
+                                   mtype_id( test_spawn ),
+                                   av->pos_bub() + tripoint_rel_ms( 1, 0, 0 ) );
+                if( mon != nullptr ) {
+                    mon->add_effect( efftype_id( "stunned" ), 1_hours );
+                    mp_test_spawn_pos = mon->pos_bub();
+                }
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "test: spawned %s sid=%d\n",
+                                      test_spawn, mon != nullptr ? sid : -1 );
+                        std::fclose( f );
+                    }
+                }
+                break;
+            }
+        } else if( mp_test_spawn_pos &&
+                   ( host_session_ids().empty() || ++mp_test_spawn_ticks > 1800 ) ) {
+            monster *mon = get_creature_tracker().creature_at<monster>(
+                               *mp_test_spawn_pos, true );
+            if( mon != nullptr && !mon->is_dead_state() ) {
+                map &here = get_map();
+                mon->die( &here, nullptr );
+            }
+            mp_test_spawn_pos.reset();
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "test: despawned %s\n", test_spawn );
+                    std::fclose( f );
+                }
+            }
+        }
+    }
     // DDA MP test hook: put the HOST avatar to work on a corpse, so a client
     // that walks up can help with the butchery.
     if( const char *test_busy = std::getenv( "DDA_MP_TEST_HOST_BUSY" );
@@ -5406,6 +5486,98 @@ void host_pump_intents()
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 if( !netplay::host_avatar_keys_pending() ) {
                     g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-212: autoattack from the client. avatar_action::autoattack()
+        // only takes an avatar, so the host repeats its target selection with
+        // Character-level calls.
+        if( in.action == "autoattack" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr && !av->is_dead_state() ) {
+                map &here = get_map();
+                g->mp_anchor_map_on( *av, true );
+                static const json_character_flag cannot_attack( "CANNOT_ATTACK" );
+                if( av->has_flag( cannot_attack ) ) {
+                    netplay::host_send_event_fmt_to_sid(
+                        in.sid, "You are incapable of attacking!", {},
+                        static_cast<int>( m_info ) );
+                } else {
+                    const item_location weapon = av->get_wielded_item();
+                    const int reach = weapon ? weapon->reach_range( *av ).first : 1;
+                    std::vector<Creature *> critters =
+                        av->get_targetable_creatures( reach, true );
+                    critters.erase( std::remove_if( critters.begin(), critters.end(),
+                    [av, reach]( const Creature * c ) {
+                        if( reach == 1 && !av->is_adjacent( c, true ) ) {
+                            return true;
+                        }
+                        if( !av->can_reach_attack( *c ) ) {
+                            return true;
+                        }
+                        if( !c->is_npc() ) {
+                            return false;
+                        }
+                        return !dynamic_cast<const npc &>( *c ).is_enemy();
+                    } ), critters.end() );
+                    const int target_count = static_cast<int>( critters.size() );
+                    if( critters.empty() ) {
+                        netplay::host_send_event_fmt_to_sid(
+                            in.sid, "No hostile creature in reach.  Waiting a turn.", {},
+                            static_cast<int>( m_info ) );
+                        if( g->check_safe_mode_allowed() ) {
+                            av->pause();
+                        }
+                    } else {
+                        const auto rate = []( const Creature & c ) -> float {
+                            if( const npc *np = dynamic_cast<const npc *>( &c ) ) {
+                                if( item_location w = np->get_wielded_item() ) {
+                                    return np->evaluate_weapon( *w );
+                                }
+                                return np->unarmed_value();
+                            }
+                            if( const monster *mon = dynamic_cast<const monster *>( &c ) ) {
+                                return mon->type->get_total_difficulty();
+                            }
+                            return 0.0f;
+                        };
+                        Creature &best = **std::max_element(
+                                              critters.begin(), critters.end(),
+                        [&rate]( const Creature * l, const Creature * r ) {
+                            return rate( *l ) > rate( *r );
+                        } );
+                        const tripoint_rel_ms diff = best.pos_bub() - av->pos_bub();
+                        const bool adjacent = std::abs( diff.x() ) <= 1 &&
+                                              std::abs( diff.y() ) <= 1 && diff.z() == 0;
+                        if( adjacent ) {
+                            av->melee_attack( best, true );
+                            monster *mon = dynamic_cast<monster *>( &best );
+                            if( mon != nullptr && mon->is_hallucination() &&
+                                !mon->is_dead_state() ) {
+                                mon->die( &here, av );
+                            }
+                        } else if( weapon && !av->used_weapon() &&
+                                   !weapon->is_gun() ) {
+                            netplay::host_send_event_fmt_to_sid(
+                                in.sid,
+                                "You can't use reach attacks while forcing "
+                                "yourself to fight unarmed.", {},
+                                static_cast<int>( m_info ) );
+                        } else {
+                            av->reach_attack( best.pos_bub() );
+                        }
+                    }
+                    if( !av->is_dead_state() ) {
+                        av_mark_acted( in.sid );
+                    }
+                    av_send_status( in.sid );
+                    av_send_session_picture( in.sid, av->pos_bub(), av );
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "autoattack sid=%d targets=%d\n", in.sid,
+                                      target_count );
+                        std::fclose( f );
+                    }
                 }
             }
             continue;

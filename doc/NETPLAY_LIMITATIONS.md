@@ -52,6 +52,13 @@ Last updated: v4.0a-207 (2026-11-15).
 - Diary is session-local: it is not persisted after leaving the session.
 - Spells require a client target; the host validates it against
   `spell::targetable_locations` before starting the spellcasting activity.
+- `a` on the wielded item and mend (wielded item) go through the host's
+  inventory command path, so they use the real item, tools and materials.
+  Unlike the stock action, mend has no client-side darkness pre-check.
+- Autoattack runs on the host: it picks the target with the stock rating
+  (NPC weapon value, monster difficulty), melees an adjacent enemy or uses a
+  reach attack. It deliberately avoids `avatar_action::autoattack`, which
+  only accepts an `avatar`.
 
 ## Playtest 2026-11-15
 
@@ -60,13 +67,26 @@ timeout): movement and round gate, cycle-move, drop, haul, workout, thief,
 grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
 sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
 trade buy/sell, language mismatch, long wait, auto-turn, help, diary, spellbook,
-armor sorting, auto features/safe mode and suicide.
+armor sorting, auto features/safe mode, suicide, use-wielded, mend and
+autoattack.
 
 The stock test world has no spellbook, so spell casting was verified with a
 test-only hook that teaches `bio_nl_antigravity_jump_spell` to the session
 character: `test spell cast ... ok=1`. The normal client path (spellbook list,
 targeting cursor, host-side `spell::targetable_locations` validation) uses the
 same host handler; a world with real spells was not part of the automation.
+
+Use-wielded, mend and autoattack use test-only host hooks too: the session
+character gets a directly assigned weapon, and a harmless hallucination is
+spawned next to it. Observed results:
+- `action: use_wielded uid key=97` and `action: mend uid key=109` on the client,
+  then the host's inventory command path ran;
+- `autoattack sid=1 targets=1`: the host selected the adjacent enemy and
+  applied the melee/hallucination path.
+
+Note for future tests: `npc::wield()` on a session avatar returned true but left
+the weapon slot empty in this build, so the hook assigns the weapon through
+`set_wielded_item()`. The client `w` (wield) path was not re-verified here.
 
 Observed warnings (not caused by the netplay features):
 - the tileset reports no `unknown` tile;

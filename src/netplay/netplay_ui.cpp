@@ -3667,6 +3667,29 @@ static void mp_run_movement_mode()
     }
 }
 
+/* DDA MP v4.0a-212: run an inventory command on the wielded item. The client
+ * only knows the mirror's uid, so the host resolves the real item. */
+static bool mp_wielded_uid_command( int key, const char *what )
+{
+    if( !mp_native_avatar_ready ) {
+        mp_inv_log( "ui: status mirror not ready" );
+        return false;
+    }
+    const item_location wielded = get_avatar().get_wielded_item();
+    if( !wielded ) {
+        mp_inv_log( std::string( "action: " ) + what + " without a wielded item" );
+        return false;
+    }
+    const std::string uid = wielded->get_var( "mp_uid", std::string() );
+    if( uid.empty() ) {
+        mp_inv_log( std::string( "action: " ) + what + " item has no uid" );
+        return false;
+    }
+    netplay::client_send_inventory_uid( uid, key );
+    mp_inv_log( std::string( "action: " ) + what + " uid key=" + std::to_string( key ) );
+    return true;
+}
+
 /* DDA MP v4.0a-210: armor sorting runs on the mirror; the resulting worn order
  * is sent to the host as stable item uids. */
 static void mp_run_sort_armor()
@@ -4280,6 +4303,19 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_RECAST_SPELL:
             mp_run_spellbook( true );
             break;
+        case ACTION_USE_WIELDED:
+            // DDA MP v4.0a-212: same host path as the inventory "apply" key.
+            mp_wielded_uid_command( 'a', "use_wielded" );
+            break;
+        case ACTION_MEND:
+            // DDA MP v4.0a-212: mend the wielded item through the host.
+            mp_wielded_uid_command( 'm', "mend" );
+            break;
+        case ACTION_AUTOATTACK:
+            // DDA MP v4.0a-212: the host picks and attacks a target.
+            netplay::client_send_intent( "autoattack", 0, {} );
+            mp_inv_log( "action: autoattack" );
+            break;
 
         case ACTION_ZOOM_IN:
             g->zoom_in();
@@ -4422,6 +4458,10 @@ static int mp_client_action_menu()
             // DDA MP v4.0a-210: spellbook + netplay targeting cursor.
             MP_REGISTER_ACTION( ACTION_CAST_SPELL );
             MP_REGISTER_ACTION( ACTION_RECAST_SPELL );
+            // DDA MP v4.0a-212: `a`-as-wielded, mend and autoattack.
+            MP_REGISTER_ACTION( ACTION_USE_WIELDED );
+            MP_REGISTER_ACTION( ACTION_MEND );
+            MP_REGISTER_ACTION( ACTION_AUTOATTACK );
             MP_REGISTER_ACTION( ACTION_SELECT_FIRE_MODE );
             // DDA MP v4.0a-187: style and default-ammo pickers run on the
             // mirror and send the choice to the host.
@@ -6905,7 +6945,25 @@ void run_view_loop()
             if( const char *test_action = std::getenv( "DDA_MP_TEST_CLIENT_ACTION" );
                 test_action != nullptr && test_action[0] != '\0' ) {
                 static bool mp_test_action_once = false;
-                if( !mp_test_action_once && mp_native_avatar_ready ) {
+                const std::string test_action_name( test_action );
+                const bool test_needs_wield =
+                    test_action_name == "use_wielded" || test_action_name == "mend";
+                bool test_action_ready = true;
+                if( test_action_name == "autoattack" ) {
+                    // Wait until the host's spawned test monster is streamed,
+                    // otherwise the action can run before the spawn.
+                    test_action_ready = false;
+                    const tripoint_abs_ms avpos = get_avatar().pos_abs();
+                    for( const snapshot::creature_frame &cf : snap.creatures ) {
+                        if( cf.kind == 0 && cf.ax - avpos.x() == 1 &&
+                            cf.ay - avpos.y() == 0 ) {
+                            test_action_ready = true;
+                            break;
+                        }
+                    }
+                }
+                if( !mp_test_action_once && mp_native_avatar_ready && test_action_ready &&
+                    ( !test_needs_wield || get_avatar().get_wielded_item() ) ) {
                     const std::string action_name( test_action );
                     bool sent = true;
                     const auto mp_test_find_npc = [&]( int &dx, int &dy ) -> bool {
@@ -6979,6 +7037,12 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_CAST_SPELL, "", "" );
                     } else if( action_name == "spell_cast" ) {
                         netplay::client_send_intent( "test_spell_cast", 0, {} );
+                    } else if( action_name == "use_wielded" ) {
+                        mp_client_dispatch_action( ACTION_USE_WIELDED, "", "" );
+                    } else if( action_name == "mend" ) {
+                        mp_client_dispatch_action( ACTION_MEND, "", "" );
+                    } else if( action_name == "autoattack" ) {
+                        netplay::client_send_intent( "autoattack", 0, {} );
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
                             "0" "\x1f" "0" "\x1f" "0" "\x1f" "0" "\x1f"
