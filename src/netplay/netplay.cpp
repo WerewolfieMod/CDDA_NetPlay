@@ -1719,6 +1719,8 @@ std::string fork_text( const char *msgid )
             { "Vehicle status", "Состояние транспорта" },
             { "Refuel vehicle", "Заправить транспорт" },
             { "Vehicle parts", "Детали транспорта" },
+            { "Zones", "Зоны" },
+            { "No zones.", "Зон нет." },
             { "Grab", "Захват" },
             { "Release", "Отпустить" },
             { "North", "Север" },

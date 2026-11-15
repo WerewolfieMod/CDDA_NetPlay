@@ -440,6 +440,9 @@ constexpr int EVENT_VEHICLE_INFO = 209;
 /// DDA MP v4.0a-204: damaged vehicle parts. Payload:
 /// "<index>\x1e<vpart id>\x1e<damage level>\x1e<repairable>\x1f...".
 constexpr int EVENT_VEHICLE_PARTS = 210;
+/// DDA MP v4.0a-207: read-only zone list. Payload:
+/// "<name>\x1e<zone type id>\x1e<x>\x1e<y>\x1e<z>\x1f...".
+constexpr int EVENT_ZONES = 211;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

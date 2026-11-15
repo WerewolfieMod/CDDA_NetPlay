@@ -37,6 +37,7 @@
 #include "creature.h"
 #include "creature_tracker.h"
 #include "craft_reservation.h"
+#include "clzones.h"
 #include "effect.h"
 #include "field.h"
 #include "field_type.h"
@@ -5192,6 +5193,45 @@ static void mp_test_grab_drag( int sid, npc &av )
     av.grab( object_type::NONE );
 }
 
+/* DDA MP v4.0a-207: read-only list of the player faction's zones. */
+static void mp_send_zones( int sid )
+{
+    zone_manager &zm = zone_manager::get_manager();
+    const auto zones = zm.get_zones();
+    std::string payload;
+    int shown = 0;
+    for( const auto &ref : zones ) {
+        if( shown >= 100 ) {
+            break;
+        }
+        const zone_data &z = ref.get();
+        const tripoint_abs_ms center = z.get_center_point();
+        if( !payload.empty() ) {
+            payload += '\x1f';
+        }
+        payload += z.get_name();
+        payload += '\x1e';
+        payload += z.get_type().str();
+        payload += '\x1e';
+        payload += std::to_string( center.x() );
+        payload += '\x1e';
+        payload += std::to_string( center.y() );
+        payload += '\x1e';
+        payload += std::to_string( center.z() );
+        ++shown;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "zones sid=%d shown=%d\n", sid, shown );
+        std::fclose( f );
+    }
+    if( payload.empty() ) {
+        netplay::host_send_event_to_sid(
+            sid, fork_text( "No zones." ), static_cast<int>( m_info ) );
+    } else {
+        netplay::host_send_event_to_sid( sid, payload, netplay::EVENT_ZONES );
+    }
+}
+
 void host_pump_intents()
 {
     host_region_sync();
@@ -5304,6 +5344,14 @@ void host_pump_intents()
                 if( !netplay::host_avatar_keys_pending() ) {
                     g->mp_anchor_map_on( get_avatar() );
                 }
+            }
+            continue;
+        }
+        // DDA MP v4.0a-207: read-only zone list.
+        if( in.action == "zones" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                mp_send_zones( in.sid );
             }
             continue;
         }
@@ -5598,6 +5646,9 @@ void host_pump_intents()
                         }
                         m->wrap_up( *av );
                         other->chatbin.missions_assigned.erase( assigned );
+                        // DDA MP v4.0a-206: mirror talk_function::mission_reward:
+                        // the NPC owes the player the mission value.
+                        other->op_of_u.owed += m->get_value();
                         netplay::host_send_event_fmt_to_sid(
                             in.sid, "Mission completed: %s",
                             { "\x02N" + m->mission_id().str() },
@@ -5691,6 +5742,7 @@ void host_pump_intents()
                             } else {
                                 av->i_add_or_drop( gift );
                                 mp_trade_credit[in.sid] -= credit_used;
+                                other->op_of_u.owed -= credit_used;
                                 av->cash -= pay;
                                 other->cash += pay;
                                 if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {

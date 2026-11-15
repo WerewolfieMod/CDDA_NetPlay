@@ -32,6 +32,7 @@
 #include "recipe.h"       // recipe::ident (craft intent)
 #include "recipe_dictionary.h" // recipe_dict / recipe_subset (view recipe)
 #include "faction.h"
+#include "clzones.h"
 #include "field.h"       // fields mirrored into the native map
 #include "field_type.h"  // field_type_str_id
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
@@ -3679,6 +3680,56 @@ static void mp_run_vehicle_info( const std::string &payload )
     mp_inv_log( "ui: vehicle info closed" );
 }
 
+/* DDA MP v4.0a-207: read-only zone list streamed from the host. */
+static void mp_run_zones( const std::string &payload )
+{
+    std::vector<std::string> rows;
+    std::string::size_type pos = 0;
+    while( pos <= payload.size() ) {
+        const std::string::size_type sep = payload.find( '\x1f', pos );
+        const std::string item = payload.substr( pos, sep == std::string::npos
+                                                  ? std::string::npos : sep - pos );
+        std::vector<std::string> fields;
+        std::string::size_type fpos = 0;
+        while( fpos <= item.size() ) {
+            const std::string::size_type fsep = item.find( '\x1e', fpos );
+            fields.push_back( item.substr( fpos, fsep == std::string::npos
+                                           ? std::string::npos : fsep - fpos ) );
+            if( fsep == std::string::npos ) {
+                break;
+            }
+            fpos = fsep + 1;
+        }
+        if( fields.size() >= 5 ) {
+            const zone_type_id type( fields[1] );
+            const std::string type_name = type.is_valid() ? type.obj().name() : fields[1];
+            rows.push_back( fields[0] + "  -  " + type_name +
+                            string_format( " (%s,%s,%s)", fields[2], fields[3], fields[4] ) );
+        }
+        if( sep == std::string::npos ) {
+            break;
+        }
+        pos = sep + 1;
+    }
+    if( rows.empty() ) {
+        return;
+    }
+    uilist menu;
+    menu.title = netplay::fork_text( "Zones" );
+    for( const std::string &row : rows ) {
+        menu.addentry( row );
+    }
+    menu.addentry( netplay::fork_text( "Close" ) );
+    mp_inv_log( string_format( "ui: zones open entries=%d",
+                               static_cast<int>( rows.size() ) ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( "ui: zones closed" );
+}
+
+
 /* DDA MP v4.0a-204: damaged vehicle parts; selecting one starts the engine's
  * repair activity on the host. */
 static void mp_run_vehicle_parts( const std::string &payload )
@@ -3880,6 +3931,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
                 mp_map_open = true;
                 mp_inv_log( "ui: map open" );
             }
+            break;
+        case ACTION_ZONES:
+            // DDA MP v4.0a-207: read-only zone list.
+            netplay::client_send_intent( "zones", 0, {} );
+            mp_inv_log( "action: zones" );
             break;
         case ACTION_LOOK:
         case ACTION_PEEK:
@@ -4106,9 +4162,8 @@ static int mp_client_action_menu()
             // streamed data. Zones still need host-side zone data; hide.
             MP_REGISTER_ACTION( ACTION_SKY );
             MP_REGISTER_ACTION( ACTION_MAP );
-#if 0
+            // DDA MP v4.0a-207: read-only zone list from the host.
             MP_REGISTER_ACTION( ACTION_ZONES );
-#endif
         } else if( category == _( "Interact" ) ) {
             MP_REGISTER_ACTION( ACTION_EXAMINE );
             MP_REGISTER_ACTION( ACTION_EXAMINE_AND_PICKUP );
@@ -5669,6 +5724,10 @@ void run_view_loop()
                         mp_run_vehicle_parts( mp_ev_text );
                         continue;
                     }
+                    if( mp_ev_type == netplay::EVENT_ZONES ) {
+                        mp_run_zones( mp_ev_text );
+                        continue;
+                    }
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
@@ -6738,6 +6797,8 @@ void run_view_loop()
                         netplay::client_send_intent( "test_grab_start", 0, {} );
                     } else if( action_name == "grab_drag" ) {
                         netplay::client_send_intent( "test_grab_drag", 0, {} );
+                    } else if( action_name == "zones" ) {
+                        netplay::client_send_intent( "zones", 0, {} );
                     } else if( action_name == "workout" ) {
                         netplay::client_send_intent( "workout", 0, { 1, 5 } );
                     } else if( action_name == "thief" ) {
