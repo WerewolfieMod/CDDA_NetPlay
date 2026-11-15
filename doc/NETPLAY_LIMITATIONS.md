@@ -7,7 +7,8 @@ Last updated: v4.0a-207 (2026-11-15).
 - Turn-in mirrors `talk_function::mission_reward`: the NPC's
   `op_of_u.owed` grows by the mission value.
 - Generic mission reward is also added to the session barter credit; buying
-  spends both the credit and the NPC's `owed`.
+  spends that session-wide credit. The NPC's `owed` is opinion/reward state
+  and is not reduced when the credit is spent at another trader.
 - The engine's `mission::reward` (`npc_favor`) field is not used by current
   upstream code; there is no separate item reward to transfer. If a fork/mod
   starts using it, a dedicated reward protocol is needed.
@@ -38,6 +39,22 @@ Last updated: v4.0a-207 (2026-11-15).
 - Furniture dragging works for session characters through the engine activity.
 - Vehicle dragging still uses the host-avatar-only vehicle path and is rejected
   for remote sessions.
+
+## Playtest 2026-11-15
+
+Automated host+client scenarios (31 total, all completed without a crash or
+timeout): movement and round gate, cycle-move, drop, haul, workout, thief,
+grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
+sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
+trade buy/sell, language mismatch, long wait, auto-turn and help.
+
+Observed warnings (not caused by the netplay features):
+- the tileset reports no `unknown` tile;
+- the client avatar profile has no scenario and logs the generic-scenario
+  fallback, and the mirror deserialize logs a second `setID` warning.
+
+Not covered automatically: two clients at once, successful mission turn-in
+with a completable objective, and repair completion with real tools/materials.
 
 ## Vehicle servicing
 

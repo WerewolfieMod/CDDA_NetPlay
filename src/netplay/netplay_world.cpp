@@ -5742,7 +5742,10 @@ void host_pump_intents()
                             } else {
                                 av->i_add_or_drop( gift );
                                 mp_trade_credit[in.sid] -= credit_used;
-                                other->op_of_u.owed -= credit_used;
+                                // The mission credit is session-wide; owe
+                                // state belongs to the NPC that gave the
+                                // mission, so do not decrement another
+                                // trader's opinion here.
                                 av->cash -= pay;
                                 other->cash += pay;
                                 if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
