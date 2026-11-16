@@ -1716,35 +1716,74 @@ void host_pump_avatar_keys()
             }
         }
     }
-    // DDA MP test hook: wield a fresh item on the session avatar so the
-    // wielded-item commands (`a`, mend) can be exercised.
+    // DDA MP test hook: make sure the session avatar holds a weapon so the
+    // wielded-item commands (`a`, mend) can be exercised. i_add auto-wields
+    // when no pocket fits the item, so only wield when it landed in a pocket.
     if( const char *test_wield = std::getenv( "DDA_MP_TEST_WIELD" );
         test_wield != nullptr && test_wield[0] != '\0' ) {
         static bool mp_test_wield_done = false;
         if( !mp_test_wield_done ) {
             for( int sid : host_session_ids() ) {
                 npc *av = av_session_npc( sid );
-                if( av != nullptr ) {
-                    mp_test_wield_done = true;
-                    item it( itype_id( test_wield ), calendar::turn );
-                    // Session avatars are npcs; a direct weapon assignment is
-                    // enough for the mirror and the inventory command path.
-                    av->set_wielded_item( it );
-                    const item_location now = av->get_wielded_item();
-                    if( mp_diag_enabled() ) {
-                        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
-                            std::fprintf(
-                                f,
-                                "test: wielded %s sid=%d wielding=%s armed=%d moves=%d\n",
-                                test_wield, sid,
-                                now ? now->typeId().str().c_str() : "none",
-                                av->is_armed() ? 1 : 0, av->get_moves() );
-                            std::fclose( f );
-                        }
-                    }
-                    av_send_status( sid );
-                    break;
+                if( av == nullptr ) {
+                    continue;
                 }
+                mp_test_wield_done = true;
+                item it( itype_id( test_wield ), calendar::turn );
+                item_location loc = av->i_add( it );
+                const bool auto_wielded = av->is_armed();
+                if( loc && !auto_wielded ) {
+                    av->wield( loc );
+                }
+                const item_location now = av->get_wielded_item();
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f,
+                                      "test: wield setup %s sid=%d auto=%d "
+                                      "wielding=%s armed=%d\n",
+                                      test_wield, sid, auto_wielded ? 1 : 0,
+                                      now ? now->typeId().str().c_str() : "none",
+                                      av->is_armed() ? 1 : 0 );
+                        std::fclose( f );
+                    }
+                }
+                av_send_status( sid );
+                break;
+            }
+        }
+    }
+    // DDA MP test hook: put a weapon in the session avatar's inventory without
+    // wielding it, so the client `w` command can be exercised.
+    if( const char *test_give_weapon = std::getenv( "DDA_MP_TEST_GIVE_WEAPON" );
+        test_give_weapon != nullptr && test_give_weapon[0] != '\0' ) {
+        static bool mp_test_give_weapon_done = false;
+        if( !mp_test_give_weapon_done ) {
+            for( int sid : host_session_ids() ) {
+                npc *av = av_session_npc( sid );
+                if( av == nullptr ) {
+                    continue;
+                }
+                mp_test_give_weapon_done = true;
+                // Put a bag on first, otherwise i_add auto-wields the weapon
+                // (there is nowhere to carry it).
+                item bag( itype_id( "backpack" ), calendar::turn );
+                const std::optional<std::list<item>::iterator> worn =
+                    av->wear_item( bag, false );
+                item it( itype_id( test_give_weapon ), calendar::turn );
+                item_location loc = av->i_add( it );
+                av_send_status( sid );
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f,
+                                      "test: gave weapon %s sid=%d wear_ok=%d "
+                                      "carried=%d armed=%d\n",
+                                      test_give_weapon, sid, worn.has_value() ? 1 : 0,
+                                      loc && !av->is_armed() ? 1 : 0,
+                                      av->is_armed() ? 1 : 0 );
+                        std::fclose( f );
+                    }
+                }
+                break;
             }
         }
     }
@@ -3037,6 +3076,14 @@ void host_pump_inventory_actions()
                     break;
                 }
                 changed = av->wield( loc );
+                if( netplay::mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "wield cmd sid=%d item=%s changed=%d armed=%d\n",
+                                      sid, item_id.c_str(), changed ? 1 : 0,
+                                      av->is_armed() ? 1 : 0 );
+                        std::fclose( f );
+                    }
+                }
                 break;
             }
             case 'W': { // wear

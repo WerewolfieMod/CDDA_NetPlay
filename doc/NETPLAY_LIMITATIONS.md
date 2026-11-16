@@ -55,6 +55,8 @@ Last updated: v4.0a-207 (2026-11-15).
 - `a` on the wielded item and mend (wielded item) go through the host's
   inventory command path, so they use the real item, tools and materials.
   Unlike the stock action, mend has no client-side darkness pre-check.
+- Wielding (`w`), `a` (apply) and mend all address items by their mirror uid,
+  so they act on carried items inside containers too, not only on gear.
 - Autoattack runs on the host: it picks the target with the stock rating
   (NPC weapon value, monster difficulty), melees an adjacent enemy or uses a
   reach attack. It deliberately avoids `avatar_action::autoattack`, which
@@ -62,12 +64,12 @@ Last updated: v4.0a-207 (2026-11-15).
 
 ## Playtest 2026-11-15
 
-Automated host+client scenarios (57 total, all completed without a crash or
+Automated host+client scenarios (60 total, all completed without a crash or
 timeout): movement and round gate, cycle-move, drop, haul, workout, thief,
 grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
 sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
 trade buy/sell, language mismatch, long wait, auto-turn, help, diary, spellbook,
-armor sorting, auto features/safe mode, suicide, use-wielded, mend and
+armor sorting, auto features/safe mode, suicide, use-wielded, mend, wield and
 autoattack.
 
 The stock test world has no spellbook, so spell casting was verified with a
@@ -76,17 +78,21 @@ character: `test spell cast ... ok=1`. The normal client path (spellbook list,
 targeting cursor, host-side `spell::targetable_locations` validation) uses the
 same host handler; a world with real spells was not part of the automation.
 
-Use-wielded, mend and autoattack use test-only host hooks too: the session
-character gets a directly assigned weapon, and a harmless hallucination is
-spawned next to it. Observed results:
+Use-wielded, mend, autoattack and wield use test-only host hooks too: the
+session character gets a weapon (auto-equipped when no pocket fits it) and a
+harmless hallucination is spawned next to it. Observed results:
 - `action: use_wielded uid key=97` and `action: mend uid key=109` on the client,
   then the host's inventory command path ran;
 - `autoattack sid=1 targets=1`: the host selected the adjacent enemy and
-  applied the melee/hallucination path.
+  applied the melee/hallucination path;
+- `wield cmd sid=1 item=knife_combat changed=1 armed=1`: with a backpack worn
+  and the knife carried, the client `w` command equipped it.
 
-Note for future tests: `npc::wield()` on a session avatar returned true but left
-the weapon slot empty in this build, so the hook assigns the weapon through
-`set_wielded_item()`. The client `w` (wield) path was not re-verified here.
+Note for future tests: `Character::i_add()` auto-wields an item when no pocket
+fits it and returns a location pointing at the weapon slot. Calling `wield()`
+on that location therefore *unwields* it (it takes the engine's "already
+wielding" branch). That is expected engine behaviour, not a netplay bug; the
+earlier "wield does nothing" observation was this toggle.
 
 Observed warnings (not caused by the netplay features):
 - the tileset reports no `unknown` tile;
@@ -94,8 +100,7 @@ Observed warnings (not caused by the netplay features):
   fallback, and the mirror deserialize logs a second `setID` warning.
 
 Not covered automatically: two clients at once, successful mission turn-in
-with a completable objective, repair completion with real tools/materials, and
-the client `w` (wield) action after the `npc::wield()` finding above.
+with a completable objective, and repair completion with real tools/materials.
 
 ## Vehicle servicing
 

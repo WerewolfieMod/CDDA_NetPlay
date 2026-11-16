@@ -7043,6 +7043,41 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_MEND, "", "" );
                     } else if( action_name == "autoattack" ) {
                         netplay::client_send_intent( "autoattack", 0, {} );
+                    } else if( action_name == "wield" ) {
+                        // Carried items live inside container pockets, so walk
+                        // the top-level location tree instead of inv_dump().
+                        sent = false;
+                        avatar &you = get_avatar();
+                        const item_location mirror_wielded =
+                            you.get_wielded_item();
+                        const std::string wielded_uid =
+                            mirror_wielded ?
+                            mirror_wielded->get_var( "mp_uid", std::string() ) :
+                            std::string();
+                        for( item_location &top : you.top_items_loc() ) {
+                            if( !top ) {
+                                continue;
+                            }
+                            top.visit_items( [&]( const item_location & il ) {
+                                if( !il || il->typeId() != itype_id( "knife_combat" ) ) {
+                                    return VisitResponse::NEXT;
+                                }
+                                const std::string uid =
+                                    il->get_var( "mp_uid", std::string() );
+                                if( uid.empty() || uid == wielded_uid ) {
+                                    return VisitResponse::NEXT;
+                                }
+                                netplay::client_send_inventory_uid( uid, 'w' );
+                                sent = true;
+                                return VisitResponse::ABORT;
+                            } );
+                            if( sent ) {
+                                break;
+                            }
+                        }
+                        if( sent ) {
+                            mp_inv_log( "action: wield from mirror" );
+                        }
                     } else if( action_name == "trade" ) {
                         mp_run_trade(
                             "0" "\x1f" "0" "\x1f" "0" "\x1f" "0" "\x1f"
