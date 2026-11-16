@@ -821,6 +821,18 @@ bool game::do_turn()
             netplay::host_pump_inventory_actions();
             netplay::host_pump_client_actions();
             netplay::host_pump_intents();
+            if( netplay::mp_diag_enabled() ) {
+                static auto mp_rw_last = std::chrono::steady_clock::now();
+                const auto mp_rw_now = std::chrono::steady_clock::now();
+                if( mp_rw_now - mp_rw_last > std::chrono::seconds( 5 ) ) {
+                    mp_rw_last = mp_rw_now;
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "roundwait alive sessions=%d\n",
+                                      static_cast<int>( netplay::host_session_count() ) );
+                        std::fclose( f );
+                    }
+                }
+            }
             inp_mngr.pump_events();
             static auto mp_last_wait_snap = std::chrono::steady_clock::now();
             const auto mp_wait_now = std::chrono::steady_clock::now();

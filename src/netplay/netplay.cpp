@@ -816,6 +816,12 @@ static void host_session_reader( int sid, socket_t sock )
                 // able to stack a mountain of steps ahead of the world turns
                 // they belong to.
                 state.avatar_keys[sid] = sid_key{ sid, code };
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "rx key sid=%d code=%u\n", sid, code );
+                        std::fclose( f );
+                    }
+                }
             }
         } else if( op == frame::SNAP_REQ ) {
             // Empty payload: "the client finished loading, send the current
@@ -3730,6 +3736,11 @@ void client_send_keys( const std::vector<key_event> &keys )
         // Sending failed: the session is dead. Closing the socket unblocks the
         // receiver thread; the view loop will surface the reconnect prompt.
         state.stop_client();
+    } else if( mp_diag_enabled() ) {
+        if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "cli key sent n=%d\n", static_cast<int>( keys.size() ) );
+            std::fclose( f );
+        }
     }
 }
 

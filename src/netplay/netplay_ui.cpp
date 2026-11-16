@@ -504,6 +504,45 @@ static int avatar_wait_answer( int timeout_seconds )
  * true when the host accepted the avatar. */
 static bool avatar_create_flow( const std::string &nick )
 {
+    if( !DynamicDataLoader::get_instance().is_data_finalized() ) {
+        popup( _( "The host world data is not loaded on this machine, "
+                  "so a new avatar cannot be created here (watch mode only)." ) );
+        return false;
+    }
+
+    // DDA MP v4.0a-214 test hook: headless avatar creation. The native
+    // creator needs a user, and a client without a local world copy would
+    // otherwise stop at a modal popup, which blocks automated runs.
+    if( const char *auto_create = std::getenv( "DDA_MP_TEST_AVATAR_AUTO" );
+        auto_create != nullptr && auto_create[0] != '\0' &&
+        std::string( auto_create ) != "0" ) {
+        avatar &auto_pc = get_avatar();
+        auto_pc.name = nick;
+        auto_pc.play_name = nick;
+        // The default avatar never ran the creator, so its body map is empty
+        // and the host would treat it as having no vital parts.
+        auto_pc.set_body();
+        auto_pc.set_all_parts_hp_to_max();
+        auto_pc.set_stamina( auto_pc.get_stamina_max() );
+        auto_pc.set_moves( 100 );
+        std::ostringstream aos;
+        JsonOut ajo( aos );
+        auto_pc.serialize( ajo );
+        netplay::client_send_avatar_profile( nick, aos.str() );
+        const int auto_st = avatar_wait_answer( 30 );
+        if( auto_st == 2 ) {
+            return true;
+        }
+        if( auto_st == 3 ) {
+            popup( _( "The host refused the avatar: %s" ), netplay::client_avatar_error() );
+        } else if( auto_st == 0 ) {
+            popup( _( "The host disconnected." ) );
+        } else {
+            popup( _( "The host did not answer the avatar profile." ) );
+        }
+        return false;
+    }
+
     // Character creation needs the host's world data: the fat client
     // loaded it exactly when DynamicDataLoader finalized and the host's
     // world is the active one.
@@ -512,11 +551,6 @@ static bool avatar_create_flow( const std::string &nick )
     if( w == nullptr || world_generator->active_world != w ) {
         popup( _( "The host world '%s' is not available on this machine, "
                   "so a new avatar cannot be created here (watch mode only)." ), wname );
-        return false;
-    }
-    if( !DynamicDataLoader::get_instance().is_data_finalized() ) {
-        popup( _( "The host world data is not loaded on this machine, "
-                  "so a new avatar cannot be created here (watch mode only)." ) );
         return false;
     }
 

@@ -2479,6 +2479,18 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action, bool defa
             // butcher / construction) must be served during normal play too,
             // not only while the host dialog is open.
             netplay::host_pump_intents();
+            if( netplay::mp_diag_enabled() ) {
+                static auto mp_mv_last = std::chrono::steady_clock::now();
+                const auto mp_mv_now = std::chrono::steady_clock::now();
+                if( mp_mv_now - mp_mv_last > std::chrono::seconds( 5 ) ) {
+                    mp_mv_last = mp_mv_now;
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "mouseview alive sessions=%d\n",
+                                      static_cast<int>( netplay::host_session_count() ) );
+                        std::fclose( f );
+                    }
+                }
+            }
         }
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,

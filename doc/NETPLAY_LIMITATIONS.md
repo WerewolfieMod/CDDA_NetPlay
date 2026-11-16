@@ -102,6 +102,25 @@ Observed warnings (not caused by the netplay features):
 Not covered automatically: two clients at once, successful mission turn-in
 with a completable objective, and repair completion with real tools/materials.
 
+## Multi-client
+
+- Several sessions are supported by the networking layer; two clients were
+  tested together (one resuming an existing avatar, one creating a new one).
+  Both joined, saw each other as characters and moved.
+- A client profile is untrusted data: avatar creation and status pushes run
+  with debug prompts suppressed (`mp_quiet_remote_data`), because a modal
+  debugmsg on the host stops every pump and freezes all sessions. A profile
+  without a body is repaired only where possible; test profiles created
+  headlessly must call `set_body()` before serializing.
+- A newly bound session gets its first status (panel layout + character
+  mirror) immediately after the bind, not on the next host action.
+- Turn parity is strict by design: the world advances only when every player
+  gave an order or is busy (sleep, activity, helping, AFK/long wait). A
+  connected player who has not acted keeps the world waiting — that is the
+  intended behaviour, not a freeze.
+- For automated runs with an idle host, the host must declare long wait
+  (`DDA_MP_TEST_HOST_LONGWAIT=1`), which counts as busy.
+
 ## Vehicle servicing
 
 - Status, refuel, damaged-parts list and repair activity are implemented.

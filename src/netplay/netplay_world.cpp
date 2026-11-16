@@ -30,6 +30,7 @@
 #include "butchery.h"
 #include "calendar.h"
 #include "character_martial_arts.h"
+#include "debug.h"
 #include "construction.h"
 #include "construction_group.h"
 #include "dialogue.h"
@@ -1188,6 +1189,7 @@ void host_game_tick()
  * must not touch game state, so this consumes the flag on the host main
  * thread and answers with the current picture. No-op without a request. */
 static void av_send_status( int sid );
+static void mp_diag_mark( const char *what, int sid );
 
 void host_pump_snapshot_requests(){
     if( !host_pop_snapshot_request() ) {
@@ -1198,6 +1200,7 @@ void host_pump_snapshot_requests(){
     // away; push the sidebar and sheet along with it instead of waiting for
     // the first world turn.
     for( int sid : netplay::host_session_ids() ) {
+        mp_diag_mark( "snapreq-status", sid );
         av_send_status( sid );
     }
 }
@@ -1415,8 +1418,24 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
     npc_ptr->wake_up();
 }
 
+/* DDA MP v4.0a-214: a malformed client profile must never pop a modal on the
+ * host — a debugmsg() dialog blocks the whole session (the host stops pumping
+ * keys, so every other client freezes too). Remote avatar data is validated
+ * and repaired where possible; anything left is logged, not prompted. */
+struct mp_quiet_remote_data {
+    mp_quiet_remote_data() {
+        debug_suppress_prompts( true );
+    }
+    ~mp_quiet_remote_data() {
+        debug_suppress_prompts( false );
+    }
+};
+
 static void host_handle_one_avatar_op( const avatar_op &op )
 {
+    // A profile from a client is untrusted: never let its validation open a
+    // modal on the host.
+    mp_quiet_remote_data quiet;
     // The host must actually be running a game to add an avatar to the world.
     map &here = get_map();
     avatar &host = get_avatar();
@@ -1458,9 +1477,15 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             avatar_entry e;
             e.name = rec.name;
             e.alive = av_npc_alive( npc_ptr );
-            // v4.0a-1: session ownership is not tracked yet; the host serves
-            // one client at a time (the accept loop holds a single session).
+            // DDA MP v4.0a-214: report whether another session already drives
+            // this avatar (the host supports several sessions now).
             e.in_session = false;
+            for( const auto &bound : av_sid_to_npc ) {
+                if( bound.second == rec.npc_id ) {
+                    e.in_session = true;
+                    break;
+                }
+            }
             list.push_back( e );
         }
         host_send_avatar_reply( op.sid, frame::AVATAR_LIST, encode_avatar_list( list ) );
@@ -1489,6 +1514,10 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         av_wake( npc_ptr );
         av_bind_session( op.sid, npc_ptr->getID().get_value() );
         host_send_avatar_reply( op.sid, frame::AVATAR_OK, encode_avatar_text( found->name ) );
+        // DDA MP v4.0a-214: push the first status (panel layout + character
+        // mirror) right away; without it a newly bound session has no mirror
+        // until the next host action touches its avatar.
+        av_send_status( op.sid );
         return;
     }
 
@@ -1527,6 +1556,22 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             }
             if( !npc_ptr->get_fac_id().str().empty() ) {
                 npc_ptr->set_fac( npc_ptr->get_fac_id() );
+            }
+            if( netplay::mp_diag_enabled() ) {
+                const std::vector<bodypart_id> parts =
+                    npc_ptr->get_all_body_parts( get_body_part_flags::only_main );
+                int vitals = 0;
+                for( const bodypart_id &bp : parts ) {
+                    if( bp->is_vital ) {
+                        ++vitals;
+                    }
+                }
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "avatar create parts=%d vitals=%d nick=%s\n",
+                                  static_cast<int>( parts.size() ), vitals,
+                                  op.nick.c_str() );
+                    std::fclose( f );
+                }
             }
         } catch( const JsonError &e ) {
             npc_ptr = nullptr;
@@ -1577,6 +1622,8 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         av_wake( npc_ptr );
         av_bind_session( op.sid, new_id.get_value() );
         host_send_avatar_reply( op.sid, frame::AVATAR_OK, encode_avatar_text( op.nick ) );
+        // DDA MP v4.0a-214: same first-status push as the resume path.
+        av_send_status( op.sid );
         return;
     }
 }
@@ -1642,7 +1689,6 @@ static bool av_all_acted()
             ++it;
         }
     }
-    const auto mp_now = std::chrono::steady_clock::now();
     for( const auto &entry : av_sid_to_npc ) {
         // DDA MP v4.0a-88: an AFK (long wait) session must not block the
         // others; it does not take part in the turn round at all.
@@ -1666,11 +1712,6 @@ static bool av_all_acted()
         }
         const auto it = av_acted_since_tick.find( entry.first );
         if( it == av_acted_since_tick.end() || !it->second ) {
-            // DDA MP v4.0a-152: do not let an idle client freeze the host.
-            // After a short grace it counts as having passed this round.
-            if( mp_now - mp_round_start > std::chrono::milliseconds( 1500 ) ) {
-                continue;
-            }
             return false;
         }
     }
@@ -1683,6 +1724,19 @@ static bool av_all_acted()
 void host_pump_avatar_keys()
 {
     host_region_sync();
+    if( netplay::mp_diag_enabled() ) {
+        static auto mp_pump_last = std::chrono::steady_clock::now();
+        const auto mp_pump_now = std::chrono::steady_clock::now();
+        if( mp_pump_now - mp_pump_last > std::chrono::seconds( 5 ) ) {
+            mp_pump_last = mp_pump_now;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "pump keys queue=%d sessions=%d\n",
+                              netplay::host_avatar_keys_pending() ? 1 : 0,
+                              static_cast<int>( host_session_ids().size() ) );
+                std::fclose( f );
+            }
+        }
+    }
     // DDA MP test hook: put a corpse, a butchering tool and a disassemblable
     // item on the session avatar, so the butcher / disassembly paths can be
     // exercised end to end.
@@ -2137,6 +2191,16 @@ void host_pump_avatar_keys()
         // player's bubble. The scope restores the host on every exit path.
         region_scope scope( sk.sid );
         const std::string act = mp_key_action( sk.code );
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "key sid=%d code=%u act=%s pos=%d,%d moves=%d pool=%d\n",
+                              sk.sid, sk.code, act.c_str(),
+                              npc_ptr->pos_bub().x(), npc_ptr->pos_bub().y(),
+                              npc_ptr->get_moves(),
+                              av_move_pool.count( sk.sid ) ? av_move_pool[sk.sid] : -1 );
+                std::fclose( f );
+            }
+        }
         // DDA MP v4.0a-128: any key wakes a sleeping avatar / cancels its
         // current activity, like the stock game's "get up" handling.
         if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
@@ -2659,8 +2723,21 @@ static void mp_tag_avatar_items( npc &av )
     }
 }
 
+static void mp_diag_mark( const char *what, int sid )
+{
+    if( !netplay::mp_diag_enabled() ) {
+        return;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "mark %s sid=%d\n", what, sid );
+        std::fclose( f );
+    }
+}
+
 static void av_send_status( int sid )
 {
+    mp_quiet_remote_data quiet;
+    mp_diag_mark( "status-begin", sid );
     const auto sid_it = av_sid_to_npc.find( sid );
     shared_ptr_fast<npc> npc_ptr;
     if( sid_it != av_sid_to_npc.end() ) {
@@ -2670,20 +2747,25 @@ static void av_send_status( int sid )
         return;
     }
     npc *av = npc_ptr.get();
+    mp_diag_mark( "status-pre-scope", sid );
     // DDA MP v4.0a-142: every payload below reads the map around the avatar
     // (sidebar widgets, compass, minimap, aim targets), so run them in the
     // avatar's region. Split regions have their own persistent map; the host
     // region still needs the anchor/hand-back below.
     region_scope scope( sid );
+    mp_diag_mark( "status-scope", sid );
     // DDA MP v4.0a-80: every payload below reads the map around the avatar
     // (sidebar widgets, compass, minimap, aim targets). Between the avatar's
     // own steps the bubble lives with the host player, so anchor it here,
     // keeping the shared pointer alive across the anchor, and hand it back.
     const bool mp_re_anchor = !get_map().inbounds( get_map().get_bub( av->pos_abs() ) );
+    mp_diag_mark( "status-anchor-check", sid );
     if( mp_re_anchor ) {
         g->mp_anchor_map_on( *av, true );
     }
+    mp_diag_mark( "status-enter", sid );
     netplay::host_send_sheet_to_sid( sid, build_character_sheet( *av ) );
+    mp_diag_mark( "status-sheet", sid );
     // DDA MP v4.0a-147: the client's native sidebar must use the host's panel
     // layout, otherwise its log/minimap start at a different row and the
     // panel sets differ. Serialize once and resend on status; the client
@@ -2696,8 +2778,7 @@ static void av_send_status( int sid )
             panel_manager::get_manager().serialize( js );
             mp_panel_layout_json = os.str();
         }
-        const bool sent = netplay::host_send_panel_layout_to_sid( sid, mp_panel_layout_json );
-        static bool mp_panel_sent_logged = false;
+        const bool sent = netplay::host_send_panel_layout_to_sid( sid, mp_panel_layout_json );        static bool mp_panel_sent_logged = false;
         if( sent && !mp_panel_sent_logged && netplay::mp_diag_enabled() ) {
             mp_panel_sent_logged = true;
             if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
@@ -2710,6 +2791,7 @@ static void av_send_status( int sid )
     // DDA MP v4.1: tag the avatar's items before the raw snapshot so the
     // client's mirror and the row listing carry the same stable ids.
     mp_tag_avatar_items( *av );
+    mp_diag_mark( "status-tag", sid );
     // DDA MP v4.0a-27: the raw NPC saves the client's own @ menu; the client
     // deserializes it into a temp NPC and opens Character::disp_info().
     {
@@ -2727,7 +2809,9 @@ static void av_send_status( int sid )
             netplay::host_send_character_json_to_sid( sid, os.str() );
         }
     }
+    mp_diag_mark( "status-info", sid );
 #if defined(TILES)
+    mp_diag_mark( "status-minimap-start", sid );
     {
         // DDA MP v4.0a-12: the host's pixel minimap colours MAP tiles (terrain,
         // furniture, vehicles) around the player, not overmap tiles. Send the
@@ -2913,7 +2997,9 @@ static void av_send_status( int sid )
         }
         netplay::host_send_minimap_to_sid( sid, mm );
     }
+    mp_diag_mark( "status-minimap-done", sid );
 #endif
+    mp_diag_mark( "status-end", sid );
     // DDA MP v4.1: no row listing is streamed any more. The client's mirror
     // names items by mp_uid, so inventory/throw/pocket intents address the
     // same host item without a synchronized row table.
@@ -6571,6 +6657,8 @@ bool host_round_done()
         if( netplay::is_helping_anyone( npc_ptr ) ) {
             continue;
         }
+        // DDA MP v4.0a-214: strict parity - a client that gave no order this
+        // round keeps the world waiting, exactly like the host's own turn.
         // No pool entry yet means the client has not spent anything this
         // round; a positive pool means it still has actions left.
         const auto it = av_move_pool.find( sid );
@@ -6583,6 +6671,9 @@ bool host_round_done()
 
 bool host_consume_auto_turn()
 {
+    // DDA MP v4.0a-214: intentionally not called. Turn parity is strict: the
+    // host's own order is required, so an idle host keeps the world waiting
+    // together with any idle client. Kept for the AFK/long-wait experiments.
     const bool blocked = host_turn_blocked();
     const bool flag = mp_client_finished_order;
     if( !flag ) {
