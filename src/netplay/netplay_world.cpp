@@ -892,6 +892,10 @@ bool av_npc_alive( const shared_ptr_fast<npc> &p );
 /* session id -> the npc id of the avatar that session drives (see the
  * avatar-registry section; main thread only) */
 static std::map<int, int> av_sid_to_npc;
+/* DDA MP v4.0a-215: last known speed of a session avatar. The NPC is briefly
+ * unresolvable while the host's bubble is anchored on another session, and
+ * the per-turn pool must still refill or that client can never act again. */
+static std::map<int, int> av_speed_cache;
 /* DDA MP v4.0a-152: wall clock of the current turn round. A client that has
  * not given an order within the grace window is treated as passing, so an
  * idle player can never freeze the host forever. */
@@ -926,6 +930,13 @@ static npc *av_session_npc( int sid )
         shared_ptr_fast<npc> npc_ptr = av_find_npc( it->second );
         if( npc_ptr && av_npc_alive( npc_ptr ) ) {
             return npc_ptr.get();
+        }
+        // DDA MP v4.0a-215: inside the host's reality bubble the avatar lives
+        // in the creature tracker and temporarily leaves the overmap buffer.
+        if( npc *raw = g->critter_by_id<npc>( character_id( it->second ) ) ) {
+            if( !raw->is_dead_state() ) {
+                return raw;
+            }
         }
     }
     return nullptr;
@@ -1513,6 +1524,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         // route this session's keystrokes to it.
         av_wake( npc_ptr );
         av_bind_session( op.sid, npc_ptr->getID().get_value() );
+        av_speed_cache[op.sid] = npc_ptr->get_speed();
         host_send_avatar_reply( op.sid, frame::AVATAR_OK, encode_avatar_text( found->name ) );
         // DDA MP v4.0a-214: push the first status (panel layout + character
         // mirror) right away; without it a newly bound session has no mirror
@@ -1557,6 +1569,12 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             if( !npc_ptr->get_fac_id().str().empty() ) {
                 npc_ptr->set_fac( npc_ptr->get_fac_id() );
             }
+            // DDA MP v4.0a-215: a profile without a base speed can never
+            // spend a move point; treat it as a normal human instead of
+            // freezing that session forever.
+            if( npc_ptr->get_speed() <= 0 ) {
+                npc_ptr->set_speed_base( 100 );
+            }
             if( netplay::mp_diag_enabled() ) {
                 const std::vector<bodypart_id> parts =
                     npc_ptr->get_all_body_parts( get_body_part_flags::only_main );
@@ -1567,9 +1585,9 @@ static void host_handle_one_avatar_op( const avatar_op &op )
                     }
                 }
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "avatar create parts=%d vitals=%d nick=%s\n",
+                    std::fprintf( f, "avatar create parts=%d vitals=%d speed=%d nick=%s\n",
                                   static_cast<int>( parts.size() ), vitals,
-                                  op.nick.c_str() );
+                                  npc_ptr->get_speed(), op.nick.c_str() );
                     std::fclose( f );
                 }
             }
@@ -1621,6 +1639,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         av_registry_save( recs );
         av_wake( npc_ptr );
         av_bind_session( op.sid, new_id.get_value() );
+        av_speed_cache[op.sid] = npc_ptr->get_speed();
         host_send_avatar_reply( op.sid, frame::AVATAR_OK, encode_avatar_text( op.nick ) );
         // DDA MP v4.0a-214: same first-status push as the resume path.
         av_send_status( op.sid );
@@ -1684,6 +1703,7 @@ static bool av_all_acted()
             av_acted_since_tick.erase( it->first );
             av_waiting_for_turn.erase( it->first );
             av_move_pool.erase( it->first );
+            av_speed_cache.erase( it->first );
             it = av_sid_to_npc.erase( it );
         } else {
             ++it;
@@ -2186,6 +2206,7 @@ void host_pump_avatar_keys()
             av_acted_since_tick.erase( sk.sid );
             continue;
         }
+        av_speed_cache[sk.sid] = npc_ptr->get_speed();
         // DDA MP v4.0a-142: run the whole key in the avatar's own region, so
         // get_map(), pos_bub() and the snapshot builder all describe the
         // player's bubble. The scope restores the host on every exit path.
@@ -2743,10 +2764,20 @@ static void av_send_status( int sid )
     if( sid_it != av_sid_to_npc.end() ) {
         npc_ptr = av_find_npc( sid_it->second );
     }
-    if( !npc_ptr || !av_npc_alive( npc_ptr ) || npc_ptr->is_dead_state() ) {
+    npc *av = nullptr;
+    if( npc_ptr && av_npc_alive( npc_ptr ) ) {
+        av = npc_ptr.get();
+    } else if( sid_it != av_sid_to_npc.end() ) {
+        // In-bubble avatar: the tracker owns it while the overmap buffer has
+        // no entry (kept alive for the duration by the tracker).
+        npc *raw = g->critter_by_id<npc>( character_id( sid_it->second ) );
+        if( raw != nullptr && !raw->is_dead_state() ) {
+            av = raw;
+        }
+    }
+    if( av == nullptr || av->is_dead_state() ) {
         return;
     }
-    npc *av = npc_ptr.get();
     mp_diag_mark( "status-pre-scope", sid );
     // DDA MP v4.0a-142: every payload below reads the map around the avatar
     // (sidebar widgets, compass, minimap, aim targets), so run them in the
@@ -6492,27 +6523,53 @@ void host_note_world_turn()
     // so pay its one turn of speed here — exactly like Character::process_turn
     // does for a processed NPC, and only when it wasn't processed already.
     for( int sid : netplay::host_session_ids() ) {
-        shared_ptr_fast<npc> npc_ptr;
+        npc *av = nullptr;
+        bool in_bubble = false;
         {
             const auto sid_it = av_sid_to_npc.find( sid );
             if( sid_it != av_sid_to_npc.end() ) {
-                npc_ptr = av_find_npc( sid_it->second );
+                shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
+                if( npc_ptr && av_npc_alive( npc_ptr ) && !npc_ptr->is_dead_state() ) {
+                    av = npc_ptr.get();
+                } else if( npc *raw = g->critter_by_id<npc>(
+                               character_id( sid_it->second ) ) ) {
+                    // DDA MP v4.0a-215: an avatar standing in the host's
+                    // reality bubble lives in the creature tracker and is
+                    // temporarily absent from the overmap buffer, so the
+                    // lookup above misses it. The engine already ran its
+                    // turn pass; only the move pool needs refilling.
+                    if( !raw->is_dead_state() ) {
+                        av = raw;
+                        in_bubble = true;
+                    }
+                }
             }
         }
-        if( npc_ptr && av_npc_alive( npc_ptr ) && !npc_ptr->is_dead_state() ) {
-            npc *av = npc_ptr.get();
+        if( av != nullptr ) {
             // DDA MP v4.0a-142: the turn pass and the status push run in the
             // avatar's region (a split region has its own map and creatures).
             region_scope scope( sid );
-            // Per-turn state (body temperature, effects, activity, needs) is
-            // normally advanced by the NPC turn pass; an out-of-bubble session
-            // avatar never gets it, so do the base Character pass here with the
-            // bubble anchored on the avatar.
-            g->mp_anchor_map_on( *av, true );
-            av->Character::process_turn();
+            if( !in_bubble ) {
+                // Per-turn state (body temperature, effects, activity, needs)
+                // is normally advanced by the NPC turn pass; an out-of-bubble
+                // session avatar never gets it, so do the base Character pass
+                // here with the bubble anchored on the avatar.
+                g->mp_anchor_map_on( *av, true );
+                av->Character::process_turn();
+            }
+            av_speed_cache[sid] = av->get_speed();
             // Exactly one turn of move points, never an accumulated stock.
-            av_move_pool[sid] = av->get_speed();
+            av_move_pool[sid] = av_speed_cache[sid];
             av->set_moves( av_move_pool[sid] );
+            if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "refill sid=%d speed=%d base=%d bonus=%d pool=%d bubbled=%d\n",
+                                  sid, av->get_speed(), av->get_speed_base(),
+                                  av->get_speed_bonus(), av_move_pool[sid],
+                                  in_bubble ? 1 : 0 );
+                    std::fclose( f );
+                }
+            }
             // DDA MP v4.0a-22: activities that only touch the avatar's own
             // inventory (reading, reloading, mending) are not ticked by the
             // world, so advance them here. Map-bound activities such as
@@ -6540,16 +6597,38 @@ void host_note_world_turn()
             }
             // DDA MP v4.0a-8/9: refresh the client's status payloads.
             av_send_status( sid );
-        } else if( npc_ptr && npc_ptr->is_dead_state() ) {
-            // DDA MP v4.0a-130: tell the session once; its avatar cannot act
-            // any more and the round gate already skips it.
-            static std::map<int, bool> mp_death_notified;
-            if( !mp_death_notified[sid] ) {
-                mp_death_notified[sid] = true;
-                netplay::host_send_event_to_sid(
-                    sid,
-                    netplay::fork_text( "You have died. Disconnect and join again to create a new character." ),
-                    netplay::EVENT_DEATH );
+        } else {
+            // DDA MP v4.0a-215: the NPC can be unresolvable for one turn while
+            // the bubble is anchored elsewhere. Refill from the cached speed so
+            // the client is not locked out of the next round.
+            const auto cache_it = av_speed_cache.find( sid );
+            if( cache_it != av_speed_cache.end() ) {
+                av_move_pool[sid] = cache_it->second;
+                if( netplay::mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "refill sid=%d cached=%d (avatar not found)\n",
+                                      sid, cache_it->second );
+                        std::fclose( f );
+                    }
+                }
+            }
+            bool dead = false;
+            const auto sid_it = av_sid_to_npc.find( sid );
+            if( sid_it != av_sid_to_npc.end() ) {
+                shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
+                dead = npc_ptr && npc_ptr->is_dead_state();
+            }
+            if( dead ) {
+                // DDA MP v4.0a-130: tell the session once; its avatar cannot
+                // act any more and the round gate already skips it.
+                static std::map<int, bool> mp_death_notified;
+                if( !mp_death_notified[sid] ) {
+                    mp_death_notified[sid] = true;
+                    netplay::host_send_event_to_sid(
+                        sid,
+                        netplay::fork_text( "You have died. Disconnect and join again to create a new character." ),
+                        netplay::EVENT_DEATH );
+                }
             }
         }
         av_waiting_for_turn[sid] = false;

@@ -104,6 +104,10 @@ with a completable objective, and repair completion with real tools/materials.
 
 ## Multi-client
 
+- Status: experimental, paused. The supported configuration is **host + one
+  client**; two clients can join and move, but a second live window on one
+  machine is not supported yet (the second client can stall in modal menus
+  such as the player-interaction bump menu).
 - Several sessions are supported by the networking layer; two clients were
   tested together (one resuming an existing avatar, one creating a new one).
   Both joined, saw each other as characters and moved.

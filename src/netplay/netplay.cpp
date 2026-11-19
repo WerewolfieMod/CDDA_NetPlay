@@ -795,7 +795,21 @@ static void host_session_reader( int sid, socket_t sock )
         frame op;
         std::vector<char> payload;
         if( !recv_frame( sock, op, payload ) ) {
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "reader exit sid=%d\n", sid );
+                    std::fclose( f );
+                }
+            }
             break;
+        }
+        if( mp_diag_enabled() ) {
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "rx frame sid=%d op=%u len=%d\n", sid,
+                              static_cast<unsigned>( op ),
+                              static_cast<int>( payload.size() ) );
+                std::fclose( f );
+            }
         }
         if( op == frame::KEYS ) {
             reader r;
@@ -807,6 +821,12 @@ static void host_session_reader( int sid, socket_t sock )
                 r.get_i32(); // mods, unused in v1
                 if( !r.ok ) {
                     break;
+                }
+                if( mp_diag_enabled() ) {
+                    if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "rx key wait sid=%d code=%u\n", sid, code );
+                        std::fclose( f );
+                    }
                 }
                 std::lock_guard<std::mutex> lk( state.keys_mutex );
                 // DDA MP v4.0a-2: strictly one action in flight per

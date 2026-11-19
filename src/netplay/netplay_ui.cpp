@@ -523,6 +523,9 @@ static bool avatar_create_flow( const std::string &nick )
         // and the host would treat it as having no vital parts.
         auto_pc.set_body();
         auto_pc.set_all_parts_hp_to_max();
+        // The default avatar never ran the creator, so speed_base is still 0;
+        // a remote avatar with speed 0 can never spend a move point.
+        auto_pc.set_speed_base( 100 );
         auto_pc.set_stamina( auto_pc.get_stamina_max() );
         auto_pc.set_moves( 100 );
         std::ostringstream aos;
