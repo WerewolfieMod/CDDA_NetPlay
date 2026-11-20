@@ -3358,6 +3358,9 @@ void npc::die( map *here, Creature *nkiller )
         }
     }
     dead = true;
+    // DDA MP v4.0a-216: tell the owning session right away; the client shows
+    // the death screen and creates a new character without reconnecting.
+    netplay::host_notify_avatar_death( getID().get_value() );
     Character::die( here, nkiller );
 
     if( !quiet_death ) {

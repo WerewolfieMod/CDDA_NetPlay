@@ -1,4 +1,4 @@
-// CataDDA Multiplayer ("DDA MP") — host glue between the world simulation
+﻿// CataDDA Multiplayer ("DDA MP") вЂ” host glue between the world simulation
 // and the network transport (v1.5 "watch-and-remote-control"):
 //  * per-turn ascii snapshots of the host's own view, streamed to sessions,
 //  * remote KEYS decoded into DEFAULTMODE action ids for input injection.
@@ -235,7 +235,7 @@ static const trait_id trait_INATTENTIVE( "INATTENTIVE" );
 /* DDA MP v3.9: diagnostics master switch. When false, no netplay_tiles.log /
  * netplay_light_trace.log lines are produced by this TU (mine traces,
  * snapshot size logs). Flip to true and rebuild to re-enable. */
-/* DDA MP v3.9: diagnostics master switch — built-in (mp_diag_dir).
+/* DDA MP v3.9: diagnostics master switch вЂ” built-in (mp_diag_dir).
  * Default ON without any env; DDA_MP_DIAG=0|off disables. */
 static const bool mp_netplay_diag = mp_diag_enabled();
 
@@ -360,7 +360,7 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                 // DDA MP v4.0a-2: for a bound client's own POV, the tile its
                 // avatar stands on is always visible (the engine always
                 // renders the player sprite at the screen center; some tile
-                //美术 have their position LOS-filtered otherwise).
+                //зѕЋжњЇ have their position LOS-filtered otherwise).
                 const bool centered = viewer != nullptr && p == viewer->pos_bub();
                 const bool visible = ( ll != lit_level::BLANK && ll != lit_level::DARK &&
                                        ll != lit_level::MEMORIZED ) || centered;
@@ -749,7 +749,7 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     mvwputch( win, point( FRAMEW / 2, FRAMEH / 2 ), c_white, '@' );
 
     // DDA MP v4.0a-2: the avatar's own heard sounds ("Where is that noise
-    // coming from?" markers) — computed on the host from the same event
+    // coming from?" markers) вЂ” computed on the host from the same event
     // queue the host player's "?" markers come from, but against the
     // avatar's ears and eyes. Painted straight into the ascii frame and
     // streamed as a per-cell overlay id for the tileset replay renderer
@@ -779,7 +779,7 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.width = FRAMEW;
     out.height = FRAMEH;
     out.cells.reserve( FRAMEW * FRAMEH );
-    // DDA MP v4.0a-4: stream the frame's absolute world origin — the pivot
+    // DDA MP v4.0a-4: stream the frame's absolute world origin вЂ” the pivot
     // cell is the client avatar's own cell, so the streamed cell coordinates
     // change every step; random-weighted sprite variants seed off position,
     // and this offset keeps them stable per world tile.
@@ -892,6 +892,9 @@ bool av_npc_alive( const shared_ptr_fast<npc> &p );
 /* session id -> the npc id of the avatar that session drives (see the
  * avatar-registry section; main thread only) */
 static std::map<int, int> av_sid_to_npc;
+/* DDA MP v4.0a-216: sessions already told that their avatar died. Cleared on
+ * every bind, so a respawned character gets its own death notice. */
+static std::map<int, bool> av_death_notified;
 /* DDA MP v4.0a-215: last known speed of a session avatar. The NPC is briefly
  * unresolvable while the host's bubble is anchored on another session, and
  * the per-turn pool must still refill or that client can never act again. */
@@ -934,7 +937,7 @@ static npc *av_session_npc( int sid )
         // DDA MP v4.0a-215: inside the host's reality bubble the avatar lives
         // in the creature tracker and temporarily leaves the overmap buffer.
         if( npc *raw = g->critter_by_id<npc>( character_id( it->second ) ) ) {
-            if( !raw->is_dead_state() ) {
+            if( !raw->is_dead() ) {
                 return raw;
             }
         }
@@ -1329,7 +1332,7 @@ std::vector<av_rec> av_registry_load()
         return out;
     }
     std::string text;
-    // optional: a fresh world has no registry yet and that is not an error —
+    // optional: a fresh world has no registry yet and that is not an error вЂ”
     // a blocking debug error panel here freezes the host main loop and makes
     // the connecting client miss its avatar answer.
     read_from_file_optional( path, [&]( std::istream &is ) {
@@ -1407,7 +1410,7 @@ void av_reply_deny( int sid, const std::string &why )
 
 /* DDA MP v4.0a-2: bind bookkeeping. av_sid_to_npc itself lives next to
  * av_session_center (snapshot section). Written on bind (resume/create),
- * consumed by the key pump on the same main thread — no locking needed.
+ * consumed by the key pump on the same main thread вЂ” no locking needed.
  * Rebinding kicks the previous session off the avatar (last client with
  * the nick wins). */
 static void av_bind_session( int sid, int npc_id )
@@ -1420,6 +1423,7 @@ static void av_bind_session( int sid, int npc_id )
         }
     }
     av_sid_to_npc[sid] = npc_id;
+    av_death_notified.erase( sid );
     mp_round_start = std::chrono::steady_clock::now();
 }
 
@@ -1430,7 +1434,7 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
 }
 
 /* DDA MP v4.0a-214: a malformed client profile must never pop a modal on the
- * host — a debugmsg() dialog blocks the whole session (the host stops pumping
+ * host вЂ” a debugmsg() dialog blocks the whole session (the host stops pumping
  * keys, so every other client freezes too). Remote avatar data is validated
  * and repaired where possible; anything left is logged, not prompted. */
 struct mp_quiet_remote_data {
@@ -1520,7 +1524,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
                                           op.nick ) );
             return;
         }
-        // v4.0a-2: the client takes the wheel — wake the avatar up and
+        // v4.0a-2: the client takes the wheel вЂ” wake the avatar up and
         // route this session's keystrokes to it.
         av_wake( npc_ptr );
         av_bind_session( op.sid, npc_ptr->getID().get_value() );
@@ -1630,11 +1634,17 @@ static void host_handle_one_avatar_op( const avatar_op &op )
         npc_ptr->setID( new_id, true );
         npc_ptr->set_unique_id( "netplay_avatar:" + op.nick );
         // v4.0a-1: the avatar rests while its player is away; the a2 step
-        // wakes it right away — the client starts driving it immediately.
+        // wakes it right away вЂ” the client starts driving it immediately.
         npc_ptr->add_effect( effect_sleep, time_duration::from_days( 3000 ) );
         npc_ptr->spawn_at_precise( here.get_abs( spot ) );
         overmap_buffer.insert_npc( npc_ptr );
         g->load_npcs();
+        // DDA MP v4.0a-216: one registry row per nick. A dead avatar leaves
+        // its old row behind; a respawn replaces it instead of stacking.
+        recs.erase( std::remove_if( recs.begin(), recs.end(),
+        [&]( const av_rec & r ) {
+            return r.name == op.nick;
+        } ), recs.end() );
         recs.push_back( av_rec{ op.nick, new_id.get_value() } );
         av_registry_save( recs );
         av_wake( npc_ptr );
@@ -1647,8 +1657,61 @@ static void host_handle_one_avatar_op( const avatar_op &op )
     }
 }
 
+/* DDA MP v4.0a-216: a dead session avatar must be announced right away.
+ * Waiting for the next world turn does not work: once the only client is
+ * dead, host_any_active_client() is false and the idle host stops turning. */
+static void host_pump_avatar_deaths()
+{
+    if( !host_is_running() ) {
+        return;
+    }
+    for( int sid : netplay::host_session_ids() ) {
+        const auto it = av_sid_to_npc.find( sid );
+        if( it == av_sid_to_npc.end() || av_death_notified[sid] ) {
+            continue;
+        }
+        bool dead = false;
+        bool via_buf = false;
+        bool via_tracker = false;
+        shared_ptr_fast<npc> npc_ptr = av_find_npc( it->second );
+        if( npc_ptr ) {
+            via_buf = true;
+            dead = npc_ptr->is_dead();
+        } else if( npc *raw = g->critter_by_id<npc>( character_id( it->second ) ) ) {
+            via_tracker = true;
+            dead = raw->is_dead();
+        }
+        if( netplay::mp_diag_enabled() ) {
+            static auto mp_death_dbg = std::chrono::steady_clock::now();
+            const auto mp_death_now = std::chrono::steady_clock::now();
+            if( dead || mp_death_now - mp_death_dbg > std::chrono::seconds( 5 ) ) {
+                mp_death_dbg = mp_death_now;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "death check sid=%d npc=%d buf=%d trk=%d dead=%d\n",
+                                  sid, it->second, via_buf ? 1 : 0,
+                                  via_tracker ? 1 : 0, dead ? 1 : 0 );
+                    std::fclose( f );
+                }
+            }
+        }
+        if( dead ) {
+            av_death_notified[sid] = true;
+            netplay::host_send_event_to_sid(
+                sid, netplay::fork_text( "You have died." ),
+                netplay::EVENT_DEATH );
+            if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "death notify sid=%d\n", sid );
+                    std::fclose( f );
+                }
+            }
+        }
+    }
+}
+
 void host_pump_avatar_ops()
 {
+    host_pump_avatar_deaths();
     host_region_sync();
     avatar_op op;
     int budget = 16;
@@ -1665,7 +1728,7 @@ void host_pump_avatar_ops()
 }
 
 /* DDA MP v4.0a-2: per-session keyboard. Bound sessions steer their own
- * avatar — one step per movement key, standard collision rules (no forced
+ * avatar вЂ” one step per movement key, standard collision rules (no forced
  * moves, no pathfinding); any non-movement key is swallowed for now.
  * Sessions without a bound avatar fall back onto the legacy queue so the
  * watchers keep the v3.x "drive the host player" behavior unchanged. */
@@ -1686,11 +1749,11 @@ static void av_mark_acted( int sid )
 }
 /* DDA MP v4.0a-7: per-session move pool, owned by netplay. The avatar NPC is
  * unloaded and reloaded whenever the reality bubble flips between the host and
- * the client, and the NPC loader resets `moves` to 100 on every load — the
+ * the client, and the NPC loader resets `moves` to 100 on every load вЂ” the
  * engine pool alone therefore let a client walk without limit. */
 static std::map<int, int> av_move_pool;
 /* DDA MP v4.0a-7: session is holding an action that cannot pay until the next
- * world turn — do not retry (and re-hint) it every pump cycle. */
+ * world turn вЂ” do not retry (and re-hint) it every pump cycle. */
 static std::map<int, bool> av_waiting_for_turn;
 
 static bool av_all_acted()
@@ -2257,7 +2320,7 @@ void host_pump_avatar_keys()
             continue; // CONFIRM and unknown codes: swallow
         }
         map &here = get_map();
-        // DDA MP diag: per-step timing by distance — the far-roaming client
+        // DDA MP diag: per-step timing by distance вЂ” the far-roaming client
         // slowdown needs facts about which stage grows with distance.
         const auto mp_t0 = std::chrono::steady_clock::now();
         auto mp_ms_since = []( const std::chrono::steady_clock::time_point &t ) {
@@ -2269,7 +2332,7 @@ void host_pump_avatar_keys()
         // does, so keep the reality bubble anchored around it (the same way
         // the engine anchors it around the player after a move). This also
         // re-activates an avatar the bubble had scrolled away from. Light
-        // mode: only the cheap shifts run, no cache/spawn work — a burst of
+        // mode: only the cheap shifts run, no cache/spawn work вЂ” a burst of
         // client steps must not pay the full anchor price on every step.
         g->mp_anchor_map_on( *npc_ptr, true );
         const long long mp_anchor_ms = mp_ms_since( mp_t0 );
@@ -2441,13 +2504,13 @@ void host_pump_avatar_keys()
             // for such a move; requiring cost <= pool made furniture impassable.
             if( pool_it->second <= 0 ) {
                 // pool exhausted: the move waits for the next world turn;
-                // the key is NOT eaten — the session keeps its single action
+                // the key is NOT eaten вЂ” the session keeps its single action
                 // in flight until the pool can pay for it. Break, not
                 // continue: the key is back at the front of its slot and
                 // would spin this pump forever otherwise; the next pump run
                 // (after the next world turn refills the pool) retries it.
                 // The step cannot be paid: DROP the key (do not queue it for a
-                // later turn — a delayed automatic move reads as "my input was
+                // later turn вЂ” a delayed automatic move reads as "my input was
                 // ignored and then happened by itself"). The player presses
                 // again when the host's turn starts a new round.
                 if( !netplay::host_session_afk( sk.sid ) &&
@@ -2484,7 +2547,7 @@ void host_pump_avatar_keys()
         if( here.inbounds( dst ) && npc_ptr->can_move_to( dst ) ) {
             const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
             npc_ptr->move_to( dst );
-            // DDA MP v4.0a-7: actually spend the pool (owned by netplay — the
+            // DDA MP v4.0a-7: actually spend the pool (owned by netplay вЂ” the
             // NPC loader resets the engine moves on every bubble flip).
             av_move_pool[sk.sid] = std::max( 0, av_move_pool[sk.sid] - mp_step_cost );
             if( netplay::host_session_afk( sk.sid ) ) {
@@ -2495,7 +2558,7 @@ void host_pump_avatar_keys()
                 av_move_pool[sk.sid] += mp_step_cost;
             }
             npc_ptr->set_moves( av_move_pool[sk.sid] );
-            // DDA MP v4.0a-11: same rule as the host's game::walk_move — tell the
+            // DDA MP v4.0a-11: same rule as the host's game::walk_move вЂ” tell the
             // client only when the destination tile is slower than the tile it
             // left ("Moving onto this %s is slow!"), never for leaving it.
             if( here.move_cost( dst ) > here.move_cost( mp_from ) ) {
@@ -2503,7 +2566,7 @@ void host_pump_avatar_keys()
                     sk.sid, "Moving onto this %s is slow!",
                     { mp_ter_arg( here, dst ) },
                     static_cast<int>( m_warning ) );            }
-            // DDA MP: this noise came from another player's avatar — the
+            // DDA MP: this noise came from another player's avatar вЂ” the
             // host's "?" placement must check whether it sees the avatar,
             // not the tile it just left (which may peek around a corner).
             sounds::tag_last_sound_as_remote_player( npc_ptr->getID().get_value(), mp_from );
@@ -2540,7 +2603,7 @@ void host_pump_avatar_keys()
             }
             // DDA MP v4.0a-7: the shared world turn is NOT synthesized here
             // any more. The client's step spends its move pool, and the world
-            // advances only when the host takes a turn — so a client can never
+            // advances only when the host takes a turn вЂ” so a client can never
             // act twice while the host stands still (and the host's own turn
             // is gated on the client having acted).
             break;
@@ -2548,7 +2611,7 @@ void host_pump_avatar_keys()
     }
     // DDA MP v4.0a-2: when the burst is over, hand the bubble back to the
     // host player so its own turn machinery (input, rendering, do_turn) always
-    // runs vanilla. DDA MP v4.0a-138: always restore it — leaving the bubble
+    // runs vanilla. DDA MP v4.0a-138: always restore it вЂ” leaving the bubble
     // on a client while more keys were queued made the host render its own
     // screen from the client's POV, so the host player could fall outside the
     // bubble and disappear for a frame.
@@ -2606,7 +2669,7 @@ static std::string build_character_sheet( npc &av )
             s += '\n';
         }
     }
-    // Active effects (ids) — the client shows them as a list.
+    // Active effects (ids) вЂ” the client shows them as a list.
     {
         std::string eff;
         for( const effect &e : av.get_effects() ) {
@@ -2626,7 +2689,7 @@ static std::string build_character_sheet( npc &av )
 }
 
 /* DDA MP v4.0a-9: render the host's real sidebar (the player's current panel
- * layout) for an arbitrary character — here the client's avatar NPC — into a
+ * layout) for an arbitrary character вЂ” here the client's avatar NPC вЂ” into a
  * cell grid, so the client can show exactly the host's panels for its own
  * character (same widgets, same options, same mods). */
 #if defined(TILES)
@@ -2771,11 +2834,11 @@ static void av_send_status( int sid )
         // In-bubble avatar: the tracker owns it while the overmap buffer has
         // no entry (kept alive for the duration by the tracker).
         npc *raw = g->critter_by_id<npc>( character_id( sid_it->second ) );
-        if( raw != nullptr && !raw->is_dead_state() ) {
+        if( raw != nullptr && !raw->is_dead() ) {
             av = raw;
         }
     }
-    if( av == nullptr || av->is_dead_state() ) {
+    if( av == nullptr || av->is_dead() ) {
         return;
     }
     mp_diag_mark( "status-pre-scope", sid );
@@ -2931,7 +2994,7 @@ static void av_send_status( int sid )
                 mm.beacons.push_back( std::move( be ) );
             }
         }
-        // The host player is an avatar, not an NPC — add it explicitly.
+        // The host player is an avatar, not an NPC вЂ” add it explicitly.
         {
             avatar &host_u = get_avatar();
             if( av->sees( here, host_u.pos_bub() ) ) {
@@ -3258,7 +3321,7 @@ void host_pump_inventory_actions()
                         continue;
                     }
                     npc *other = host_session_avatar_npc( entry.first );
-                    if( other == nullptr || other == av || other->is_dead_state() ) {
+                    if( other == nullptr || other == av || other->is_dead() ) {
                         continue;
                     }
                     const int d = rl_dist( av->pos_abs(), other->pos_abs() );
@@ -5659,7 +5722,7 @@ void host_pump_intents()
         // Character-level calls.
         if( in.action == "autoattack" ) {
             npc *av = av_session_npc( in.sid );
-            if( av != nullptr && !av->is_dead_state() ) {
+            if( av != nullptr && !av->is_dead() ) {
                 map &here = get_map();
                 g->mp_anchor_map_on( *av, true );
                 static const json_character_flag cannot_attack( "CANNOT_ATTACK" );
@@ -5732,7 +5795,7 @@ void host_pump_intents()
                             av->reach_attack( best.pos_bub() );
                         }
                     }
-                    if( !av->is_dead_state() ) {
+                    if( !av->is_dead() ) {
                         av_mark_acted( in.sid );
                     }
                     av_send_status( in.sid );
@@ -5809,13 +5872,14 @@ void host_pump_intents()
         // the engine death path to the session NPC.
         if( in.action == "suicide" ) {
             npc *av = av_session_npc( in.sid );
-            if( av != nullptr && !av->is_dead_state() ) {
+            if( av != nullptr && !av->is_dead() ) {
                 map &here = get_map();
                 g->mp_anchor_map_on( *av, true );
                 av->set_moves( 0 );
                 av->die( &here, nullptr );
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "suicide sid=%d\n", in.sid );
+                    std::fprintf( f, "suicide sid=%d dead=%d\n", in.sid,
+                                  av->is_dead() ? 1 : 0 );
                     std::fclose( f );
                 }
                 av_send_status( in.sid );
@@ -6497,6 +6561,35 @@ void host_pump_intents()
     }
 }
 
+/* DDA MP v4.0a-216: a session avatar died; inform its client immediately so
+ * the death screen and character creation do not depend on a world turn. */
+void host_notify_avatar_death( int npc_id )
+{
+    if( !host_is_running() || npc_id <= 0 ) {
+        return;
+    }
+    for( const auto &entry : av_sid_to_npc ) {
+        if( entry.second != npc_id ) {
+            continue;
+        }
+        const int sid = entry.first;
+        if( av_death_notified[sid] ) {
+            return;
+        }
+        av_death_notified[sid] = true;
+        netplay::host_send_event_to_sid(
+            sid, netplay::fork_text( "You have died." ),
+            netplay::EVENT_DEATH );
+        if( mp_diag_enabled() ) {
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "death notify sid=%d npc=%d\n", sid, npc_id );
+                std::fclose( f );
+            }
+        }
+        return;
+    }
+}
+
 /* DDA MP v4.0a-7: called at the end of every host world turn. A fresh round
  * starts: every session may act again, so clear the per-session "acted" marks
  * and lift their waiting hints. */
@@ -6520,7 +6613,7 @@ void host_note_world_turn()
     av_acted_since_tick.clear();
     // Move points of an avatar that is outside the bubble (the usual case
     // between its own steps) are not refilled by the vanilla NPC turn pass,
-    // so pay its one turn of speed here — exactly like Character::process_turn
+    // so pay its one turn of speed here вЂ” exactly like Character::process_turn
     // does for a processed NPC, and only when it wasn't processed already.
     for( int sid : netplay::host_session_ids() ) {
         npc *av = nullptr;
@@ -6529,7 +6622,7 @@ void host_note_world_turn()
             const auto sid_it = av_sid_to_npc.find( sid );
             if( sid_it != av_sid_to_npc.end() ) {
                 shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
-                if( npc_ptr && av_npc_alive( npc_ptr ) && !npc_ptr->is_dead_state() ) {
+                if( npc_ptr && av_npc_alive( npc_ptr ) && !npc_ptr->is_dead() ) {
                     av = npc_ptr.get();
                 } else if( npc *raw = g->critter_by_id<npc>(
                                character_id( sid_it->second ) ) ) {
@@ -6538,7 +6631,7 @@ void host_note_world_turn()
                     // temporarily absent from the overmap buffer, so the
                     // lookup above misses it. The engine already ran its
                     // turn pass; only the move pool needs refilling.
-                    if( !raw->is_dead_state() ) {
+                    if( !raw->is_dead() ) {
                         av = raw;
                         in_bubble = true;
                     }
@@ -6615,18 +6708,25 @@ void host_note_world_turn()
             bool dead = false;
             const auto sid_it = av_sid_to_npc.find( sid );
             if( sid_it != av_sid_to_npc.end() ) {
+                // Check both stores: a session avatar inside the host bubble
+                // lives in the creature tracker and can be missing from the
+                // overmap buffer, which used to swallow the death notice.
                 shared_ptr_fast<npc> npc_ptr = av_find_npc( sid_it->second );
-                dead = npc_ptr && npc_ptr->is_dead_state();
+                if( npc_ptr ) {
+                    dead = npc_ptr->is_dead();
+                } else if( npc *raw = g->critter_by_id<npc>(
+                               character_id( sid_it->second ) ) ) {
+                    dead = raw->is_dead();
+                }
             }
             if( dead ) {
-                // DDA MP v4.0a-130: tell the session once; its avatar cannot
-                // act any more and the round gate already skips it.
-                static std::map<int, bool> mp_death_notified;
-                if( !mp_death_notified[sid] ) {
-                    mp_death_notified[sid] = true;
+                // DDA MP v4.0a-130/216: tell the session once; the client
+                // shows the single-player death screen and creates a new
+                // character without reconnecting.
+                if( !av_death_notified[sid] ) {
+                    av_death_notified[sid] = true;
                     netplay::host_send_event_to_sid(
-                        sid,
-                        netplay::fork_text( "You have died. Disconnect and join again to create a new character." ),
+                        sid, netplay::fork_text( "You have died." ),
                         netplay::EVENT_DEATH );
                 }
             }
@@ -6641,7 +6741,7 @@ void host_note_world_turn()
     g->mp_anchor_map_on( get_avatar() );
 }
 
-/* DDA MP v4.0a-7: strict turn parity — the host may spend its turn only after
+/* DDA MP v4.0a-7: strict turn parity вЂ” the host may spend its turn only after
  * every bound client gave its order. No grace: waiting is exactly the point
  * (the host sees "waiting for other players..." while the world stands). */
 bool host_turn_blocked()
@@ -6674,7 +6774,7 @@ bool host_any_active_client()
             continue;
         }
         const npc *av = av_session_npc( entry.first );
-        if( av == nullptr || av->is_dead_state() ) {
+        if( av == nullptr || av->is_dead() ) {
             continue;
         }
         if( av->has_effect( effect_sleep ) || !av->activity.is_null() ) {
@@ -6726,7 +6826,7 @@ bool host_round_done()
             continue;
         }
         const npc *npc_ptr = av_session_npc( sid );
-        if( npc_ptr == nullptr || npc_ptr->is_dead_state() ) {
+        if( npc_ptr == nullptr || npc_ptr->is_dead() ) {
             continue;
         }
         if( npc_ptr->has_effect( effect_sleep ) || !npc_ptr->activity.is_null() ) {
@@ -6773,3 +6873,4 @@ void host_clear_auto_turn()
 }
 
 } // namespace netplay
+

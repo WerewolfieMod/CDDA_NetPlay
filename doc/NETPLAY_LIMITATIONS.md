@@ -125,6 +125,21 @@ with a completable objective, and repair completion with real tools/materials.
 - For automated runs with an idle host, the host must declare long wait
   (`DDA_MP_TEST_HOST_LONGWAIT=1`), which counts as busy.
 
+## Death and respawn
+
+- The host announces a session avatar's death the moment `npc::die` runs
+  (`host_notify_avatar_death`). Waiting for a world turn does not work: with a
+  dead client the idle host stops turning.
+- The client shows the single-player death screen (message log + scores), then
+  resets its avatar and runs the normal character-creation flow for the same
+  nickname. The session stays connected; no reconnect is needed.
+- The avatar registry keeps one row per nickname: a respawn replaces the dead
+  row, and the death-notified flag is cleared on every bind.
+- Headless test runs (`DDA_MP_TEST_AVATAR_AUTO`) skip the two screens because
+  they wait for input; creation still runs and the new avatar is verified.
+- Dead avatars are skipped by the round gate, so the remaining players are not
+  blocked.
+
 ## Vehicle servicing
 
 - Status, refuel, damaged-parts list and repair activity are implemented.

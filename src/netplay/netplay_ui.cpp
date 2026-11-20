@@ -49,6 +49,7 @@
 #include "map.h"         // get_map (client-side pickup selector scratch tile)
 #include "mapbuffer.h"   // synthetic client-side map bubble
 #include "messages.h"    // client journal mirrored into the game's message list
+#include "scores_ui.h"   // single-player death scores screen on the client
 #include "construction.h"        // client-side construction list (data only)
 #include "construction_group.h"  // construction group names
 #include "diary.h"        // session-local diary for remote characters
@@ -588,14 +589,19 @@ static bool avatar_create_flow( const std::string &nick )
  * between restarts in the client prefs). Asks the host for the avatar
  * registry, resumes an alive avatar (auto-picked when there is exactly one)
  * or goes straight to a fresh creation through the native creator UI. */
-static void run_avatar_join_flow( const std::string &use_nick )
+/* DDA MP v4.0a-216: the nickname of this session, kept so the client can
+ * create a fresh character after death without reconnecting. */
+static std::string mp_session_nick;
+
+static bool run_avatar_join_flow( const std::string &use_nick )
 {
+    mp_session_nick = use_nick;
     netplay::client_send_avatar_list_req( use_nick );
     for( int i = 0; i < 150; ++i ) {
         std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
         if( !netplay::client_is_connected() ) {
             popup( _( "The host disconnected." ) );
-            return;
+            return false;
         }
         if( netplay::client_avatar_list_ready() ||
             netplay::client_avatar_bind_state() == 3 ) {
@@ -606,7 +612,7 @@ static void run_avatar_join_flow( const std::string &use_nick )
     }
     if( !netplay::client_is_connected() ) {
         popup( _( "The host disconnected." ) );
-        return;
+        return false;
     }
     if( netplay::client_avatar_bind_state() == 3 ) {
         popup( _( "The host cut the avatar exchange short: %s" ),
@@ -625,8 +631,7 @@ static void run_avatar_join_flow( const std::string &use_nick )
 
     if( !has_alive ) {
         // v4.0a-1: no live avatar for this nick goes straight to creation
-        avatar_create_flow( use_nick );
-        return;
+        return avatar_create_flow( use_nick );
     }
 
     // v4.0a-1: the host keeps one avatar per nick, so the client resumes
@@ -643,7 +648,9 @@ static void run_avatar_join_flow( const std::string &use_nick )
             popup( _( "The host did not answer the avatar bind." ) );
         }
         // fall through into plain watch mode
+        return false;
     }
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -5930,6 +5937,8 @@ void run_view_loop()
                 while( netplay::client_take_event( mp_ev_text, mp_ev_type ) ) {
                     if( mp_ev_type == netplay::EVENT_DEATH ) {
                         mp_dead = true;
+                        mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
+                        continue;
                     }
                     // DDA MP v4.0a-176: the host reports that our avatar walked
                     // into another player. Open the interaction menu instead of
@@ -6006,10 +6015,31 @@ void run_view_loop()
                     mp_log_add( netplay::format_event_text( mp_ev_text ), mp_ev_type );
                 }
                 if( mp_dead ) {
-                    popup( _( "You have died. Return to the main menu and join again "
-                              "to create a new character." ) );
-                    voluntary_quit = true;
-                    break;
+                    mp_dead = false;
+                    // DDA MP v4.0a-216: the single-player death screen, then
+                    // a fresh character for this nick — same session, no
+                    // reconnect. The host keeps serving the other sessions.
+                    const char *test_auto = std::getenv( "DDA_MP_TEST_AVATAR_AUTO" );
+                    const bool headless = test_auto != nullptr && test_auto[0] != '\0'
+                                          && std::string( test_auto ) != "0";
+                    if( headless ) {
+                        mp_inv_log( "death: screens skipped (headless)" );
+                    } else {
+                        Messages::display_messages();
+                        show_scores_ui();
+                    }
+                    avatar &dead_pc = get_avatar();
+                    dead_pc = avatar();
+                    mp_native_avatar_ready = false;
+                    if( mp_session_nick.empty() ||
+                        !run_avatar_join_flow( mp_session_nick ) ) {
+                        // Creation cancelled or refused: leave like before.
+                        voluntary_quit = true;
+                        break;
+                    }
+                    mp_have_picture = false;
+                    netplay::client_request_snapshot();
+                    continue;
                 }
             }
 #if defined(TILES)

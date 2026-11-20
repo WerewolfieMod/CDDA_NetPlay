@@ -723,6 +723,10 @@ void host_game_tick();
 /// sessions (clears their "acted" marks, lifts waiting hints). No-op when not
 /// hosting.
 void host_note_world_turn();
+
+/// DDA MP v4.0a-216: a session avatar died; inform its client immediately so
+/// the death screen and character creation do not depend on a world turn.
+void host_notify_avatar_death( int npc_id );
 /// DDA MP v4.0a-7: true while the host must wait for clients to give their
 /// orders (strict turn parity, with a short grace for idle clients).
 bool host_turn_blocked();
