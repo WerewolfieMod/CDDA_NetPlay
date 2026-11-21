@@ -157,5 +157,48 @@ class InstallTests(unittest.TestCase):
             self.updater.install(archive, self.install, make_release("ddamp-v4.0a-1"))
 
 
+class CacheTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, payload: list) -> None:
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(self.payload).encode("utf-8")
+
+    def test_empty_cache_is_not_trusted(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="ddamp-cache-"))
+        updater = Updater(root)
+        updater.cache_path.write_text(
+            json.dumps({"fetched_at": __import__("time").time(), "releases": []}),
+            encoding="utf-8",
+        )
+        fresh = [{"tag_name": "ddamp-v4.0a-223", "assets": []}]
+        with mock.patch(
+            "launcher.updater.urllib.request.urlopen",
+            return_value=self.FakeResponse(fresh),
+        ):
+            self.assertEqual(updater._releases_payload(False), fresh)
+
+    def test_fresh_cache_avoids_network(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="ddamp-cache-"))
+        updater = Updater(root)
+        cached = [{"tag_name": "ddamp-v4.0a-222", "assets": []}]
+        updater.cache_path.write_text(
+            json.dumps({"fetched_at": __import__("time").time(), "releases": cached}),
+            encoding="utf-8",
+        )
+        with mock.patch(
+            "launcher.updater.urllib.request.urlopen",
+            side_effect=AssertionError("network must not be used"),
+        ):
+            self.assertEqual(updater._releases_payload(False), cached)
+
+
 if __name__ == "__main__":
     unittest.main()

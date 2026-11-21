@@ -160,7 +160,8 @@ class Updater:
 
     def _releases_payload(self, force: bool) -> list[dict[str, Any]]:
         cache = self._read_cache()
-        if not force and cache and time.time() - float(cache.get("fetched_at") or 0) < CACHE_SECONDS:
+        if (not force and cache and cache.get("releases")
+                and time.time() - float(cache.get("fetched_at") or 0) < CACHE_SECONDS):
             return cache.get("releases") or []
 
         url = f"{self.api_base}/releases?per_page=30"
