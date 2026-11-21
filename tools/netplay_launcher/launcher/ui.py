@@ -382,11 +382,19 @@ class MainWindow(QMainWindow):
         self._releases_worker = worker
         worker.ok.connect(self._on_releases)
         worker.fail.connect(lambda error: self._on_releases_failed(error, force))
-        worker.finished.connect(worker.deleteLater)
+        # Clear the reference only after QThread has really finished; dropping
+        # it in the ok/fail slot can destroy a still-running QThread (Qt aborts
+        # with 0xc0000409 in Qt6Core).
+        worker.finished.connect(self._releases_finished)
         worker.start()
 
-    def _on_releases(self, releases: object) -> None:
+    def _releases_finished(self) -> None:
+        worker = self._releases_worker
         self._releases_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_releases(self, releases: object) -> None:
         self.releases = list(releases)  # type: ignore[arg-type]
         self.latest = self.releases[0] if self.releases else None
         self._check_error = ""
@@ -394,7 +402,6 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _on_releases_failed(self, error: str, manual: bool) -> None:
-        self._releases_worker = None
         logger.warning("release check failed: %s", error)
         self._no_builds = False
         if manual:
@@ -427,15 +434,20 @@ class MainWindow(QMainWindow):
         worker.progress.connect(self._on_progress)
         worker.ok.connect(self._on_install_ok)
         worker.fail.connect(self._on_install_failed)
-        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._install_finished)
         worker.start()
+
+    def _install_finished(self) -> None:
+        worker = self._install_worker
+        self._install_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _on_progress(self, percent: int, stage: str, details: object) -> None:
         self.progress.setValue(max(0, min(100, int(percent))))
         self.status_label.setText(self._progress_text(stage, dict(details or {})))
 
     def _on_install_ok(self, release: object) -> None:
-        self._install_worker = None
         self._set_busy(False)
         tag = getattr(release, "tag", "?")
         self.latest = release if isinstance(release, Release) else self.latest
@@ -445,7 +457,6 @@ class MainWindow(QMainWindow):
         )
 
     def _on_install_failed(self, error: str) -> None:
-        self._install_worker = None
         self._set_busy(False)
         QMessageBox.critical(
             self, self.tr("update_title"), self.tr("install_failed", error=error)
@@ -590,7 +601,11 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if self.busy:
+        checking = (
+            self._releases_worker is not None
+            and self._releases_worker.isRunning()
+        )
+        if self.busy or checking:
             QMessageBox.information(
                 self, self.tr("app_title"), self.tr("close_blocked")
             )
