@@ -70,7 +70,7 @@ grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
 sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
 trade buy/sell, language mismatch, long wait, auto-turn, help, diary, spellbook,
 armor sorting, auto features/safe mode, suicide, use-wielded, mend, wield,
-autoattack, death/respawn, mission turn-in and repair completion.
+autoattack, death/respawn, mission turn-in, repair completion and reconnect.
 
 Mission turn-in was verified end to end with `MISSION_GET_INHALER`:
 the item lands in the session avatar's backpack (`has_inhaler=1`,
@@ -171,6 +171,15 @@ with a completable objective, and repair completion with real tools/materials.
 - Host code that would act "for the player" takes the session avatar
   explicitly (mission effects via `set_mission_effects_player`, status
   pushes, turn passes).
+
+## Reconnect
+
+- A session ends with its socket: the reader thread removes it from the
+  host's session table, so an idle host no longer waits for a ghost player.
+- A client that reconnects with the same nickname resumes its living avatar
+  through the normal avatar list. Verified: client A killed, host logged
+  `reader exit sid=1`; client B connected as sid=2 and got
+  `avatar op ... kind=2` (resume) for the same avatar, mirror and panels up.
 
 ## Vehicle servicing
 

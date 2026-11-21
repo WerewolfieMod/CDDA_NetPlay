@@ -801,6 +801,18 @@ static void host_session_reader( int sid, socket_t sock )
                     std::fclose( f );
                 }
             }
+            // DDA MP v4.0a-218: the session ends with its socket. Without this
+            // an idle host keeps a ghost session in id2sock and the round gate
+            // waits for a player that is gone.
+            bool removed = false;
+            {
+                std::lock_guard<std::mutex> lk( state.sessions_mutex );
+                removed = state.id2sock.erase( sid ) > 0;
+                state.id2name.erase( sid );
+            }
+            if( removed ) {
+                close_socket( sock );
+            }
             break;
         }
         if( mp_diag_enabled() ) {
