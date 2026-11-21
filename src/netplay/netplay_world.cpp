@@ -1107,10 +1107,55 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center,
     netplay::host_send_snapshot_to_sid( sid, snap );
 }
 
+/* DDA MP v4.0a-223: a session that is sleeping, busy with an activity,
+ * helping or in long wait gives no input by design; the heartbeat must not
+ * ping it. A dead avatar is waiting for the respawn screen, and a session
+ * that has not bound an avatar yet is still in its own bind exchange. */
+static bool mp_session_heartbeat_busy( int sid )
+{
+    // Local id: the file-level effect_sleep lives in a later anonymous
+    // namespace block, after this tick function.
+    static const efftype_id effect_sleep_id( "sleep" );
+    if( netplay::host_session_afk( sid ) ) {
+        return true;
+    }
+    const npc *av = av_session_npc( sid );
+    if( av == nullptr || av->is_dead() ) {
+        return true;
+    }
+    if( av->has_effect( effect_sleep_id ) || !av->activity.is_null() ) {
+        return true;
+    }
+    return netplay::is_helping_anyone( av );
+}
+
 void host_game_tick()
 {
     if( !host_is_running() || host_session_count() == 0 ) {
         return;
+    }
+    // DDA MP v4.0a-223: a client that went silent gets a PING; one unanswered
+    // PING means the connection is gone, so the session is dropped and the
+    // strict round gate stops waiting for it. The avatar itself is left in the
+    // world exactly like a clean disconnect, so a reconnect can resume it.
+    for( int dead_sid : netplay::host_heartbeat_tick( mp_session_heartbeat_busy ) ) {
+        const std::string dead_name = netplay::host_session_name( dead_sid );
+        const std::string dead_label = dead_name.empty() ? std::string( "?" ) : dead_name;
+        netplay::host_drop_session( dead_sid );
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "hb drop sid=%d name=%s\n", dead_sid, dead_label.c_str() );
+                std::fclose( f );
+            }
+        }
+        const std::string text = string_format(
+                                     netplay::fork_text( "%s lost connection." ), dead_label );
+        add_msg( "%s", text.c_str() );
+        for( int other_sid : netplay::host_session_ids() ) {
+            if( other_sid != dead_sid ) {
+                netplay::host_send_event_to_sid( other_sid, text, 0 );
+            }
+        }
     }
     if( !get_map().inbounds( get_avatar().pos_bub() ) ) {
         return; // no world yet

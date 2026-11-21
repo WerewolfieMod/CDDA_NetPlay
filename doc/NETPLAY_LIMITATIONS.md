@@ -183,6 +183,24 @@ language.
   `reader exit sid=1`; client B connected as sid=2 and got
   `avatar op ... kind=2` (resume) for the same avatar, mirror and panels up.
 
+## Silent-session heartbeat
+
+- A clean close needs no help, but a silent drop (Wi-Fi off, suspended or
+  killed process) leaves the reader blocked in `recv` forever, and the strict
+  round gate would wait for that player indefinitely.
+- The host now tracks the last frame from every session. If a session is not
+  busy (sleep, activity, helping, long wait, dead avatar or an unfinished
+  bind) and sent nothing for 30 s, the host sends `PING`. If the `PING` is
+  still unanswered 30 s later, the host prints "player lost connection",
+  relays that line to the other clients in their own language, and drops the
+  session through the normal close path (`shutdown`, reader unregisters).
+- The client answers `PING` from its reader thread, so an idle player sitting
+  on a blocking keypress still counts as alive. Client frames now share one
+  write lock, so the reply cannot interleave with a main-thread frame.
+- A dropped client leaves its avatar standing in the world, exactly like a
+  clean disconnect; reconnecting resumes it.
+- Test hook: `DDA_MP_TEST_HEARTBEAT_MS` shortens both 30 s windows.
+
 ## Vehicle servicing
 
 - Status, refuel, damaged-parts list and repair activity are implemented.

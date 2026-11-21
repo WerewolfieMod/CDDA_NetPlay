@@ -438,6 +438,19 @@ struct netplay_state {
     std::mutex afk_mutex;
     std::map<int, bool> session_afk;
 
+    /* DDA MP v4.0a-223: silent-session heartbeat. last_rx is refreshed by the
+     * reader thread on every frame; ping_sent marks an unanswered PING and
+     * dropping marks a session already reported, so a stuck reader cannot
+     * produce a second disconnect message. Guarded by hb_mutex. */
+    std::mutex hb_mutex;
+    std::map<int, std::chrono::steady_clock::time_point> session_last_rx;
+    std::map<int, std::chrono::steady_clock::time_point> session_ping_sent;
+    std::map<int, std::chrono::steady_clock::time_point> session_dropping;
+
+    /* DDA MP v4.0a-223: client frames may be written by the main thread (keys,
+     * requests) and by the reader thread (PONG), so writes are serialized. */
+    std::mutex client_send_mutex;
+
     /* DDA MP v4.0a-90: pickup listings (host) and the chosen rows. */
     struct pickup_action {
         int sid = 0;
@@ -547,6 +560,18 @@ void netplay_state::stop_client()
 
 static internal::netplay_state state;
 static std::mutex state_mutex; // guards init/shutdown
+
+/**
+ * DDA MP v4.0a-223: every client frame goes through one write lock. The
+ * reader thread answers PING with PONG, so two raw send_all() calls from
+ * different threads could interleave two frames on the wire.
+ */
+static bool client_send_on( socket_t sock, frame op, const std::vector<char> &payload )
+{
+    std::lock_guard<std::mutex> lk( state.client_send_mutex );
+    return send_all( sock, encode_frame( op, payload ) );
+}
+
 
 /* ------------------------------------------------------------------ */
 /* fat client world data                                                */
@@ -801,19 +826,14 @@ static void host_session_reader( int sid, socket_t sock )
                     std::fclose( f );
                 }
             }
-            // DDA MP v4.0a-218: the session ends with its socket. Without this
-            // an idle host keeps a ghost session in id2sock and the round gate
-            // waits for a player that is gone.
-            bool removed = false;
-            {
-                std::lock_guard<std::mutex> lk( state.sessions_mutex );
-                removed = state.id2sock.erase( sid ) > 0;
-                state.id2name.erase( sid );
-            }
-            if( removed ) {
-                close_socket( sock );
-            }
             break;
+        }
+        // DDA MP v4.0a-223: any frame, PONG included, proves the client is
+        // alive, so the heartbeat timer restarts here.
+        {
+            std::lock_guard<std::mutex> hb_lk( state.hb_mutex );
+            state.session_last_rx[sid] = std::chrono::steady_clock::now();
+            state.session_ping_sent.erase( sid );
         }
         if( mp_diag_enabled() ) {
             if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
@@ -1105,18 +1125,43 @@ static void host_session_reader( int sid, socket_t sock )
                     }
                 }
             }
+        } else if( op == frame::PONG ) {
+            // DDA MP v4.0a-223: answer to our PING; the timestamp was already
+            // refreshed above, this branch only feeds the diagnostics.
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "hb pong sid=%d\n", sid );
+                    std::fclose( f );
+                }
+            }
         } else if( op == frame::BYE ) {
             break;
         }
         // other frames are ignored on the host side for now
     }
 
-    std::lock_guard<std::mutex> lk( state.sessions_mutex );
-    state.id2sock.erase( sid );
-    state.id2name.erase( sid );
+    // DDA MP v4.0a-218/223: the session ends with its socket. The reader owns
+    // the handle, so it unregisters the session and closes only if it removed
+    // the entry itself. stop_host() erases the table first and closes there,
+    // which keeps this from closing an already recycled handle.
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lk( state.sessions_mutex );
+        removed = state.id2sock.erase( sid ) > 0;
+        state.id2name.erase( sid );
+    }
     {
         std::lock_guard<std::mutex> afk_lk( state.afk_mutex );
         state.session_afk.erase( sid );
+    }
+    {
+        std::lock_guard<std::mutex> hb_lk( state.hb_mutex );
+        state.session_last_rx.erase( sid );
+        state.session_ping_sent.erase( sid );
+        state.session_dropping.erase( sid );
+    }
+    if( removed ) {
+        close_socket( sock );
     }
 }
 
@@ -1166,6 +1211,23 @@ static void host_accept_loop()
             state.id2sock[sid] = peer;
             state.id2name[sid] = name;
         }
+        // DDA MP v4.0a-223: a peer that stopped reading must not block the
+        // host's main thread forever. Once the send buffer fills, send() fails
+        // after this timeout and the heartbeat drops the session.
+#ifdef _WIN32
+        {
+            const DWORD snd_timeout = 5000;
+            ::setsockopt( static_cast<SOCKET>( peer ), SOL_SOCKET, SO_SNDTIMEO,
+                          reinterpret_cast<const char *>( &snd_timeout ),
+                          sizeof( snd_timeout ) );
+        }
+#else
+        {
+            timeval snd_timeout{ 5, 0 };
+            ::setsockopt( peer, SOL_SOCKET, SO_SNDTIMEO, &snd_timeout,
+                          sizeof( snd_timeout ) );
+        }
+#endif
         std::vector<char> w;
         put_u16( w, /* NETPLAY_PROTOCOL */ 0x0001 );
         put_u32( w, static_cast<uint32_t>( sid ) );
@@ -1316,6 +1378,114 @@ std::string host_session_name( int sid )
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
     const auto it = state.id2name.find( sid );
     return it != state.id2name.end() ? it->second : std::string();
+}
+
+/* DDA MP v4.0a-223: silent-session heartbeat. Production waits 30 s for
+ * input before a PING and another 30 s for the answer; the automated tests
+ * shorten both with DDA_MP_TEST_HEARTBEAT_MS. */
+static std::chrono::milliseconds hb_interval()
+{
+    static const std::chrono::milliseconds cached = []() {
+        if( const char *ms = std::getenv( "DDA_MP_TEST_HEARTBEAT_MS" ) ) {
+            const long long v = std::atoll( ms );
+            if( v >= 100 && v <= 600000 ) {
+                return std::chrono::milliseconds( v );
+            }
+        }
+        return std::chrono::milliseconds( 30000 );
+    }();
+    return cached;
+}
+
+static bool host_send_ping_to_sid( int sid )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    return send_all( it->second, encode_frame( frame::PING, {} ) );
+}
+
+void host_drop_session( int sid )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return;
+    }
+    // The reader thread owns the handle and unregisters the session itself.
+    // shutdown() only makes its blocking recv return, which runs the usual
+    // close path; erasing here would make the reader skip close_socket().
+#ifdef _WIN32
+    ::shutdown( static_cast<SOCKET>( it->second ), SD_BOTH );
+#else
+    ::shutdown( it->second, SHUT_RDWR );
+#endif
+}
+
+std::vector<int> host_heartbeat_tick( const std::function<bool( int )> &busy )
+{
+    std::vector<int> dead;
+    if( !host_is_running() ) {
+        return dead;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto interval = hb_interval();
+    for( int sid : host_session_ids() ) {
+        const bool is_busy = busy && busy( sid );
+        bool send_ping = false;
+        bool give_up = false;
+        {
+            std::lock_guard<std::mutex> lk( state.hb_mutex );
+            if( state.session_dropping.count( sid ) > 0 ) {
+                continue; // already reported, the reader is closing
+            }
+            const auto it = state.session_last_rx.find( sid );
+            if( it == state.session_last_rx.end() ) {
+                state.session_last_rx[sid] = now;
+                continue;
+            }
+            if( is_busy ) {
+                // Sleep, activity, helping or long wait: no input expected,
+                // so restart the idle timer instead of pinging.
+                it->second = now;
+                state.session_ping_sent.erase( sid );
+                continue;
+            }
+            if( now - it->second < interval ) {
+                continue;
+            }
+            const auto ping_it = state.session_ping_sent.find( sid );
+            if( ping_it == state.session_ping_sent.end() ) {
+                state.session_ping_sent[sid] = now;
+                send_ping = true;
+            } else if( now - ping_it->second >= interval ) {
+                state.session_ping_sent.erase( sid );
+                state.session_last_rx.erase( it );
+                state.session_dropping[sid] = now;
+                give_up = true;
+            }
+        }
+        if( send_ping ) {
+            host_send_ping_to_sid( sid );
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "hb ping sid=%d\n", sid );
+                    std::fclose( f );
+                }
+            }
+        } else if( give_up ) {
+            if( mp_diag_enabled() ) {
+                if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "hb timeout sid=%d\n", sid );
+                    std::fclose( f );
+                }
+            }
+            dead.push_back( sid );
+        }
+    }
+    return dead;
 }
 
 std::string host_listen_address()
@@ -1664,6 +1834,7 @@ std::string fork_text( const char *msgid )
         // generated from the upstream sources and have no entries for them.
         static const std::unordered_map<std::string, std::string> ru = {
             { "%s connected.", "Игрок %s подключился." },
+            { "%s lost connection.", "Игрок %s потерял связь." },
             { "%s gives you the %s.", "%s даёт вам %s." },
             { "< <color_green>Aiming</color> >", "< <color_green>Прицеливание</color> >" },
             { "< <color_green>Throwing</color> >", "< <color_green>Бросок</color> >" },
@@ -2654,7 +2825,7 @@ bool client_send_intent( const std::string &action, int generation,
         put_i32( p, a );
     }
     put_str( p, data );
-    return send_all( state.client_sock, encode_frame( frame::INTENT, p ) );
+    return client_send_on( state.client_sock, frame::INTENT, p );
 }
 
 bool host_pop_intent( intent_request &out )
@@ -3460,6 +3631,11 @@ static void client_run( socket_t sock )
                 state.pickup_tiles_text = text;
                 state.have_pickup_tiles = true;
             }
+        } else if( op == frame::PING ) {
+            // DDA MP v4.0a-223: answer from the reader thread. The main thread
+            // can sit in a blocking keypress for minutes, so it cannot be the
+            // one that keeps the session alive.
+            client_send_on( sock, frame::PONG, {} );
         } else if( op == frame::BYE ) {
             break;
         }
@@ -3544,8 +3720,7 @@ bool client_connect( const std::string &address_, int port )
     std::vector<char> hello;
     put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0001 );
     put_str( hello, "player" ); // v1: replace with a configured player name
-    std::vector<char> h = encode_frame( frame::HELLO, hello );
-    if( !send_all( sock, h ) ) {
+    if( !client_send_on( sock, frame::HELLO, hello ) ) {
         state.stop_client();
         return false;
     }
@@ -3556,7 +3731,7 @@ bool client_connect( const std::string &address_, int port )
 void client_disconnect()
 {
     if( state.connected ) {
-        send_all( state.client_sock, encode_frame( frame::BYE, {} ) );
+        client_send_on( state.client_sock, frame::BYE, {} );
     }
     set_long_wait( false );
     state.stop_client();
@@ -3694,7 +3869,7 @@ void client_send_view( int cols, int rows )
     std::vector<char> p;
     put_u16( p, static_cast<uint16_t>( std::max( 1, cols ) ) );
     put_u16( p, static_cast<uint16_t>( std::max( 1, rows ) ) );
-    if( !send_all( state.client_sock, encode_frame( frame::CLIENT_VIEW, p ) ) ) {
+    if( !client_send_on( state.client_sock, frame::CLIENT_VIEW, p ) ) {
         state.stop_client();
     }
 }
@@ -3733,7 +3908,7 @@ bool client_send_afk( bool on )
     }
     std::vector<char> p;
     p.push_back( on ? 1 : 0 );
-    return send_all( state.client_sock, encode_frame( frame::CLIENT_AFK, p ) );
+    return client_send_on( state.client_sock, frame::CLIENT_AFK, p );
 }
 
 bool host_session_afk( int sid )
@@ -3764,7 +3939,7 @@ void client_send_keys( const std::vector<key_event> &keys )
         put_u32( p, k.code );
         put_i32( p, k.mods );
     }
-    if( !send_all( state.client_sock, encode_frame( frame::KEYS, p ) ) ) {
+    if( !client_send_on( state.client_sock, frame::KEYS, p ) ) {
         // Sending failed: the session is dead. Closing the socket unblocks the
         // receiver thread; the view loop will surface the reconnect prompt.
         state.stop_client();
@@ -3781,7 +3956,7 @@ void client_request_snapshot()
     if( !state.connected ) {
         return;
     }
-    if( !send_all( state.client_sock, encode_frame( frame::SNAP_REQ, {} ) ) ) {
+    if( !client_send_on( state.client_sock, frame::SNAP_REQ, {} ) ) {
         // Sending failed: the session is dead (same policy as KEYS).
         state.stop_client();
     }
@@ -3837,7 +4012,7 @@ void client_send_avatar_list_req( const std::string &nick )
     }
     std::vector<char> p;
     put_str( p, nick );
-    if( !send_all( state.client_sock, encode_frame( frame::AVATAR_LIST_REQ, p ) ) ) {
+    if( !client_send_on( state.client_sock, frame::AVATAR_LIST_REQ, p ) ) {
         state.stop_client();
         state.avatar_bind_state = 0;
     }
@@ -3851,7 +4026,7 @@ void client_send_avatar_resume( const std::string &nick )
     state.avatar_bind_state = 1;
     std::vector<char> p;
     put_str( p, nick );
-    if( !send_all( state.client_sock, encode_frame( frame::AVATAR_RESUME, p ) ) ) {
+    if( !client_send_on( state.client_sock, frame::AVATAR_RESUME, p ) ) {
         state.stop_client();
         state.avatar_bind_state = 0;
     }
@@ -3876,7 +4051,7 @@ void client_send_avatar_profile( const std::string &nick,
         put_u32( p, static_cast<uint32_t>( profile_json.size() ) );
         p.insert( p.end(), profile_json.begin(), profile_json.end() );
     }
-    if( !send_all( state.client_sock, encode_frame( frame::AVATAR_PROFILE, p ) ) ) {
+    if( !client_send_on( state.client_sock, frame::AVATAR_PROFILE, p ) ) {
         state.stop_client();
         state.avatar_bind_state = 0;
     }

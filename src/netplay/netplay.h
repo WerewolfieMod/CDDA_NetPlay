@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -380,6 +381,18 @@ std::vector<std::string> host_session_names();
 std::string host_session_name( int sid );
 /// Per-turn maintenance (accept/expire, flush queues). Safe to call often.
 void host_pump();
+
+/**
+ * DDA MP: heartbeat for silent sessions. Call it from the host's idle tick.
+ * A session that gave no input and is not busy (sleep, activity, helping,
+ * long wait) for 30 s gets a PING. If the PING is still unanswered 30 s later
+ * the session id is returned: the caller should tell the players and call
+ * host_drop_session(). `busy` is supplied by the world glue so the network
+ * layer does not have to know about avatars.
+ */
+std::vector<int> host_heartbeat_tick( const std::function<bool( int )> &busy );
+/// DDA MP: unblock a session's reader; it then runs the normal close path.
+void host_drop_session( int sid );
 
 /// Broadcast a screen frame to every live session (thread-safe; session
 /// sockets that fail to receive are dropped).
