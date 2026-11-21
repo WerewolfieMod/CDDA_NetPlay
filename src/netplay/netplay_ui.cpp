@@ -529,6 +529,10 @@ static bool avatar_create_flow( const std::string &nick )
         auto_pc.set_speed_base( 100 );
         auto_pc.set_stamina( auto_pc.get_stamina_max() );
         auto_pc.set_moves( 100 );
+        // A bag gives the test avatar pockets; without one every i_add falls
+        // back to wielding the item, which item-based goals do not see.
+        item bag( itype_id( "backpack" ), calendar::turn );
+        auto_pc.wear_item( bag, false );
         std::ostringstream aos;
         JsonOut ajo( aos );
         auto_pc.serialize( ajo );
@@ -3011,6 +3015,8 @@ static bool mp_client_helping = false;
 /// DDA MP v4.0a-191: NPC used by the last mission-offer request.
 static int mp_mission_dx = 0;
 static int mp_mission_dy = 0;
+/// DDA MP v4.0a-217: when the headless test accepted a mission (0 = never).
+static std::chrono::steady_clock::time_point mp_test_mission_accepted{};
 /// DDA MP v4.0a-193: NPC used by the last barter request.
 static int mp_trade_dx = 0;
 static int mp_trade_dy = 0;
@@ -3207,6 +3213,9 @@ static void mp_run_mission_offers( const std::string &payload )
         netplay::client_send_intent(
             "mission_accept", 0,
             { mp_mission_dx, mp_mission_dy, offers.front().first } );
+        // DDA MP v4.0a-217: remember when the test accepted, so the view loop
+        // can request the turn-in list for the same NPC a few seconds later.
+        mp_test_mission_accepted = std::chrono::steady_clock::now();
         mp_inv_log( string_format( "missions auto-accept: index=%d offers=%d",
                                    offers.front().first, static_cast<int>( offers.size() ) ) );
         return;
@@ -3293,17 +3302,24 @@ static void mp_run_mission_turnins( const std::string &payload )
         menu.addentry( mp_localize_field( e.second ) );
     }
     menu.addentry( netplay::fork_text( "Close" ) );
-    {
+    // DDA MP test hook: pick the first entry without a menu (headless runs).
+    int pick = -1;
+    if( const char *auto_turnin = std::getenv( "DDA_MP_TEST_TURNIN_AUTO" );
+        auto_turnin != nullptr && auto_turnin[0] != '\0' ) {
+        pick = 0;
+        mp_inv_log( "missions auto-turnin: index=0" );
+    } else {
         ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
         menu.query();
+        pick = menu.ret;
     }
-    if( menu.ret >= 0 && menu.ret < static_cast<int>( entries.size() ) ) {
+    if( pick >= 0 && pick < static_cast<int>( entries.size() ) ) {
         netplay::client_send_intent(
             "mission_turnin", 0,
-            { mp_mission_dx, mp_mission_dy, entries[menu.ret].first } );
+            { mp_mission_dx, mp_mission_dy, entries[pick].first } );
     }
     mp_inv_log( string_format( "missions: turnin=%d ret=%d",
-                               static_cast<int>( entries.size() ), menu.ret ) );
+                               static_cast<int>( entries.size() ), pick ) );
 }
 
 /* DDA MP v4.0a-191: read-only journal of missions assigned to this session. */
@@ -6120,6 +6136,24 @@ void run_view_loop()
                 }
             }
 
+            // DDA MP test hook: ask the same NPC for the turn-in list a few
+            // seconds after the auto-accepted mission exists.
+            if( const char *auto_turnin = std::getenv( "DDA_MP_TEST_TURNIN_AUTO" );
+                auto_turnin != nullptr && auto_turnin[0] != '\0' ) {
+                static bool mp_test_turnin_asked = false;
+                const auto mp_turnin_now = std::chrono::steady_clock::now();
+                if( !mp_test_turnin_asked &&
+                    mp_test_mission_accepted.time_since_epoch().count() != 0 &&
+                    mp_turnin_now - mp_test_mission_accepted >
+                    std::chrono::seconds( 5 ) ) {
+                    mp_test_turnin_asked = true;
+                    netplay::client_send_intent(
+                        "mission_turnin_list", 0,
+                        { mp_mission_dx, mp_mission_dy } );
+                    mp_inv_log( "test: turnin list auto" );
+                }
+            }
+
             bool mp_canvas_ok = false;
             snapshot snap;
             // DDA MP v4.1: never present a frame without the sprite payload if
@@ -7080,6 +7114,8 @@ void run_view_loop()
                             } else if( action_name == "npc_real_missions" ) {
                                 mp_mission_dx = dx;
                                 mp_mission_dy = dy;
+                                // Timestamp for the optional auto turn-in step.
+                                mp_test_mission_accepted = std::chrono::steady_clock::now();
                                 netplay::client_send_intent( "mission_offers", 0, { dx, dy } );
                             } else if( action_name == "npc_real_sell" ) {
                                 mp_trade_dx = dx;
@@ -7091,6 +7127,18 @@ void run_view_loop()
                                 netplay::client_send_intent( "trade_list", 0, { dx, dy, 0 } );
                             }
                             mp_inv_log( string_format( "test: npc target %d,%d", dx, dy ) );
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "npc_real_turnin" ) {
+                        int dx = 0;
+                        int dy = 0;
+                        if( mp_test_find_npc( dx, dy ) ) {
+                            mp_mission_dx = dx;
+                            mp_mission_dy = dy;
+                            netplay::client_send_intent( "mission_turnin_list", 0,
+                                                         { dx, dy } );
+                            mp_inv_log( string_format( "test: turnin list %d,%d", dx, dy ) );
                         } else {
                             sent = false;
                         }

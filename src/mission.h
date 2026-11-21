@@ -119,6 +119,12 @@ struct mission_fail {
     static void standard( mission * ) {}
 };
 
+/// DDA MP v4.0a-217: mission phase effects are built around get_avatar() in
+/// single player. Netplay sets this to the session avatar for the duration of
+/// its mission start/end so effects act on the right character.
+Character *mission_effects_player();
+void set_mission_effects_player( Character *who );
+
 struct mission_target_params {
     str_or_var overmap_terrain;
     ot_match_type overmap_terrain_match_type = ot_match_type::type;

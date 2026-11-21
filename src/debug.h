@@ -225,6 +225,7 @@ std::string capture_debugmsg_during( const std::function<void()> &func );
 // data that cannot rely on a UI context is being loaded (netplay tileset
 // preload). Messages still go to the debug log.
 void debug_suppress_prompts( bool );
+bool debug_prompts_suppressed();
 
 /**
  * Should be called after catacurses::stdscr is initialized.

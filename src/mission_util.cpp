@@ -26,6 +26,7 @@
 #include "math_parser_diag_value.h"
 #include "messages.h"
 #include "mission.h"
+#include "netplay/netplay.h"
 #include "npc.h"
 #include "omdata.h"
 #include "overmap.h"
@@ -504,6 +505,23 @@ bool mission_util::load_funcs( const JsonObject &jo,
     return true;
 }
 
+namespace
+{
+/* DDA MP v4.0a-217: mission phases act on this player instead of get_avatar()
+ * while netplay completes a session avatar's mission. */
+Character *mp_mission_effects_player = nullptr;
+}
+
+Character *mission_effects_player()
+{
+    return mp_mission_effects_player;
+}
+
+void set_mission_effects_player( Character *who )
+{
+    mp_mission_effects_player = who;
+}
+
 bool mission_type::parse_funcs( const JsonObject &jo, std::string_view src,
                                 std::function<void( mission * )> &phase_func )
 {
@@ -519,13 +537,37 @@ bool mission_type::parse_funcs( const JsonObject &jo, std::string_view src,
     talk_effects.load_effect( jo, "effect", src );
     phase_func = [ funcs, talk_effects ]( mission * miss ) {
         npc *beta_npc = g->find_npc( miss->get_npc_id() );
-        ::dialogue d( get_talker_for( get_avatar() ),
+        // DDA MP v4.0a-217: netplay runs a session avatar's phases, so the
+        // "player" actor must follow the override instead of get_avatar().
+        Character *alpha = mission_effects_player();
+        if( alpha == nullptr ) {
+            alpha = &get_avatar();
+        }
+        ::dialogue d( get_talker_for( *alpha ),
                       beta_npc == nullptr ? nullptr : get_talker_for( beta_npc ) );
+        int mp_phase_idx = 0;
         for( const talk_effect_fun_t &effect : talk_effects.effects ) {
+            if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "mission phase effect %d/%d mission=%s\n",
+                                  mp_phase_idx,
+                                  static_cast<int>( talk_effects.effects.size() ),
+                                  miss->mission_id().str().c_str() );
+                    std::fclose( f );
+                }
+            }
             effect( d );
+            ++mp_phase_idx;
         }
         for( const auto &mission_function : funcs ) {
             mission_function( miss );
+        }
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "mission phase done mission=%s\n",
+                              miss->mission_id().str().c_str() );
+                std::fclose( f );
+            }
         }
     };
 

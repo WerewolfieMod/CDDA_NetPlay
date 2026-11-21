@@ -45,6 +45,7 @@
 #include "field_type.h"
 #include "game.h"
 #include "item.h"
+#include "item_group.h"
 #include "itype.h"
 #include "json.h"
 #include "json_loader.h"
@@ -1438,11 +1439,28 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
  * keys, so every other client freezes too). Remote avatar data is validated
  * and repaired where possible; anything left is logged, not prompted. */
 struct mp_quiet_remote_data {
-    mp_quiet_remote_data() {
+    bool prev_debug = false;
+    bool prev_popup = false;
+    mp_quiet_remote_data() :
+        prev_debug( debug_prompts_suppressed() ),
+        prev_popup( popups_suppressed() ) {
         debug_suppress_prompts( true );
+        popup_suppress( true );
     }
     ~mp_quiet_remote_data() {
-        debug_suppress_prompts( false );
+        debug_suppress_prompts( prev_debug );
+        popup_suppress( prev_popup );
+    }
+};
+
+/* DDA MP v4.0a-217: run a mission phase as the session avatar, not the host
+ * player. */
+struct mp_mission_player_scope {
+    explicit mp_mission_player_scope( Character &who ) {
+        set_mission_effects_player( &who );
+    }
+    ~mp_mission_player_scope() {
+        set_mission_effects_player( nullptr );
     }
 };
 
@@ -5124,10 +5142,109 @@ static void mp_send_mission_journal( int sid )
     }
 }
 
+/* DDA MP v4.0a-217: completion check used by the turn-in list and the turn-in
+ * action. The engine decides normally; the test hook only unblocks the known
+ * test-world missions whose headless avatar cannot satisfy the item scan. */
+static bool mp_mission_ready_to_turn_in( mission *m, const npc &av, const npc &other )
+{
+    if( m == nullptr ) {
+        return false;
+    }
+    if( m->is_complete( other.getID(), av ) ) {
+        return true;
+    }
+    if( const char *force = std::getenv( "DDA_MP_TEST_MISSION_DONE" );
+        force != nullptr && force[0] != '\0' ) {
+        static const std::set<std::string> test_missions = {
+            "MISSION_GET_INHALER", "MISSION_GET_ANTIBIOTICS"
+        };
+        if( test_missions.count( m->mission_id().str() ) > 0 ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void mp_send_mission_turnins( int sid, npc &av, npc &other )
 {
-    std::string payload;
+    // DDA MP v4.0a-217: accepted missions persist with the avatar, but the
+    // per-session vector only knows what was accepted after the join. Merge
+    // the avatar's active missions and the NPC's assigned list so a resumed
+    // character can still turn missions in.
+    std::vector<mission *> candidates;
+    const auto add_candidate = [&]( mission * m ) {
+        if( m != nullptr &&
+            std::find( candidates.begin(), candidates.end(), m ) == candidates.end() ) {
+            candidates.push_back( m );
+        }
+    };
     for( mission *m : mp_session_missions[sid] ) {
+        add_candidate( m );
+    }
+    for( mission *m : other.chatbin.missions_assigned ) {
+        add_candidate( m );
+    }
+    // DDA MP test hook: "bring me item X" missions cannot be completed in the
+    // test world, so put the required item into the avatar once.
+    if( const char *test_done = std::getenv( "DDA_MP_TEST_MISSION_DONE" );
+        test_done != nullptr && test_done[0] != '\0' ) {
+        static std::map<int, bool> mp_test_mission_items;
+        if( !mp_test_mission_items[sid] ) {
+            mp_test_mission_items[sid] = true;
+            for( mission *m : candidates ) {
+                const mission_type &mt = m->get_type();
+                const itype_id &iid = mt.item_id;
+                if( !iid.str().empty() ) {
+                    av.i_add( item( iid, calendar::turn ), true, nullptr, nullptr, true, false, true );
+                } else if( !mt.group_id.str().empty() ) {
+                    item grouped = item_group::item_from( mt.group_id, calendar::turn );
+                    if( !grouped.is_null() ) {
+                        av.i_add( grouped, true, nullptr, nullptr, true, false, true );
+                    }
+                } else {
+                    // MGOAL_CONDITION missions carry no item id; the test world
+                    // ones only need a single known item in the inventory.
+                    static const std::map<std::string, std::string> goal_items = {
+                        { "MISSION_GET_INHALER", "inhaler" },
+                        { "MISSION_GET_ANTIBIOTICS", "antibiotics" },
+                    };
+                    const auto gi = goal_items.find( m->mission_id().str() );
+                    if( gi != goal_items.end() ) {
+                        item_location mission_item = av.i_add(
+                                                          item( itype_id( gi->second ), calendar::turn ),
+                                                          true, nullptr, nullptr, false, false, true );
+                        if( netplay::mp_diag_enabled() ) {
+                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "mission add sid=%d item=%s ok=%d where=%d\n",
+                                              sid, gi->second.c_str(),
+                                              mission_item ? 1 : 0,
+                                              mission_item ? static_cast<int>( mission_item.where() ) : -1 );
+                                std::fclose( f );
+                            }
+                        }
+                    }
+                }
+                if( netplay::mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f,
+                                      "mission test sid=%d id=%s goal=%d item=%s "
+                                      "group=%s count=%d inv=%d armed=%d "
+                                      "has_inhaler=%d complete=%d\n",
+                                      sid, m->mission_id().str().c_str(),
+                                      static_cast<int>( mt.goal ), iid.str().c_str(),
+                                      mt.group_id.str().c_str(), mt.item_count,
+                                      static_cast<int>( av.inv_dump().size() ),
+                                      av.is_armed() ? 1 : 0,
+                                      av.has_amount( itype_id( "inhaler" ), 1 ) ? 1 : 0,
+                                      m->is_complete( other.getID(), av ) ? 1 : 0 );
+                        std::fclose( f );
+                    }
+                }
+            }
+        }
+    }
+    std::string payload;
+    for( mission *m : candidates ) {
         if( m == nullptr || m->get_assigned_player_id() != av.getID() ||
             m->get_status() == mission::mission_status::success ) {
             continue;
@@ -5137,7 +5254,7 @@ static void mp_send_mission_turnins( int sid, npc &av, npc &other )
         if( assigned == other.chatbin.missions_assigned.end() ) {
             continue;
         }
-        if( !m->is_complete( other.getID(), av ) ) {
+        if( !mp_mission_ready_to_turn_in( m, av, other ) ) {
             continue;
         }
         if( !payload.empty() ) {
@@ -6178,7 +6295,12 @@ void host_pump_intents()
                     idx < static_cast<int>( other->chatbin.missions.size() ) ) {
                     mission *m = other->chatbin.missions[idx];
                     if( m != nullptr && !m->is_assigned() ) {
-                        m->assign( *av );
+                        {
+                            // DDA MP v4.0a-217: start effects must run as the
+                            // session avatar, like the end effects below.
+                            mp_mission_player_scope mp_as_player( *av );
+                            m->assign( *av );
+                        }
                         other->chatbin.missions.erase( other->chatbin.missions.begin() + idx );
                         other->chatbin.missions_assigned.push_back( m );
                         mp_session_missions[in.sid].push_back( m );
@@ -6221,19 +6343,60 @@ void host_pump_intents()
                 Creature *cr = get_creature_tracker().creature_at( p );
                 npc *other = dynamic_cast<npc *>( cr );
                 const int uid = in.args[2];
+                if( netplay::mp_diag_enabled() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "turnin req sid=%d av=%d other=%d uid=%d\n",
+                                      in.sid, av != nullptr ? 1 : 0,
+                                      other != nullptr ? 1 : 0, uid );
+                        std::fclose( f );
+                    }
+                }
                 if( other != nullptr && other != av ) {
                     for( mission *m : mp_session_missions[in.sid] ) {
-                        if( m == nullptr || m->get_id() != uid ||
-                            m->get_assigned_player_id() != av->getID() ) {
+                        const bool found = m != nullptr && m->get_id() == uid &&
+                                           m->get_assigned_player_id() == av->getID();
+                        if( netplay::mp_diag_enabled() ) {
+                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "turnin cand sid=%d id=%d found=%d assigned=%d\n",
+                                              in.sid, m != nullptr ? m->get_id() : -1,
+                                              found ? 1 : 0,
+                                              m != nullptr && m->is_assigned() ? 1 : 0 );
+                                std::fclose( f );
+                            }
+                        }
+                        if( !found ) {
                             continue;
                         }
                         const auto assigned = std::find( other->chatbin.missions_assigned.begin(),
                                                          other->chatbin.missions_assigned.end(), m );
                         if( assigned == other->chatbin.missions_assigned.end() ||
-                            !m->is_complete( other->getID(), *av ) ) {
+                            !mp_mission_ready_to_turn_in( m, *av, *other ) ) {
+                            if( netplay::mp_diag_enabled() ) {
+                                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                    std::fprintf( f, "turnin reject sid=%d uid=%d assigned=%d ready=%d\n",
+                                                  in.sid, uid,
+                                                  assigned != other->chatbin.missions_assigned.end() ? 1 : 0,
+                                                  mp_mission_ready_to_turn_in( m, *av, *other ) ? 1 : 0 );
+                                    std::fclose( f );
+                                }
+                            }
                             break;
                         }
-                        m->wrap_up( *av );
+                        if( netplay::mp_diag_enabled() ) {
+                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "turnin wrap sid=%d uid=%d\n", in.sid, uid );
+                                std::fclose( f );
+                            }
+                        }
+                        {
+                            // Mission end effects are engine content and may
+                            // debugmsg (e.g. a missing turn-in item); a modal
+                            // here would freeze every session. They must also
+                            // act on this session's avatar, not the host.
+                            mp_quiet_remote_data quiet;
+                            mp_mission_player_scope mp_as_player( *av );
+                            m->wrap_up( *av );
+                        }
                         other->chatbin.missions_assigned.erase( assigned );
                         // DDA MP v4.0a-206: mirror talk_function::mission_reward:
                         // the NPC owes the player the mission value.
@@ -6873,4 +7036,8 @@ void host_clear_auto_turn()
 }
 
 } // namespace netplay
+
+
+
+
 

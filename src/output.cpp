@@ -946,8 +946,23 @@ PopupFlags popup_flag_from_string( const std::string &str )
     return PF_NONE;
 }
 
+static bool mp_popups_suppressed = false;
+
+void popup_suppress( bool on )
+{
+    mp_popups_suppressed = on;
+}
+
+bool popups_suppressed()
+{
+    return mp_popups_suppressed;
+}
+
 int popup( const std::string &text, PopupFlags flags )
 {
+    if( mp_popups_suppressed ) {
+        return 0;
+    }
 #if defined(__ANDROID__)
     if( get_option<bool>( "ANDROID_NATIVE_UI" ) && flags == PF_NONE ) {
         JNIEnv *env = ( JNIEnv * )GetAndroidJNIEnv();

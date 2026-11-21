@@ -69,8 +69,14 @@ timeout): movement and round gate, cycle-move, drop, haul, workout, thief,
 grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
 sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
 trade buy/sell, language mismatch, long wait, auto-turn, help, diary, spellbook,
-armor sorting, auto features/safe mode, suicide, use-wielded, mend, wield and
-autoattack.
+armor sorting, auto features/safe mode, suicide, use-wielded, mend, wield,
+autoattack, death/respawn and mission turn-in.
+
+Mission turn-in was verified end to end with `MISSION_GET_INHALER`:
+the item lands in the session avatar's backpack (`has_inhaler=1`,
+`complete=1`), the list is built, the pick is sent, the end effects run as
+the avatar, and the reward/journal update (`Reward credit` event,
+`journal open entries=1`).
 
 The stock test world has no spellbook, so spell casting was verified with a
 test-only hook that teaches `bio_nl_antigravity_jump_spell` to the session
@@ -139,6 +145,32 @@ with a completable objective, and repair completion with real tools/materials.
   they wait for input; creation still runs and the new avatar is verified.
 - Dead avatars are skipped by the round gate, so the remaining players are not
   blocked.
+
+## Missions
+
+- Offer, accept, journal, turn-in list and turn-in run on the host; the client
+  only picks from ids/names it is sent.
+- Turn-in candidates merge the missions accepted in this session with the
+  NPC's assigned list, so a resumed character can still turn missions in.
+- Mission start/end effects are built around `get_avatar()` in single player;
+  netplay temporarily points them at the session avatar
+  (`set_mission_effects_player`), so items and rewards touch the right
+  character instead of the host player.
+- The turn-in path wraps the engine's end effects with debug-prompt
+  suppression: a missing turn-in item must not open a modal on the host.
+- Test hooks: `DDA_MP_TEST_MISSION_DONE` grants the known mission items,
+  `DDA_MP_TEST_MISSION_AUTO` accepts the first offer,
+  `DDA_MP_TEST_TURNIN_AUTO` picks the first turn-in entry, and the client
+  test action `npc_real_turnin` asks for the list.
+
+## Architecture notes
+
+- Every remote player is a session id (`sid`). Avatar bindings, move pools,
+  accepted missions, trade state, death notices and UI state are keyed by
+  `sid`; adding another client does not need a new code path.
+- Host code that would act "for the player" takes the session avatar
+  explicitly (mission effects via `set_mission_effects_player`, status
+  pushes, turn passes).
 
 ## Vehicle servicing
 

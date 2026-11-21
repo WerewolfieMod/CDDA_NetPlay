@@ -218,6 +218,11 @@ void debug_suppress_prompts( bool on )
     mp_suppress_prompts = on;
 }
 
+bool debug_prompts_suppressed()
+{
+    return mp_suppress_prompts;
+}
+
 void debug_reset_error_observed()
 {
     error_observed = false;
