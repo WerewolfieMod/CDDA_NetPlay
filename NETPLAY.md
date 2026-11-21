@@ -170,6 +170,23 @@ lines**; the bulk is the new netplay module.
 
 ---
 
+## Launcher
+
+`tools/netplay_launcher` is a small Windows launcher for the fork. It installs
+and updates the game from the GitHub Releases of this repository, keeps saves,
+config and mods, can roll back to the previous build, and starts the game with
+dedicated **Play**, **Host co-op** and **Join server** buttons.
+
+```text
+tools/netplay_launcher/run from source:  py main.py
+build the exe:                           powershell -File build.ps1
+```
+
+The launcher expects a release tag like `ddamp-v4.0a-223` with an attached
+`*win64.zip` asset that contains `cataclysm-tiles.exe` at its root. Full
+instructions, release requirements and development notes live in
+`tools/netplay_launcher/README.md`.
+
 ## Development approach
 
 1. **Single player stays sacred.** Every feature is added behind netplay checks;
