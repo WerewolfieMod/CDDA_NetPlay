@@ -70,7 +70,7 @@ an unrelated directory cannot wipe it.
 
 For a build to appear in the launcher:
 
-- tag: `ddamp-v4.0a-223` (same scheme as the existing tags);
+- tag: `ddamp-v4.0a-224` (same scheme as the existing tags);
 - a non-draft GitHub release;
 - an attached asset with `.zip`, `win64` (or `windows`) in the name;
 - the ZIP must contain `cataclysm-tiles.exe` at its root.

@@ -15,7 +15,8 @@ Client:  main menu -> "Join Network World"  (or: cataclysm-tiles.exe --mpclient 
 * **Platform:** Windows x64 (tiles), MSVC + vcpkg static build. The socket layer
   has POSIX branches, but only Windows is tested.
 * **Base:** Cataclysm: DDA experimental, current `master` as of the fork.
-* **Version:** `ddamp-v4.0a-223`.
+* **Version:** `ddamp-v4.0a-224`; in game it is shown as
+  `cdda-experimental-2026-10-22-0345_netplay`.
 
 ---
 
@@ -182,7 +183,7 @@ tools/netplay_launcher/run from source:  py main.py
 build the exe:                           powershell -File build.ps1
 ```
 
-The launcher expects a release tag like `ddamp-v4.0a-223` with an attached
+The launcher expects a release tag like `ddamp-v4.0a-224` with an attached
 `*win64.zip` asset that contains `cataclysm-tiles.exe` at its root. Full
 instructions, release requirements and development notes live in
 `tools/netplay_launcher/README.md`.

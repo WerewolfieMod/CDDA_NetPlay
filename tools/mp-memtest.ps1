@@ -11,13 +11,13 @@ function PutU32([byte[]]$b, [UInt32]$v) {
 
 $builder = New-Object System.Collections.Generic.List[byte]
 # :")
-Write-Output "== harness: listening on 25565"
-$listener = [System.Net.Sockets.TcpListener]::new( [System.Net.IPAddress]::Loopback, 25565 )
+Write-Output "== harness: listening on 24224"
+$listener = [System.Net.Sockets.TcpListener]::new( [System.Net.IPAddress]::Loopback, 24224 )
 $listener.Start()
 
 # Start the client
 $game = Start-Process -FilePath 'D:\Games\CataDDA\cdda\cataclysm-tiles.exe' `
-    -ArgumentList '--mpclient','127.0.0.1:25565' -WorkingDirectory 'D:\Games\CataDDA\cdda' `
+    -ArgumentList '--mpclient','127.0.0.1:24224' -WorkingDirectory 'D:\Games\CataDDA\cdda' `
     -PassThru
 Start-Sleep -Seconds 3
 Write-Output "== client PID: $($game.Id)"
