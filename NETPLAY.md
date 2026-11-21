@@ -204,6 +204,15 @@ auto-attack, inventory actions, vehicles, crafting, construction, trade,
 missions and turn-in, NPC dialogue, death/respawn, reconnect, latency runs and
 the silent-session heartbeat.
 
+## Project workflow
+
+- `master` is the approved line: what players and the launcher use.
+- `experimental` is the working branch: every change lands there first.
+- After review, `experimental` is merged into `master` (fast-forward when
+  possible).
+- GitHub Actions inherited from upstream are removed; builds and automated
+  playtests run locally, so no CI minutes or third-party runners are involved.
+
 ---
 
 ## Building
