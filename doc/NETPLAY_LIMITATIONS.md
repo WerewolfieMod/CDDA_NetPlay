@@ -105,8 +105,10 @@ Observed warnings (not caused by the netplay features):
 - the client avatar profile has no scenario and logs the generic-scenario
   fallback, and the mirror deserialize logs a second `setID` warning.
 
-Not covered automatically: two clients at once, successful mission turn-in
-with a completable objective, and repair completion with real tools/materials.
+Not covered automatically: two clients at once, the visual death screen (it
+waits for input; the code path is the single-player one), repair with real
+tools/materials (the test only shortens the timer), and dynamic NPC speech
+language.
 
 ## Multi-client
 
