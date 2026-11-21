@@ -2,11 +2,10 @@
 SETLOCAL
 
 cd ..\msvc-full-features
-set PATH=%PATH%;%VSAPPIDDIR%\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\cmd
-for /F "tokens=*" %%i in ('git describe --tags --always --dirty --match "cdda-experimental-*"') do set VERSION=%%i
-if "%VERSION%"=="" (
-set VERSION=Please install `git` to generate VERSION
-)
+rem DDA NetPlay: report the official upstream build this fork is based on.
+rem getVersionString() appends "_netplay" at runtime, so this stays clean even
+rem when the fork has local commits or a dirty tree.
+set VERSION=cdda-experimental-2026-10-22-0345
 findstr /c:%VERSION% ..\src\version.h > NUL 2> NUL
 if %ERRORLEVEL% NEQ 0 (
 echo Generating "version.h"...
