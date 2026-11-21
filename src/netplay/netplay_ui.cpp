@@ -3025,6 +3025,12 @@ static int mp_trade_dy = 0;
  * instead of attacking, like walking into an NPC in single player. */
 static void mp_run_player_interact( const std::string &name, const std::string &activity )
 {
+    // DDA MP test hook: a scripted walk must not stop in a modal menu.
+    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
+        dismiss != nullptr && dismiss[0] != '\0' ) {
+        mp_inv_log( string_format( "interact dismissed: %s", name ) );
+        return;
+    }
     uilist menu;
     menu.text = string_format( netplay::fork_text( "Player: %s" ), name );
     int help_idx = -1;
@@ -3076,6 +3082,11 @@ static void mp_run_client_chat()
  * need a dedicated network protocol. */
 static void mp_run_npc_interact( const std::string &name, int dx, int dy )
 {
+    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
+        dismiss != nullptr && dismiss[0] != '\0' ) {
+        mp_inv_log( string_format( "npc interact dismissed: %s %d,%d", name, dx, dy ) );
+        return;
+    }
     uilist menu;
     menu.text = string_format( netplay::fork_text( "NPC: %s" ), name );
     menu.addentry( netplay::fork_text( "Talk" ) );
