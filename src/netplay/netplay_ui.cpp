@@ -6122,6 +6122,11 @@ void run_view_loop()
                     const int code = dir != nullptr && dir[0] != '\0' ? std::atoi( dir ) : 2;
                     return code == 1 || code == 3 || code == 4 ? code : 2;
                 }();
+                static const bool mp_test_move_cycle = []() {
+                    const char *dir = std::getenv( "DDA_MP_TEST_CLIENT_MOVE_DIR" );
+                    return dir != nullptr && std::string( dir ) == "cycle";
+                }();
+                static int mp_test_cycle_index = 0;
                 static auto mp_test_last_move =
                     std::chrono::steady_clock::now() - std::chrono::seconds( 10 );
                 const auto mp_test_now = std::chrono::steady_clock::now();
@@ -6129,10 +6134,17 @@ void run_view_loop()
                     mp_test_now - mp_test_last_move > std::chrono::seconds( 2 ) ) {
                     mp_test_last_move = mp_test_now;
                     --mp_test_moves_left;
+                    int step_code = mp_test_move_code;
+                    if( mp_test_move_cycle ) {
+                        // 6 steps per direction: E, S, W, N, then repeat.
+                        static const int cycle[4] = { 2, 4, 1, 3 };
+                        step_code = cycle[( mp_test_cycle_index / 6 ) % 4];
+                        ++mp_test_cycle_index;
+                    }
                     key_event test_ke;
-                    test_ke.code = static_cast<uint32_t>( mp_test_move_code );
+                    test_ke.code = static_cast<uint32_t>( step_code );
                     client_send_keys( { test_ke } );
-                    mp_tlog( string_format( "test: synthetic step %d", mp_test_move_code ) );
+                    mp_tlog( string_format( "test: synthetic step %d", step_code ) );
                 }
             }
 
