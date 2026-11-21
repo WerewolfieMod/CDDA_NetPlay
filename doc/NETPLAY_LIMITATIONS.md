@@ -196,3 +196,27 @@ language.
   `vehicle repair done sid=1`.
 - Repair duration still depends on the avatar's tools/materials and skills,
   exactly like single player; the automated test only shortens the timer.
+
+## Latency and long runs
+
+- Test setup: host on 25565, client connects through a local TCP relay
+  (25566 -> 25565) that adds 80 ms per direction to every chunk, so a client
+  order needs at least two relay legs before the world turn lands. This is
+  roughly a weak Wi-Fi link, not a LAN.
+- The client walked a scripted square loop (`DDA_MP_TEST_CLIENT_MOVE_DIR=cycle`,
+  one step every 2 s) for 10 minutes. Result: 283 world turns, 283 applied
+  client steps, host and client alive the whole time, no reconnect and no
+  stalled turn. Two earlier runs with the same delay stopped after 11 and 21
+  steps because the client bumped into a character and the stock game opened
+  the player-interaction menu, which waits for input; the test hook
+  `DDA_MP_TEST_DISMISS_MENUS` closes that menu, and the run then reported
+  `menus dismissed 3` and kept moving.
+- Turn cadence stays one world turn per client order; the delay only shifts
+  each turn later (about 160-200 ms round trip in the logs), it does not
+  duplicate or skip turns. Movement pools are unaffected: the client keeps
+  its speed, only the confirmation arrives later.
+- Nothing in the run required tolerating a missing order: the client was
+  always the only waiting player, so the strict turn gate was never bypassed.
+- Not covered: packet loss, jitter, reordering, a real Internet link and a
+  client that disconnects mid-turn.
+
