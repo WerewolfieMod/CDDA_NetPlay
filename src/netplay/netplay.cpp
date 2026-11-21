@@ -3699,8 +3699,8 @@ bool client_connect( const std::string &address_, int port )
     }
 
     state.deny_reason.clear();
-    state.client_address = address_;
-    state.last_address = address_;
+    state.client_address = string_format( "%s:%d", host, port );
+    state.last_address = state.client_address;
     state.connected = true;
     state.client_sock = sock;
     state.client_thread = std::thread( [] { client_run( state.client_sock ); } );

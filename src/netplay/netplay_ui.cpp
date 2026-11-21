@@ -599,6 +599,13 @@ static void join_load_prefs( std::string &addr, std::string &nick )
         JsonObject jo = jsin.get_object();
         jo.read( "address", addr );
         jo.read( "nick", nick );
+        // DDA MP v4.0a-224: the default port moved from 25565 to 24224.
+        // Migrate a saved address that still carries the old default so the
+        // join and reconnect screens never show it again.
+        static constexpr const char *OLD_PORT = ":25565";
+        if( addr.size() > 6 && addr.compare( addr.size() - 6, 6, OLD_PORT ) == 0 ) {
+            addr.replace( addr.size() - 6, 6, ":24224" );
+        }
     } catch( ... ) {
         // missing/broken prefs: fall back to the defaults - never block joining
     }
@@ -750,6 +757,11 @@ void show_join_dialog()
         }
         return;
     }
+
+    // DDA MP v4.0a-224: store the address with the port that was actually
+    // used, so the disconnect screen and reconnect show "host:24224" even if
+    // the player typed only the host name.
+    join_save_prefs( client_last_address(), nick );
 
     // DDA MP v3.9: ask for the current picture right after the WELCOME -
     // the host answers while the client loads its world data, so the view
