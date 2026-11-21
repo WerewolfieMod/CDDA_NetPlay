@@ -900,6 +900,9 @@ static std::map<int, bool> av_death_notified;
  * unresolvable while the host's bubble is anchored on another session, and
  * the per-turn pool must still refill or that client can never act again. */
 static std::map<int, int> av_speed_cache;
+/* DDA MP v4.0a-218: a session avatar is repairing a vehicle part; log the
+ * completion for the automated test. */
+static std::map<int, bool> av_repair_pending;
 /* DDA MP v4.0a-152: wall clock of the current turn round. A client that has
  * not given an order within the grace window is treated as passing, so an
  * idle player can never freeze the host forever. */
@@ -5598,6 +5601,13 @@ static void mp_vehicle_repair( int sid, npc &av, int idx )
     time_duration time = pt.is_broken()
                          ? vpinfo.install_time( av )
                          : vpinfo.repair_time( av ) * pt.get_base().repairable_levels();
+    // DDA MP test hook: a full repair takes many turns; shorten it so the
+    // automated run can verify completion.
+    if( const char *fast = std::getenv( "DDA_MP_TEST_REPAIR_FAST" );
+        fast != nullptr && fast[0] != '\0' ) {
+        time = 5_seconds;
+    }
+    av_repair_pending[sid] = true;
     const point_rel_ms q = veh.coord_translate( pt.mount );
     av.set_moves( 0 );
     av.assign_activity( vehicle_activity_actor(
@@ -6826,29 +6836,21 @@ void host_note_world_turn()
                     std::fclose( f );
                 }
             }
-            // DDA MP v4.0a-22: activities that only touch the avatar's own
-            // inventory (reading, reloading, mending) are not ticked by the
-            // world, so advance them here. Map-bound activities such as
-            // disassembly are deliberately not ticked: the avatar may be
-            // outside the host bubble and would act on the wrong map.
+            // DDA MP v4.0a-218: advance the avatar's activity. The bubble is
+            // anchored on the avatar above, so map-bound activities (repair,
+            // construction, disassembly) are safe as well; engine activity
+            // code may pop dialogs, so prompts stay suppressed.
             if( av->activity ) {
-                static const activity_id mp_act_read( "ACT_READ" );
-                static const activity_id mp_act_reload( "ACT_RELOAD" );
-                static const activity_id mp_act_mend( "ACT_MEND_ITEM" );
-                static const activity_id mp_act_pickup( "ACT_PICKUP" );
-                const activity_id &act_id = av->activity.id();
-                if( act_id == mp_act_read || act_id == mp_act_reload ||
-                    act_id == mp_act_mend || act_id == mp_act_pickup ) {
-                    av->process_activity();
-                }
-                static const activity_id mp_act_try_sleep( "ACT_TRY_SLEEP" );
-                if( act_id == mp_act_try_sleep ) {
-                    av->process_activity();
-                }
-                static const activity_id mp_act_craft( "ACT_CRAFT" );
-                static const activity_id mp_act_craft_wait( "ACT_CRAFT_WAIT" );
-                if( act_id == mp_act_craft || act_id == mp_act_craft_wait ) {
-                    av->process_activity();
+                mp_quiet_remote_data quiet;
+                av->process_activity();
+                if( av_repair_pending[sid] && av->activity.is_null() ) {
+                    av_repair_pending[sid] = false;
+                    if( netplay::mp_diag_enabled() ) {
+                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "vehicle repair done sid=%d\n", sid );
+                            std::fclose( f );
+                        }
+                    }
                 }
             }
             // DDA MP v4.0a-8/9: refresh the client's status payloads.
@@ -6936,11 +6938,11 @@ bool host_any_active_client()
         if( host_session_afk( entry.first ) ) {
             continue;
         }
+        // DDA MP v4.0a-218: a sleeping or busy avatar still needs world turns
+        // for its activity/sleep to progress, so it counts as active here.
+        // Only AFK sessions (long wait) are excluded.
         const npc *av = av_session_npc( entry.first );
-        if( av == nullptr || av->is_dead() ) {
-            continue;
-        }
-        if( av->has_effect( effect_sleep ) || !av->activity.is_null() ) {
+        if( av == nullptr ) {
             continue;
         }
         return true;

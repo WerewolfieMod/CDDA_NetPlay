@@ -70,7 +70,7 @@ grab/drag, vehicle status/refuel/parts/repair, zones, bionics, mutations, map,
 sky, factions, bodygraph, medical, style, NPC dialogue, mission offers/accept,
 trade buy/sell, language mismatch, long wait, auto-turn, help, diary, spellbook,
 armor sorting, auto features/safe mode, suicide, use-wielded, mend, wield,
-autoattack, death/respawn and mission turn-in.
+autoattack, death/respawn, mission turn-in and repair completion.
 
 Mission turn-in was verified end to end with `MISSION_GET_INHALER`:
 the item lands in the session avatar's backpack (`has_inhaler=1`,
@@ -175,5 +175,13 @@ with a completable objective, and repair completion with real tools/materials.
 ## Vehicle servicing
 
 - Status, refuel, damaged-parts list and repair activity are implemented.
-- Repair completion depends on the avatar's tools/materials and was not part of
-  the automated test.
+- A session avatar's activities now advance on every world turn: the bubble
+  is anchored on the avatar, so map-bound activities (repair, construction,
+  disassembly) are safe. A busy or sleeping session counts as active for the
+  host's long-wait auto-pass, otherwise the world would never turn while the
+  client is busy and the activity could never finish.
+- Repair completion was verified with a shortened test activity
+  (`DDA_MP_TEST_REPAIR_FAST`): `vehicle repair start ... time=5`, world turns,
+  `vehicle repair done sid=1`.
+- Repair duration still depends on the avatar's tools/materials and skills,
+  exactly like single player; the automated test only shortens the timer.
