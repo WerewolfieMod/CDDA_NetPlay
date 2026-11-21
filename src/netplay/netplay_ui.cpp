@@ -189,87 +189,6 @@ std::string describe_endpoint()
 /* in-game host dialog ("Open world to network")                       */
 /* ------------------------------------------------------------------ */
 
-/* DDA MP v4.0a-173: in-game co-op instructions. The text lives in fork_text()
- * so it follows the player's language like the rest of the fork's UI. */
-void show_coop_help()
-{
-    std::vector<std::string> lines;
-    const auto add_block = [&lines]( const char *key ) {
-        const std::string text = fork_text( key );
-        std::size_t start = 0;
-        while( true ) {
-            const std::size_t nl = text.find( '\n', start );
-            if( nl == std::string::npos ) {
-                lines.push_back( text.substr( start ) );
-                break;
-            }
-            lines.push_back( text.substr( start, nl - start ) );
-            start = nl + 1;
-        }
-    };
-    lines.emplace_back();
-    add_block( "1. Host: start or load a world as usual, press ESC and pick "
-               "\"Network: open world for co-op\".\n"
-               "Clients connect to your address on port 25565.\n"
-               "While they play, turn on \"Long wait mode\" in the same menu - the host then "
-               "passes its turns automatically." );
-    lines.emplace_back();
-    add_block( "2. Client: in the main menu pick \"Join Network World\", enter the host address "
-               "and a nickname.\n"
-               "Or start the game with:  cataclysm-tiles.exe --mpclient <host[:port]>" );
-    lines.emplace_back();
-    add_block( "3. Controls: movement and actions use the same keys as in single player.\n"
-               "The action menu, inventory, look, aiming/throwing, chat, butchering, construction "
-               "and sleep work.\n"
-               "Your journal and the map come from the host." );
-    lines.emplace_back();
-    add_block( "4. Notes: world time advances only after every player has acted; sleep, crafting "
-               "and other long activities are exceptions.\n"
-               "Some actions are not available to clients yet.\n"
-               "Host and client may use different interface languages - each player reads "
-               "messages in their own language." );
-
-    catacurses::window w = catacurses::newwin( TERMY, TERMX, point( 0, 0 ) );
-    input_context ctxt( "MULTIPLAYER_HELP" );
-    ctxt.register_action( "UP" );
-    ctxt.register_action( "DOWN" );
-    ctxt.register_action( "PAGE_UP" );
-    ctxt.register_action( "PAGE_DOWN" );
-    ctxt.register_action( "QUIT" );
-    ctxt.register_action( "HELP_KEYBINDINGS" );
-
-    int scroll = 0;
-    const int body = std::max( 1, TERMY - 3 );
-    const int max_scroll = std::max( 0, static_cast<int>( lines.size() ) - body );
-    while( true ) {
-        werase( w );
-        draw_border( w, c_white, fork_text( "Co-op help" ) );
-        for( int i = 0; i < body; ++i ) {
-            const int idx = scroll + i;
-            if( idx >= static_cast<int>( lines.size() ) ) {
-                break;
-            }
-            mvwprintz( w, point( 2, 1 + i ), c_white, lines[idx] );
-        }
-        mvwprintz( w, point( 2, TERMY - 2 ), c_dark_gray,
-                   fork_text( "Up/Down: scroll   Esc: close" ) );
-        wnoutrefresh( w );
-        ui_manager::redraw();
-        const std::string action = ctxt.handle_input();
-        if( action == "QUIT" ) {
-            break;
-        } else if( action == "DOWN" ) {
-            scroll = std::min( scroll + 1, max_scroll );
-        } else if( action == "UP" ) {
-            scroll = std::max( 0, scroll - 1 );
-        } else if( action == "PAGE_DOWN" ) {
-            scroll = std::min( scroll + body, max_scroll );
-        } else if( action == "PAGE_UP" ) {
-            scroll = std::max( 0, scroll - body );
-        }
-    }
-}
-
 void show_host_dialog()
 {
     input_context ctxt( "NETPLAY_HOST", keyboard_mode::keycode );
@@ -308,7 +227,7 @@ void show_host_dialog()
         mvwprintw( win, point( 2, 3 ), describe_endpoint() );
         if( !host_is_running() ) {
             mvwprintw( win, point( 2, 4 ),
-                       netplay::fork_text( "<ENTER>: start listener on port 25565" ) );
+                       netplay::fork_text( "<ENTER>: start listener on port 24224" ) );
         } else {
             mvwprintw( win, point( 2, 4 ),
                        netplay::fork_text( "<ENTER>: stop listener" ) );
@@ -4668,7 +4587,6 @@ static int mp_client_action_menu()
 static constexpr int MP_ENTRY_KEYBINDINGS = 90001;
 static constexpr int MP_ENTRY_DISCONNECT = 90002;
 static constexpr int MP_ENTRY_LONG_WAIT = 90003;
-static constexpr int MP_ENTRY_COOP_HELP = 90004;
 
 static int mp_client_main_menu()
 {
@@ -4706,13 +4624,6 @@ static int mp_client_main_menu()
 
     entries.emplace_back( MP_ENTRY_DISCONNECT, true, 'Q',
                           netplay::fork_text( "Disconnect from server" ) );
-    // DDA MP v4.0a-179: like the host's menu, the separate "Co-op help" tab is
-    // not needed for the mod. The window stays reachable from the main menu;
-    // the entry and its handler are kept for now but not displayed.
-#if 0
-    entries.emplace_back( MP_ENTRY_COOP_HELP, true, 'H',
-                          netplay::fork_text( "Co-op help" ) );
-#endif
 
     uilist smenu;
     smenu.settext( _( "MAIN MENU" ) );
@@ -4745,10 +4656,6 @@ static bool mp_client_run_menu_entry( int sel, const std::string &inv_text,
         ui_adaptor mp_menu_blocker( ui_adaptor::disable_uis_below{} );
         input_context kb = get_default_mode_input_context();
         kb.display_menu( false );
-        return false;
-    }
-    if( sel == MP_ENTRY_COOP_HELP ) {
-        netplay::show_coop_help();
         return false;
     }
     if( sel < 0 || sel >= NUM_ACTIONS ) {

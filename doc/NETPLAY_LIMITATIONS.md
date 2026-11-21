@@ -217,8 +217,8 @@ language.
 
 ## Latency and long runs
 
-- Test setup: host on 25565, client connects through a local TCP relay
-  (25566 -> 25565) that adds 80 ms per direction to every chunk, so a client
+- Test setup: host on 24224, client connects through a local TCP relay
+  (25566 -> 24224) that adds 80 ms per direction to every chunk, so a client
   order needs at least two relay legs before the world turn lands. This is
   roughly a weak Wi-Fi link, not a LAN.
 - The client walked a scripted square loop (`DDA_MP_TEST_CLIENT_MOVE_DIR=cycle`,

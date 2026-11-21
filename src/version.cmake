@@ -6,17 +6,10 @@ list(APPEND CMAKE_MODULE_PATH
     ${CMAKE_SOURCE_DIR}/CMakeModules)
 include(GetGitRevisionDescription)
 
-git_describe(GIT_VERSION --tags --always --match "cdda-*")
-
-if(EXISTS ${GIT_EXECUTABLE})
-    execute_process(COMMAND ${GIT_EXECUTABLE} -c core.safecrlf=false diff --quiet
-        RESULT_VARIABLE DIRTY_FLAG
-    )
-
-    if(DIRTY_FLAG)
-        string(APPEND GIT_VERSION "-dirty")
-    endif()
-endif()
+# DDA NetPlay: report the official upstream build this fork is based on.
+# getVersionString() appends "_netplay" at runtime, so this stays clean even
+# when the fork has local commits.
+set(GIT_VERSION "cdda-experimental-2026-10-22-0345")
 
 message(NOTICE ${GIT_VERSION})
 

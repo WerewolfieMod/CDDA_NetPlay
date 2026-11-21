@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 EXE_NAME = "cataclysm-tiles.exe"
-DEFAULT_PORT = 25565
+DEFAULT_PORT = 24224
 _CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 

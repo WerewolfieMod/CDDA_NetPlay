@@ -1154,18 +1154,8 @@ action_id handle_main_menu()
     {
         constexpr int MP_ENTRY_HOST = 90001;
         constexpr int MP_ENTRY_LONG_WAIT = 90002;
-        constexpr int MP_ENTRY_HELP = 90003;
         entries.emplace_back( MP_ENTRY_HOST, true, std::nullopt,
-                              netplay::fork_text( "Network: open world for co-op (port 25565)" ) );
-        // DDA MP v4.0a-173: in-game co-op instructions.
-        // NOTE (v4.0a-174): the separate "Co-op help" tab is not needed for the
-        // multiplayer mod. It is intentionally NOT displayed in the host's menu;
-        // the window itself stays reachable from the main menu and from the
-        // client's menu, and the code is kept for now.
-#if 0
-        entries.emplace_back( MP_ENTRY_HELP, true, std::nullopt,
-                              netplay::fork_text( "Co-op help" ) );
-#endif
+                              netplay::fork_text( "Network: open world for co-op (port 24224)" ) );
         // DDA MP v4.0a-86: while hosting, offer the automatic turn-skipping
         // mode so the clients can move freely.
         if( netplay::host_is_running() ) {
@@ -1190,11 +1180,6 @@ action_id handle_main_menu()
             const bool mp_lw = !netplay::long_wait_active();
             netplay::set_long_wait( mp_lw );
             add_msg( m_info, mp_lw ? netplay::fork_text( "Long wait mode ON" ) : netplay::fork_text( "Long wait mode OFF" ) );
-            return ACTION_NULL;
-        }
-
-        if( selection == MP_ENTRY_HELP ) {
-            netplay::show_coop_help();
             return ACTION_NULL;
         }
 

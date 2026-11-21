@@ -6,7 +6,7 @@ plays their own character in that same world. No separate server build, no
 second copy of the save, no manual world sync.
 
 ```text
-Host:    load or create a world -> ESC -> "Network: open world for co-op" (port 25565)
+Host:    load or create a world -> ESC -> "Network: open world for co-op" (port 24224)
 Client:  main menu -> "Join Network World"  (or: cataclysm-tiles.exe --mpclient <host[:port]>)
 ```
 

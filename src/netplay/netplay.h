@@ -33,8 +33,8 @@ namespace netplay
 /// Distance-agnostic socket handle (sockfd on POSIX; SOCKET on Windows).
 using socket_t = std::int64_t;
 
-/// Default TCP port (player request: Minecraft-style 25565).
-constexpr int DEFAULT_PORT = 25565;
+/// Default TCP port for DDA NetPlay.
+constexpr int DEFAULT_PORT = 24224;
 
 /// DDA MP built-in diagnostics (v4.0a: no powershell / env needed).
 /// Default ON; all forensics land in %TEMP%\opencode\ddadiag — never inside
@@ -363,7 +363,7 @@ void shutdown();
 
 /* ---- host bindings ---- */
 
-/// Start the host listener; port 25565 unless overridden. Idempotent.
+/// Start the host listener; DEFAULT_PORT unless overridden. Idempotent.
 bool host_start( int port = DEFAULT_PORT );
 /// Stop the host.  Idempotent.
 void host_stop();
@@ -371,7 +371,7 @@ void host_stop();
 bool host_is_running();
 /// Port the host is bound to (DEFAULT_PORT when off).
 int host_listen_port();
-/// Address string of the host, e.g. "192.168.1.10:25565".
+/// Address string of the host, e.g. "192.168.1.10:24224".
 std::string host_listen_address();
 /// Number of currently connected sessions.
 int host_session_count();
@@ -461,10 +461,6 @@ constexpr int EVENT_ZONES = 211;
 /// therefore never made it into the game's translation catalogs. Falls back to
 /// the untranslated string for languages the fork does not ship.
 std::string fork_text( const char *msgid );
-
-/// DDA MP v4.0a-173: in-game co-op instructions (host and client), a scrollable
-/// window reachable from the main menu and both in-game main menus.
-void show_coop_help();
 
 /// DDA MP v4.0a-174: co-op assistance. A player next to another player who is
 /// busy with a long activity can opt in to help; the activity speeds up with
