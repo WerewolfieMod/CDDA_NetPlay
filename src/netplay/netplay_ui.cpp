@@ -5608,11 +5608,11 @@ void run_view_loop()
             const float mp_mw = mp_mini_map.width * mp_dot;
             const float mp_mh = mp_mini_map.height * mp_dot;
             const float mp_mini_top = mp_mini_map.width > 0 ?
-                                      io.DisplaySize.y - mp_mh :
+                                      io.DisplaySize.y - mp_mh - 4.0f :
                                       io.DisplaySize.y;
             const int mp_fit = static_cast<int>( ( mp_mini_top - ch - ly ) / ch );
-            if( !mp_log.empty() ) {
-                const int mp_shown_lines = std::max( 1, mp_fit );
+            if( mp_fit > 0 && !mp_log.empty() ) {
+                const int mp_shown_lines = mp_fit;
                 const int first = std::max( 0, static_cast<int>( mp_log.size() ) - mp_shown_lines );
                 for( int i = first; i < static_cast<int>( mp_log.size() ); i++ ) {
                     const mp_log_line &ml = mp_log[static_cast<size_t>( i )];
@@ -5646,6 +5646,11 @@ void run_view_loop()
                                   mp_mini_map.center_y : mp_mini_map.height / 2;
                 if( mp_mini_top + mp_mh <= io.DisplaySize.y + 1.0f ) {
                     const float mini_y = mp_mini_top;
+                    // Clear the whole sidebar strip from the minimap's top
+                    // down: with a very tall panel layout the message log can
+                    // otherwise leave a stray line beside the block.
+                    dl->AddRectFilled( ImVec2( x0, mini_y ), ImVec2( io.DisplaySize.x,
+                                       io.DisplaySize.y ), IM_COL32( 0, 0, 0, 255 ) );
                     dl->AddRectFilled( ImVec2( mx, mini_y ), ImVec2( mx + mp_mw, mini_y + mp_mh ),
                                        IM_COL32( 0, 0, 0, 255 ) );
                     for( int yy = 0; yy < mp_mini_map.height; yy++ ) {

@@ -241,14 +241,14 @@ language.
 ## Client view and minimap
 
 - Each player's minimap is built from that player's own bubble: a split session
-  reads its own region map, and the host reads the host map. A 121x121 block at
-  2 px per tile is drawn, and a tile is shown when the session avatar sees it
-  right now or has it in its own map memory, so the block forms the seen-area
-  disc of that player's view instead of a filled square or the host's cache.
-- Split regions keep their avatar near the bubble centre, so the 121x121 block
-  fits inside their own map. In the shared (host) bubble the block is clamped
-  to the loaded map and the player marker moves with it; the far edge of that
-  disc can still be cut by the bubble edge when the client is far from the host.
+  reads its own region map, the host reads the host map. It follows the host's
+  own rule: a tile is drawn only when it is visible right now, never from map
+  memory, so old tiles disappear when the player walks away. The block is
+  121x121 tiles at 2 px per tile and is always centred on the player.
+- Split regions keep their avatar near the bubble centre, so the whole disc
+  fits inside their own map. In the shared (host) bubble the disc can be cut by
+  the bubble edge on the side where the client is closer to that edge; that is
+  the same cut the host itself gets near a bubble edge.
 - The client no longer only repaints its terrain window when a snapshot
   arrives: the window is re-queued every frame, so a full UI redraw in between
   cannot leave the sprite layer black until the next action.
