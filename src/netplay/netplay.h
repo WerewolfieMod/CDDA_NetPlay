@@ -328,6 +328,12 @@ struct snapshot {
     int origin_x = 0;
     int origin_y = 0;
     int origin_z = 0;
+    /// DDA MP v4.0a-232: offset (tiles) of the frame centre from the viewer
+    /// avatar. 0,0 = the frame is centred on the avatar. The client's
+    /// look/fire cursor scrolls the view, and it needs this to place its
+    /// mirror avatar and the reticle exactly.
+    int view_dx = 0;
+    int view_dy = 0;
     /// DDA MP v4.2: host world clock and weather, so the client's native
     /// lighting/panels read the same time as the host.
     bool has_time = false;
@@ -644,6 +650,10 @@ bool client_aim_panel( sidebar_frame &out );
 /// Pop the pending snapshot request flag (a client asked for the current
 /// picture). Reader threads set it; the host main thread consumes it.
 bool host_pop_snapshot_request();
+/// The view offset (tiles, relative to the session avatar) requested by that
+/// client with its last SNAP_REQ. The host builds the streamed frame around
+/// avatar + offset, so the client's look/fire cursor can scroll the camera.
+point host_snapshot_view( int sid );
 
 /* ---- DDA MP v4.0 avatar protocol (game glue in netplay_world.cpp) ---- */
 
@@ -829,7 +839,7 @@ void overlay_end();
 /// Ask the host to send its current picture right away. The host streams
 /// snapshots only on its own turn, so a freshly-loaded client needs this to
 /// see anything before somebody presses a key. Safe to call often.
-void client_request_snapshot();
+void client_request_snapshot( int view_dx = 0, int view_dy = 0 );
 /// DDA MP v4.0a-94 test hook: post-connect join flow without the dialog.
 void client_bootstrap_session( const std::string &nick );
 /// Send an input batch upstream.

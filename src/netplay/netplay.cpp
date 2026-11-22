@@ -411,6 +411,9 @@ struct netplay_state {
     /* DDA MP v4.0a-9: terminal size reported by each client (host side). */
     std::mutex view_mutex;
     std::map<int, std::pair<int, int>> client_views;
+    /* DDA MP v4.0a-232: view offset (tiles from the avatar) the client wants
+     * the streamed frame centred on. Look/fire camera scrolling. */
+    std::map<int, std::pair<int, int>> client_view_offsets;
     std::vector<std::vector<char>> client_out;
     std::mutex client_out_mutex;
 
@@ -934,8 +937,20 @@ static void host_session_reader( int sid, socket_t sock )
                 }
             }
         } else if( op == frame::SNAP_REQ ) {
-            // Empty payload: "the client finished loading, send the current
-            // picture". Consumed on the host main thread (game loop pump).
+            // "send the current picture". Optionally carries the view offset
+            // (tiles from the avatar) the client's look/fire camera needs.
+            // Consumed on the host main thread (game loop pump).
+            if( payload.size() >= 4 ) {
+                reader r;
+                r.data = payload.data();
+                r.size = payload.size();
+                const int dx = static_cast<int>( r.get_u16() ) - 32768;
+                const int dy = static_cast<int>( r.get_u16() ) - 32768;
+                if( r.ok ) {
+                    std::lock_guard<std::mutex> lk( state.view_mutex );
+                    state.client_view_offsets[sid] = { dx, dy };
+                }
+            }
             state.snap_request_pending = true;
         } else if( op == frame::CLIENT_VIEW ) {
             reader r;
@@ -1767,6 +1782,11 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             put_i32( p, snap.origin_x );
             put_i32( p, snap.origin_y );
             put_i32( p, snap.origin_z );
+            // DDA MP v4.0a-232: view offset from the viewer avatar, so the
+            // client can scroll the camera in look/fire mode and place the
+            // reticle exactly. Decoded by the exact-fit ladder in the reader.
+            put_u16( p, static_cast<uint16_t>( snap.view_dx + 32768 ) );
+            put_u16( p, static_cast<uint16_t>( snap.view_dy + 32768 ) );
         }
     }
     return p;
@@ -3203,6 +3223,16 @@ bool host_pop_snapshot_request()
     return state.snap_request_pending.exchange( false );
 }
 
+point host_snapshot_view( int sid )
+{
+    std::lock_guard<std::mutex> lk( state.view_mutex );
+    const auto it = state.client_view_offsets.find( sid );
+    if( it == state.client_view_offsets.end() ) {
+        return point::zero;
+    }
+    return point( it->second.first, it->second.second );
+}
+
 /* ------------------------------------------------------------------ */
 /* client                                                              */
 /* ------------------------------------------------------------------ */
@@ -3289,7 +3319,10 @@ static void client_run( socket_t sock )
                             int o_x = 0;
                             int o_y = 0;
                             int o_z = 0;
-                            auto try_decode = [&]( size_t extras, bool with_origin ) {
+                            int v_dx = 0;
+                            int v_dy = 0;
+                            auto try_decode = [&]( size_t extras, bool with_origin,
+                                                   bool with_view = false ) {
                                 reader rr;
                                 rr.data = probe.data;
                                 rr.size = probe.size;
@@ -3367,6 +3400,10 @@ static void client_run( socket_t sock )
                                     o_y = rr.get_i32();
                                     o_z = rr.get_i32();
                                 }
+                                if( with_view && rr.ok ) {
+                                    v_dx = static_cast<int>( rr.get_u16() ) - 32768;
+                                    v_dy = static_cast<int>( rr.get_u16() ) - 32768;
+                                }
                                 // exact fit decides which layout ran
                                 if( !rr.ok || rr.off != body.size() ) {
                                     out.clear();
@@ -3377,7 +3414,10 @@ static void client_run( socket_t sock )
                                 }
                                 return out;
                             };
-                            std::vector<tile_cell> parsed = try_decode( 18, true );
+                            std::vector<tile_cell> parsed = try_decode( 18, true, true );
+                            if( parsed.empty() ) {
+                                parsed = try_decode( 18, true );
+                            }
                             if( parsed.empty() ) {
                                 parsed = try_decode( 18, false );
                             }
@@ -3414,6 +3454,8 @@ static void client_run( socket_t sock )
                                 snap.origin_x = o_x;
                                 snap.origin_y = o_y;
                                 snap.origin_z = o_z;
+                                snap.view_dx = v_dx;
+                                snap.view_dy = v_dy;
                             }
                         }
                     }
@@ -4070,12 +4112,17 @@ void client_send_keys( const std::vector<key_event> &keys )
     }
 }
 
-void client_request_snapshot()
+void client_request_snapshot( int view_dx, int view_dy )
 {
     if( !state.connected ) {
         return;
     }
-    if( !client_send_on( state.client_sock, frame::SNAP_REQ, {} ) ) {
+    // DDA MP v4.0a-232: carry the wanted view offset (tiles from the avatar)
+    // so the host can centre the frame on the look/fire cursor.
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( std::max( -30000, std::min( 30000, view_dx ) ) + 32768 ) );
+    put_u16( p, static_cast<uint16_t>( std::max( -30000, std::min( 30000, view_dy ) ) + 32768 ) );
+    if( !client_send_on( state.client_sock, frame::SNAP_REQ, p ) ) {
         // Sending failed: the session is dead (same policy as KEYS).
         state.stop_client();
     }

@@ -1100,13 +1100,31 @@ bool host_relay_character_message( const Character *who, const std::string &text
     return false;
 }
 
-static void av_send_session_picture( int sid, const tripoint_bub_ms &center,
+static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
                                      npc *viewer = nullptr )
 {
-    if( !get_map().inbounds( center ) ) {
+    map &here = get_map();
+    tripoint_bub_ms center = center_in;
+    int view_dx = 0;
+    int view_dy = 0;
+    // DDA MP v4.0a-232: while the client is looking/aiming its cursor is the
+    // camera: centre the frame on avatar + the offset it requested. No
+    // clamping - cells outside the bubble simply stay blank, and the offset
+    // travels with the frame so the client's reticle stays exact.
+    if( viewer != nullptr && center == viewer->pos_bub() ) {
+        const point off = netplay::host_snapshot_view( sid );
+        if( off.x != 0 || off.y != 0 ) {
+            center += tripoint_rel_ms( off.x, off.y, 0 );
+            view_dx = off.x;
+            view_dy = off.y;
+        }
+    }
+    if( !here.inbounds( center ) ) {
         return;
     }
     snapshot snap;
+    snap.view_dx = view_dx;
+    snap.view_dy = view_dy;
     const auto mp_build_t0 = std::chrono::steady_clock::now();
     build_host_snapshot( snap, center, viewer );
     const long long mp_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -245,10 +245,21 @@ language.
   own rule: a tile is drawn only when it is visible right now, never from map
   memory, so old tiles disappear when the player walks away. The block is
   121x121 tiles at 2 px per tile and is always centred on the player.
+- Look (`x`), fire and throw cursors scroll the streamed view: the client sends
+  its reticle offset with the snapshot request and the host centres the frame
+  on avatar + offset, transmitting the offset it used. The reticle's world tile
+  is therefore exact for aiming, and the camera is no longer pinned to the
+  character.
+- While a cursor is active the look window owns the sidebar (the panels and the
+  client log step aside, like the host's look screen), and it is drawn above the
+  terrain layer. The tile under the reticle is outlined in every renderer.
 - Split regions keep their avatar near the bubble centre, so the whole disc
   fits inside their own map. In the shared (host) bubble the disc can be cut by
   the bubble edge on the side where the client is closer to that edge; that is
   the same cut the host itself gets near a bubble edge.
+- The client's mirror map is filled with empty storage on every z-level before
+  it is loaded, so whole-bubble queries (the look window's vehicle list, field
+  and light passes) cannot log an error for every grid.
 - The client no longer only repaints its terrain window when a snapshot
   arrives: the window is re-queued every frame, so a full UI redraw in between
   cannot leave the sprite layer black until the next action.

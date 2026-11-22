@@ -1146,6 +1146,11 @@ static int mp_last_spell_dx = 0;
 static int mp_last_spell_dy = 0;
 static int mp_cursor_dx = 0;
 static int mp_cursor_dy = 0;
+/* DDA MP v4.0a-232: last view offset sent to the host. In cursor modes the
+ * streamed frame is centred on avatar + this offset, so the camera scrolls
+ * with the reticle (look/fire/spell/throw). */
+static int mp_view_req_dx = 0;
+static int mp_view_req_dy = 0;
 static bool mp_look_fast_scroll = false;
 
 /* Tile under the look/fire/throw reticle. The snapshot origin is the pivot
@@ -1156,8 +1161,10 @@ static bool mp_cursor_target( const snapshot &snap, tripoint_abs_ms &ap,
     if( mp_cursor == mp_cursor_mode::none && !mp_throw_active ) {
         return false;
     }
-    const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
-    const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
+    // The frame is centred on avatar + snap.view, so the reticle's cell inside
+    // the frame is (cursor - view) away from its centre.
+    const int rdx = ( mp_throw_active ? mp_throw_dx : mp_cursor_dx ) - snap.view_dx;
+    const int rdy = ( mp_throw_active ? mp_throw_dy : mp_cursor_dy ) - snap.view_dy;
     const int tx = snap.width / 2 + rdx;
     const int ty = snap.height / 2 + rdy;
     if( tx < 0 || ty < 0 || tx >= snap.width || ty >= snap.height ) {
@@ -1197,6 +1204,10 @@ static std::vector<uint32_t> mp_aim_glyphs;
 static std::vector<uint8_t> mp_aim_badges;
 static int mp_aim_w = 0;
 static int mp_aim_h = 0;
+/* DDA MP v4.0a-232: view offset the stored aim arrays were built with (the
+ * throw cursor scrolls the camera, so the target cell is not at frame centre). */
+static int mp_aim_view_dx = 0;
+static int mp_aim_view_dy = 0;
 static std::unique_ptr<npc> mp_aim_char;
 static item mp_aim_item;
 static std::vector<std::string> mp_client_aim_lines;
@@ -2287,8 +2298,8 @@ static void mp_client_aim_recalc()
     if( !mp_aim_char || mp_aim_w <= 0 || mp_aim_h <= 0 ) {
         return;
     }
-    const int tx = mp_aim_w / 2 + mp_throw_dx;
-    const int ty = mp_aim_h / 2 + mp_throw_dy;
+    const int tx = mp_aim_w / 2 + mp_throw_dx - mp_aim_view_dx;
+    const int ty = mp_aim_h / 2 + mp_throw_dy - mp_aim_view_dy;
     if( tx < 0 || ty < 0 || tx >= mp_aim_w || ty >= mp_aim_h ) {
         return;
     }
@@ -4973,9 +4984,14 @@ static void mp_native_apply_creatures( const std::vector<snapshot::creature_fram
 static void mp_native_apply_snapshot( const snapshot &snap )
 {
     const tripoint_abs_ms center_abs( snap.origin_x, snap.origin_y, snap.origin_z );
+    // DDA MP v4.0a-232: the frame centre may be offset from the avatar while
+    // the look/fire camera is scrolled. Keep the mirror avatar at its real
+    // world position; only the view moves.
+    const tripoint_abs_ms avatar_abs( center_abs.x() - snap.view_dx,
+                                      center_abs.y() - snap.view_dy, center_abs.z() );
     mp_native_ensure_bubble( center_abs );
     map &here = get_map();
-    get_avatar().setpos( center_abs, false );
+    get_avatar().setpos( avatar_abs, false );
     if( netplay::mp_diag_enabled() ) {
         static int mp_apply_no = 0;
         static bool mp_have_last = false;
@@ -5778,6 +5794,26 @@ void run_view_loop()
                     netplay::client_send_view( mp_cols, mp_rows );
                 }
             }
+            // DDA MP v4.0a-232: in look/fire/spell/throw mode the reticle is
+            // the camera. Ask the host to centre the streamed frame on
+            // avatar + reticle offset whenever that offset changes; the reply
+            // carries the offset it actually used, so the reticle stays exact.
+            {
+                int want_dx = 0;
+                int want_dy = 0;
+                if( mp_throw_active ) {
+                    want_dx = mp_throw_dx;
+                    want_dy = mp_throw_dy;
+                } else if( mp_cursor != mp_cursor_mode::none ) {
+                    want_dx = mp_cursor_dx;
+                    want_dy = mp_cursor_dy;
+                }
+                if( want_dx != mp_view_req_dx || want_dy != mp_view_req_dy ) {
+                    mp_view_req_dx = want_dx;
+                    mp_view_req_dy = want_dy;
+                    netplay::client_request_snapshot( want_dx, want_dy );
+                }
+            }
             // DDA MP v4.0a-88: long wait no longer sends WAIT orders; the client
             // only tells the host it is AFK (see the menu toggle), so the active
             // player's actions drive the world turns one by one.
@@ -6168,6 +6204,8 @@ void run_view_loop()
                 if( mp_throw_active ) {
                     mp_aim_w = snap.width;
                     mp_aim_h = snap.height;
+                    mp_aim_view_dx = snap.view_dx;
+                    mp_aim_view_dy = snap.view_dy;
                     mp_aim_flags.assign( static_cast<size_t>( snap.width ) * snap.height, 0 );
                     mp_aim_critters.assign( static_cast<size_t>( snap.width ) * snap.height,
                                             std::string() );
@@ -6747,9 +6785,22 @@ void run_view_loop()
                     }
                 }
             }
+            // DDA MP v4.0a-230: re-queue the terrain window every frame, like
+            // the game's own draw loop. It used to be queued only when a new
+            // snapshot arrived, so any full UI redraw in between left the
+            // sprite layer black. Queued BEFORE the look/aim panel so that
+            // panel stays on top of the map.
+#if defined(TILES)
+            if( mp_have_picture && mp_native_render_enabled() && g->w_terrain ) {
+                wnoutrefresh( g->w_terrain );
+            }
+#endif
             // DDA MP v4.0a-115: draw the mirrored sidebar with the game's own
             // panel renderer, after the map so it always sits on top.
-            if( mp_native_render_enabled() ) {
+            // v4.0a-232: in look/fire mode the whole sidebar belongs to the
+            // look window (like the host), so the panels step aside.
+            if( mp_native_render_enabled() && mp_cursor == mp_cursor_mode::none &&
+                !mp_throw_active ) {
                 mp_draw_native_sidebar();
             }
             // ImGui pass on top of the map and the native panels: message log,
@@ -6765,23 +6816,26 @@ void run_view_loop()
             if( mp_throw_active ) {
                 mp_draw_aim_panel();
             }
-            // DDA MP v4.0a-159: on the native renderer use the tileset's own
-            // "cursor" sprite through game::draw_cursor, exactly like the host.
-            // The hand-drawn brackets remain only for the replay fallback.
+            // DDA MP v4.0a-159: on the native renderer the tileset's own
+            // "cursor" sprite is queued through game::draw_cursor, exactly
+            // like the host. v4.0a-232: the ImGui brackets are drawn on top in
+            // every mode, because the sprite alone did not always show (and
+            // the reticle must be visible while looking/aiming).
             if( mp_native_render_enabled() ) {
                 mp_queue_native_cursor( snap );
-            } else {
+            }
+            {
                 bool have_target = false;
                 int rdx = 0;
                 int rdy = 0;
                 if( mp_throw_active ) {
                     have_target = true;
-                    rdx = mp_throw_dx;
-                    rdy = mp_throw_dy;
+                    rdx = mp_throw_dx - snap.view_dx;
+                    rdy = mp_throw_dy - snap.view_dy;
                 } else if( mp_cursor != mp_cursor_mode::none ) {
                     have_target = true;
-                    rdx = mp_cursor_dx;
-                    rdy = mp_cursor_dy;
+                    rdx = mp_cursor_dx - snap.view_dx;
+                    rdy = mp_cursor_dy - snap.view_dy;
                 }
                 const int tx = snap.width / 2 + rdx;
                 const int ty = snap.height / 2 + rdy;
@@ -6923,15 +6977,6 @@ void run_view_loop()
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
             mp_overlay_inventory( mp_inv_text, mp_inv_open, mp_inv_sel, mp_inv_scroll );
 
-            // DDA MP v4.0a-230: the terrain window was only queued when a new
-            // snapshot arrived. Any full UI redraw in between cleared the sprite
-            // layer and left the client on a black screen until it acted again.
-            // Re-queue the terrain every frame, like the game's own draw loop.
-#if defined(TILES)
-            if( mp_have_picture && mp_native_render_enabled() && g->w_terrain ) {
-                wnoutrefresh( g->w_terrain );
-            }
-#endif
             // Present the freshly drawn frame. The game's own main loop calls
             // refresh_display() every iteration; here input pumping alone is
             // not a reliable present trigger, so the first frame would sit

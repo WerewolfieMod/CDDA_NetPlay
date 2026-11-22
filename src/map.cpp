@@ -9399,8 +9399,28 @@ bool generate_uniform_omt( const tripoint_abs_sm &p, const oter_id &terrain_type
 void map::mp_load_bubble_storage( const tripoint_abs_sm &origin )
 {
     set_abs_sub( origin );
+    // DDA MP v4.0a-232: the client's mirror map must be complete on every
+    // z-level. A missing submap makes any whole-bubble query (vehicle lists
+    // from the look window, field/light passes) log an error for every grid,
+    // which stalled the client to a few frames per second. Fill every hole
+    // with empty open-air storage first, then load as usual.
+    static const ter_id t_open_air( "t_open_air" );
     for( int gx = 0; gx < my_MAPSIZE; gx++ ) {
         for( int gy = 0; gy < my_MAPSIZE; gy++ ) {
+            const tripoint_abs_sm gas = abs_sub + tripoint_rel_sm( gx, gy, 0 );
+            for( int gz = -OVERMAP_DEPTH; gz <= OVERMAP_HEIGHT; gz++ ) {
+                const tripoint_abs_sm addr( gas.xy(), gz );
+                if( MAPBUFFER.submap_exists( addr ) ) {
+                    continue;
+                }
+                auto sm = std::make_unique<submap>();
+                for( int mx = 0; mx < SEEX; mx++ ) {
+                    for( int my = 0; my < SEEY; my++ ) {
+                        sm->set_ter( point_sm_ms( mx, my ), t_open_air );
+                    }
+                }
+                MAPBUFFER.add_submap( addr, sm );
+            }
             loadn( point_bub_sm( gx, gy ), false );
         }
     }
