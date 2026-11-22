@@ -336,6 +336,15 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                 // renderer-state facts as the color bytes.
                 smooth_lighting::lightmap_texel lt{};
                 if( mp_host_fetch_auth_texel( p, lt ) ) {
+                    // DDA MP v4.0a-228: a MEMORIZED cell must not carry the
+                    // live daylight texel. Keep the texel (the client needs it
+                    // to paint memory) but dim it, so remembered interiors do
+                    // not look brighter on the client than on the host.
+                    if( ll == lit_level::MEMORIZED ) {
+                        lt.r = static_cast<uint8_t>( static_cast<int>( lt.r ) * 35 / 100 );
+                        lt.g = static_cast<uint8_t>( static_cast<int>( lt.g ) * 35 / 100 );
+                        lt.b = static_cast<uint8_t>( static_cast<int>( lt.b ) * 35 / 100 );
+                    }
                     // the color bytes are always the authoritative state of
                     // this turn: an empty texel is a valid "not seen"
                     t.flags |= 16;
