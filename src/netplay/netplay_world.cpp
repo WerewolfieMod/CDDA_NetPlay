@@ -2967,7 +2967,13 @@ static void av_send_status( int sid )
     // keeping the shared pointer alive across the anchor, and hand it back.
     const bool mp_re_anchor = !get_map().inbounds( get_map().get_bub( av->pos_abs() ) );
     mp_diag_mark( "status-anchor-check", sid );
-    if( mp_re_anchor ) {
+    if( scope.split() ) {
+        // DDA MP v4.0a-230: every split session has its own bubble. Centre
+        // that bubble on its own avatar (mp_anchor_map_on uses a 60-tile band
+        // for region maps), so the 121x121 minimap block, which is built from
+        // this same bubble, always fits inside it. The host's map is untouched.
+        g->mp_anchor_map_on( *av, true );
+    } else if( mp_re_anchor ) {
         g->mp_anchor_map_on( *av, true );
     }
     mp_diag_mark( "status-enter", sid );
@@ -3025,29 +3031,56 @@ static void av_send_status( int sid )
         // same data: a square of map tiles around the avatar.
         minimap_frame mm;
         constexpr int MP_R = 60; // 121x121 map tiles, like the host's pixel minimap
-        mm.width = MP_R * 2 + 1;
-        mm.height = MP_R * 2 + 1;
+        constexpr int MP_W = MP_R * 2 + 1;
+        constexpr int MP_H = MP_R * 2 + 1;
+        mm.width = MP_W;
+        mm.height = MP_H;
         map &here = get_map();
         const tripoint_bub_ms center = av->pos_bub();
+        // DDA MP v4.0a-229: keep the whole block inside the loaded map and
+        // send the player's index inside it. Out-of-map cells used to become
+        // black wedges; the block is now clamped and the marker moves instead.
+        const int origin_x = std::max( 0, std::min( center.x() - MP_R,
+                                         MAPSIZE_X - MP_W ) );
+        const int origin_y = std::max( 0, std::min( center.y() - MP_R,
+                                         MAPSIZE_Y - MP_H ) );
+        mm.center_x = center.x() - origin_x;
+        mm.center_y = center.y() - origin_y;
+        // DDA MP v4.0a-230: the disc must show what THIS client knows, not
+        // what the host has seen. The shared visibility cache holds the
+        // viewer's current FOV only (the snapshot builder clears the
+        // MEMORIZED markers), so a cell is drawn when it is in sight right now
+        // or when the session avatar has it in its own map memory - exactly
+        // the area the host's pixel minimap paints around the host player.
+        map_memory &mm_mem = av_mem_for( *av );
+        // The shared visibility cache can still belong to the host or to the
+        // previous frame's viewer; the map may also have just shifted. Recast
+        // it for this avatar before sampling, so "in sight" means this
+        // client's sight.
+        here.build_map_cache_for( center.z(), false, *av );
+        here.invalidate_visibility_cache();
+        here.update_visibility_cache( center.z(), av );
+        mm_mem.prepare_region(
+            here.get_abs( tripoint_bub_ms( origin_x, origin_y, center.z() ) ),
+            here.get_abs( tripoint_bub_ms( origin_x + MP_W - 1, origin_y + MP_H - 1,
+                                          center.z() ) ) );
         mm.color.reserve( static_cast<size_t>( mm.width ) * mm.height );
         mm.seen.reserve( static_cast<size_t>( mm.width ) * mm.height );
-        for( int dy = -MP_R; dy <= MP_R; dy++ ) {
-            for( int dx = -MP_R; dx <= MP_R; dx++ ) {
-                const tripoint_bub_ms p = center + tripoint_rel_ms( dx, dy, 0 );
+        for( int dy = 0; dy < MP_H; dy++ ) {
+            for( int dx = 0; dx < MP_W; dx++ ) {
+                const tripoint_bub_ms p( origin_x + dx, origin_y + dy, center.z() );
                 nc_color col = c_black;
-                // Light level from the same cache the host's minimap reads:
-                // 0 = DARK/BLANK (not drawn), 1 = LOW (dimmed), 2 = lit.
+                // 0 = unknown (not drawn), 1 = low light (dimmed), 2 = known.
                 uint8_t light = 0;
                 if( here.inbounds( p ) ) {
                     const lit_level ll = here.get_cache_ref( center.z() ).visibility_cache[p.x()][p.y()];
                     if( ll != lit_level::BLANK && ll != lit_level::DARK ) {
                         light = ll == lit_level::LOW ? 1 : 2;
-                    }
-                    // DDA MP v4.0a-227: the shared visibility cache can have
-                    // gaps outside the snapshot frame. Draw those cells dim
-                    // instead of leaving black wedges in the client's disc.
-                    if( light == 0 ) {
-                        light = 1;
+                    } else {
+                        const memorized_tile &mt = mm_mem.get_tile( here.get_abs( p ) );
+                        if( !mt.get_ter_id().empty() || !mt.get_dec_id().empty() ) {
+                            light = 2;
+                        }
                     }
                     if( const optional_vpart_position vp = here.veh_at( p ) ) {
                         col = vp->vehicle().get_display_of_tile( vp->mount_pos() ).color;
@@ -3209,6 +3242,15 @@ static void av_send_status( int sid )
             netplay::host_send_aim_targets_to_sid( sid, targets );
         }
         netplay::host_send_minimap_to_sid( sid, mm );
+        // The recast above left the shared visibility cache holding THIS
+        // session's FOV. The host's own pixel minimap reads that cache when
+        // only its panel is invalidated (no terrain redraw), so it would show
+        // the client's view. Put the host player's cast back.
+        if( !scope.split() ) {
+            here.invalidate_visibility_cache();
+            here.build_map_cache_for( center.z(), false, get_avatar() );
+            here.update_visibility_cache( center.z() );
+        }
     }
     mp_diag_mark( "status-minimap-done", sid );
 #endif

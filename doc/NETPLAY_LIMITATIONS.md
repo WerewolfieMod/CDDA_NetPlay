@@ -240,13 +240,22 @@ language.
 
 ## Client view and minimap
 
-- The client minimap now scales to the sidebar width, keeps a bottom margin and
-  fills tiles whose shared visibility-cache entry is `BLANK` with a dim colour,
-  so a cache gap no longer cuts the disc into black wedges.
+- Each player's minimap is built from that player's own bubble: a split session
+  reads its own region map, and the host reads the host map. A 121x121 block at
+  2 px per tile is drawn, and a tile is shown when the session avatar sees it
+  right now or has it in its own map memory, so the block forms the seen-area
+  disc of that player's view instead of a filled square or the host's cache.
+- Split regions keep their avatar near the bubble centre, so the 121x121 block
+  fits inside their own map. In the shared (host) bubble the block is clamped
+  to the loaded map and the player marker moves with it; the far edge of that
+  disc can still be cut by the bubble edge when the client is far from the host.
+- The client no longer only repaints its terrain window when a snapshot
+  arrives: the window is re-queued every frame, so a full UI redraw in between
+  cannot leave the sprite layer black until the next action.
 - While the round gate waits, the host polls the main-menu action directly, so
   ESC opens the main menu even in long wait mode and the mode can be switched
   off again.
-- Known issue (v4.0a-227): a client frame can still be built mostly from
+- Known issue: a client frame can still be built mostly from
   `MEMORIZED`/`BLANK` visibility entries for the session NPC (see
   `snap ... ll 4=... 6=...` in `netplay_tiles.log`). The client may then draw a
   remembered interior brighter than the host sees it. This needs a per-viewer

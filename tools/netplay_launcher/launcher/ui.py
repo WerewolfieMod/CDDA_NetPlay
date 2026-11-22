@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
             and not self.game_running
             and Updater.has_previous(install_dir)
         )
-        can_play = installed and not self.busy and not self.game_running
+        can_play = installed and not self.busy
         for button in (self.play_btn, self.host_btn, self.join_btn):
             button.setEnabled(can_play)
         self.progress.setVisible(self.busy)
@@ -557,11 +557,6 @@ class MainWindow(QMainWindow):
         if self.busy or not is_installed(install_dir):
             QMessageBox.information(
                 self, self.tr("app_title"), self.tr("need_install")
-            )
-            return False
-        if self.game_running:
-            QMessageBox.information(
-                self, self.tr("app_title"), self.tr("status_game_running")
             )
             return False
         try:

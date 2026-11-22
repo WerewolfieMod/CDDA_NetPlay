@@ -138,6 +138,10 @@ struct intent_request {
 struct minimap_frame {
     int width = 0;
     int height = 0;
+    /// DDA MP v4.0a-229: the avatar's index inside the block. The block is
+    /// clamped to the loaded map, so the player is not always at width/2.
+    int center_x = -1;
+    int center_y = -1;
     std::vector<uint32_t> color;
     /// 1 when the session avatar can see the tile, 0 otherwise (drawn black).
     std::vector<uint8_t> seen;

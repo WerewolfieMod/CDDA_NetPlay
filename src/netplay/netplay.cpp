@@ -2676,6 +2676,8 @@ bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
     std::vector<char> p;
     put_u16( p, static_cast<uint16_t>( mm.width ) );
     put_u16( p, static_cast<uint16_t>( mm.height ) );
+    put_u16( p, static_cast<uint16_t>( std::max( 0, mm.center_x ) ) );
+    put_u16( p, static_cast<uint16_t>( std::max( 0, mm.center_y ) ) );
     for( uint32_t c : mm.color ) {
         put_u32( p, c );
     }
@@ -3651,6 +3653,8 @@ static void client_run( socket_t sock )
             minimap_frame mm;
             mm.width = static_cast<int>( r.get_u16() );
             mm.height = static_cast<int>( r.get_u16() );
+            mm.center_x = static_cast<int>( r.get_u16() );
+            mm.center_y = static_cast<int>( r.get_u16() );
             if( r.ok && mm.width > 0 && mm.height > 0 && mm.width <= 128 && mm.height <= 128 ) {
                 const size_t n = static_cast<size_t>( mm.width ) * mm.height;
                 mm.color.reserve( n );

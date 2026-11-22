@@ -876,7 +876,18 @@ bool game::do_turn()
                     // wait off with ESC.
                     static input_context mp_lw_ctxt = get_default_mode_input_context();
                     mp_lw_ctxt.set_timeout( 0 );
-                    if( mp_lw_ctxt.handle_input() == "main_menu" ) {
+                    bool mp_open_menu = mp_lw_ctxt.handle_input() == "main_menu";
+#if defined(TILES)
+                    // The input manager may consume ESC before the local
+                    // context sees it. Poll the physical key as a fallback.
+                    static bool mp_esc_was_down = false;
+                    const bool mp_esc_down = IsScancodePressed( SDL_SCANCODE_ESCAPE );
+                    if( mp_esc_down && !mp_esc_was_down ) {
+                        mp_open_menu = true;
+                    }
+                    mp_esc_was_down = mp_esc_down;
+#endif
+                    if( mp_open_menu ) {
                         if( netplay::mp_diag_enabled() ) {
                             if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
                                 std::fprintf( f, "lw menu\n" );

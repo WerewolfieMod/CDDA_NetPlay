@@ -10459,7 +10459,11 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
     // apart (tens of tiles) inside one simulation bubble; the frame builder
     // already accepts any center with enough room for its 49x32 window.
     const bool mp_wide = anchor.is_npc();
-    const int mp_margin = 30;
+    // DDA MP v4.0a-229: a split region's own map should keep its avatar near
+    // the centre, because the client minimap shows 60 tiles around it. The
+    // shared host map keeps the old 30-tile margin so the host view does not
+    // chase a remote avatar.
+    const int mp_margin = mp_wide ? ( &here != &g->m ? 60 : 30 ) : 30;
     const int mp_left = mp_wide ? mp_margin : HALF_MAPSIZE_X;
     const int mp_right = mp_wide ? MAPSIZE_X - mp_margin : HALF_MAPSIZE_X + SEEX;
     const int mp_top = mp_wide ? mp_margin : HALF_MAPSIZE_Y;

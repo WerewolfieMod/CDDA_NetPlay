@@ -5601,17 +5601,14 @@ void run_view_loop()
                 ly += ch;
             }
             // Minimap is anchored at the bottom; the log fills the space above.
-            // DDA MP v4.0a-227: scale the map to the sidebar width and keep a
-            // small bottom margin, so it is never clipped by the screen edge.
-            const float mp_dot = ( mp_mini_map.width > 0 && mp_mini_map.height > 0 )
-                                 ? std::min( 2.0f, std::max( 1.0f,
-                                             ( io.DisplaySize.x - x0 ) /
-                                             static_cast<float>( mp_mini_map.width ) ) )
-                                 : 2.0f;
+            // DDA MP v4.0a-229: keep the host's size (2 px per tile, 121x121)
+            // and use the transmitted player index; the block is clamped to the
+            // map, so it is not cut into black wedges.
+            const float mp_dot = 2.0f;
             const float mp_mw = mp_mini_map.width * mp_dot;
             const float mp_mh = mp_mini_map.height * mp_dot;
             const float mp_mini_top = mp_mini_map.width > 0 ?
-                                      io.DisplaySize.y - mp_mh - 4.0f :
+                                      io.DisplaySize.y - mp_mh :
                                       io.DisplaySize.y;
             const int mp_fit = static_cast<int>( ( mp_mini_top - ch - ly ) / ch );
             if( !mp_log.empty() ) {
@@ -5643,6 +5640,10 @@ void run_view_loop()
                 const float mp_panel_w = mp_sb_cells * cw;
                 float mx = x0 + std::max( 0.0f, ( mp_panel_w - mp_mw ) / 2.0f );
                 mx = std::max( x0, std::min( mx, io.DisplaySize.x - mp_mw ) );
+                const int mm_cx = mp_mini_map.center_x >= 0 ?
+                                  mp_mini_map.center_x : mp_mini_map.width / 2;
+                const int mm_cy = mp_mini_map.center_y >= 0 ?
+                                  mp_mini_map.center_y : mp_mini_map.height / 2;
                 if( mp_mini_top + mp_mh <= io.DisplaySize.y + 1.0f ) {
                     const float mini_y = mp_mini_top;
                     dl->AddRectFilled( ImVec2( mx, mini_y ), ImVec2( mx + mp_mw, mini_y + mp_mh ),
@@ -5668,16 +5669,22 @@ void run_view_loop()
                     }
                     // Critter beacons (diamonds), like the host's minimap.
                     for( const minimap_frame::beacon &b : mp_mini_map.beacons ) {
-                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx ) * mp_dot + mp_dot / 2.0f;
-                        const float by = mini_y + ( mp_mini_map.height / 2 + b.dy ) * mp_dot + mp_dot / 2.0f;
+                        const int bxx = mm_cx + b.dx;
+                        const int byy = mm_cy + b.dy;
+                        if( bxx < 0 || bxx >= mp_mini_map.width ||
+                            byy < 0 || byy >= mp_mini_map.height ) {
+                            continue;
+                        }
+                        const float bx = mx + bxx * mp_dot + mp_dot / 2.0f;
+                        const float by = mini_y + byy * mp_dot + mp_dot / 2.0f;
                         const ImU32 bcol = cataimgui::ImU32_from_color(
                                                decode_cell_color( static_cast<int>( b.color ) ) );
                         dl->AddQuadFilled( ImVec2( bx, by - mp_dot ), ImVec2( bx + mp_dot, by ),
                                            ImVec2( bx, by + mp_dot ), ImVec2( bx - mp_dot, by ), bcol );
                     }
-                    // Player marker: white diamond at the centre tile.
-                    const float cx = mx + ( mp_mini_map.width / 2 ) * mp_dot + mp_dot / 2.0f;
-                    const float cy = mini_y + ( mp_mini_map.height / 2 ) * mp_dot + mp_dot / 2.0f;
+                    // Player marker: white diamond at the transmitted index.
+                    const float cx = mx + mm_cx * mp_dot + mp_dot / 2.0f;
+                    const float cy = mini_y + mm_cy * mp_dot + mp_dot / 2.0f;
                     dl->AddQuadFilled( ImVec2( cx, cy - mp_dot * 0.6f ), ImVec2( cx + mp_dot * 0.6f, cy ),
                                        ImVec2( cx, cy + mp_dot * 0.6f ), ImVec2( cx - mp_dot * 0.6f, cy ),
                                        IM_COL32( 255, 255, 255, 255 ) );
@@ -6911,6 +6918,15 @@ void run_view_loop()
             // DDA MP v4.0a-15: context windows above the canvas (overlay pass).
             mp_overlay_inventory( mp_inv_text, mp_inv_open, mp_inv_sel, mp_inv_scroll );
 
+            // DDA MP v4.0a-230: the terrain window was only queued when a new
+            // snapshot arrived. Any full UI redraw in between cleared the sprite
+            // layer and left the client on a black screen until it acted again.
+            // Re-queue the terrain every frame, like the game's own draw loop.
+#if defined(TILES)
+            if( mp_have_picture && mp_native_render_enabled() && g->w_terrain ) {
+                wnoutrefresh( g->w_terrain );
+            }
+#endif
             // Present the freshly drawn frame. The game's own main loop calls
             // refresh_display() every iteration; here input pumping alone is
             // not a reliable present trigger, so the first frame would sit
