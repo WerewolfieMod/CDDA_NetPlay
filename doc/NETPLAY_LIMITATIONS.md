@@ -251,12 +251,13 @@ language.
   for areas the character has already seen. Nothing is requested from the host
   while looking; never-seen cells stay black, exactly like single player.
 - Aiming (fire/throw) keeps the camera on the character and the reticle moves
-  across the frame. The trajectory is drawn with the host's own call
-  (`game::draw_line`, the tileset `line_target` sprite) on the native renderer;
-  the ImGui dot fallback is only used by the replay backend.
+  across the frame. The selected cell is outlined with the tileset's own
+  `cursor` sprite (exactly what the host's look/aim UI queues), the trajectory
+  is queued as the host's `line_target` + `animation_line` sprites, and a dot is
+  drawn on every path cell as a renderer-independent fallback.
 - While a cursor is active the look window owns the sidebar (the panels and the
   client log step aside, like the host's look screen), and it is drawn above the
-  terrain layer. The tile under the reticle is outlined in every renderer.
+  terrain layer.
 - Split regions keep their avatar near the bubble centre, so the whole disc
   fits inside their own map. In the shared (host) bubble the disc can be cut by
   the bubble edge on the side where the client is closer to that edge; that is

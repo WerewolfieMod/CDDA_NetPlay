@@ -6813,15 +6813,14 @@ void run_view_loop()
             if( mp_throw_active ) {
                 mp_draw_aim_panel();
             }
-            // DDA MP v4.0a-159: on the native renderer the tileset's own
-            // "cursor" sprite is queued through game::draw_cursor, exactly
-            // like the host. v4.0a-232: the ImGui brackets are drawn on top in
-            // every mode, because the sprite alone did not always show (and
-            // the reticle must be visible while looking/aiming).
+            // DDA MP v4.0a-234: the native renderer uses the tileset's own
+            // "cursor" sprite through game::draw_cursor, exactly like the
+            // host's draw_look_around_cursor. The ImGui brackets are only for
+            // the replay backend (two outlines at once looked different from
+            // the host).
             if( mp_native_render_enabled() ) {
                 mp_queue_native_cursor( snap );
-            }
-            {
+            } else {
                 bool have_target = false;
                 int rdx = 0;
                 int rdy = 0;
@@ -6885,9 +6884,15 @@ void run_view_loop()
                                                   tripoint_rel_ms( rdx, rdy, 0 ) );
                 if( mp_lh.inbounds( mp_tg ) ) {
                     if( mp_native_render_enabled() ) {
+                        // DDA MP v4.0a-234: queue the same tileset sprite the
+                        // host's aim UI does (line_target endpoint +
+                        // animation_line trail). target_line=false, because
+                        // cata_tiles::draw_line gates the trail on the viewer's
+                        // LOS, which silently dropped it on the client.
                         const std::vector<tripoint_bub_ms> mp_pts = line_to( mp_av, mp_tg );
-                        g->draw_line( mp_tg, g->ter_view_p, mp_pts );
-                    } else if( mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+                        tilecontext->init_draw_line( mp_tg, mp_pts, "line_target", false );
+                    }
+                    if( mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
                         const int cx = snap.width / 2;
                         const int cy = snap.height / 2;
                         const int tx = cx + rdx;
