@@ -5601,8 +5601,17 @@ void run_view_loop()
                 ly += ch;
             }
             // Minimap is anchored at the bottom; the log fills the space above.
+            // DDA MP v4.0a-227: scale the map to the sidebar width and keep a
+            // small bottom margin, so it is never clipped by the screen edge.
+            const float mp_dot = ( mp_mini_map.width > 0 && mp_mini_map.height > 0 )
+                                 ? std::min( 2.0f, std::max( 1.0f,
+                                             ( io.DisplaySize.x - x0 ) /
+                                             static_cast<float>( mp_mini_map.width ) ) )
+                                 : 2.0f;
+            const float mp_mw = mp_mini_map.width * mp_dot;
+            const float mp_mh = mp_mini_map.height * mp_dot;
             const float mp_mini_top = mp_mini_map.width > 0 ?
-                                      io.DisplaySize.y - mp_mini_map.height * 2.0f - 2.0f :
+                                      io.DisplaySize.y - mp_mh - 4.0f :
                                       io.DisplaySize.y;
             const int mp_fit = static_cast<int>( ( mp_mini_top - ch - ly ) / ch );
             if( !mp_log.empty() ) {
@@ -5630,15 +5639,13 @@ void run_view_loop()
             if( mp_mini_map.width > 0 && mp_mini_map.height > 0 &&
                 mp_mini_map.color.size() == static_cast<size_t>( mp_mini_map.width ) *
                 mp_mini_map.height ) {
-                const float dot = 2.0f;
-                const float mw = mp_mini_map.width * dot;
-                const float mh = mp_mini_map.height * dot;
                 // Center the block inside the sidebar column (like the host's panel).
                 const float mp_panel_w = mp_sb_cells * cw;
-                const float mx = x0 + std::max( 0.0f, ( mp_panel_w - mw ) / 2.0f );
-                if( mp_mini_top + mh <= io.DisplaySize.y + 1.0f ) {
+                float mx = x0 + std::max( 0.0f, ( mp_panel_w - mp_mw ) / 2.0f );
+                mx = std::max( x0, std::min( mx, io.DisplaySize.x - mp_mw ) );
+                if( mp_mini_top + mp_mh <= io.DisplaySize.y + 1.0f ) {
                     const float mini_y = mp_mini_top;
-                    dl->AddRectFilled( ImVec2( mx, mini_y ), ImVec2( mx + mw, mini_y + mh ),
+                    dl->AddRectFilled( ImVec2( mx, mini_y ), ImVec2( mx + mp_mw, mini_y + mp_mh ),
                                        IM_COL32( 0, 0, 0, 255 ) );
                     for( int yy = 0; yy < mp_mini_map.height; yy++ ) {
                         for( int xx = 0; xx < mp_mini_map.width; xx++ ) {
@@ -5649,28 +5656,30 @@ void run_view_loop()
                                 continue; // DARK/BLANK: not drawn, like the host
                             }
                             const int ci = static_cast<int>( mp_mini_map.color[mi] );
-                            // LOW light is desaturated by the host; use a dim gray here.
-                            const ImU32 col = light == 1 ? IM_COL32( 110, 110, 110, 255 ) :
-                                              cataimgui::ImU32_from_color( decode_cell_color( ci ) );
-                            dl->AddRectFilled( ImVec2( mx + xx * dot + 0.5f, mini_y + yy * dot + 0.5f ),
-                                               ImVec2( mx + ( xx + 1 ) * dot - 0.5f,
-                                                       mini_y + ( yy + 1 ) * dot - 0.5f ), col );
+                            const ImU32 base = cataimgui::ImU32_from_color(
+                                                   decode_cell_color( ci ) );
+                            // LOW light: keep the terrain colour but dim it.
+                            const ImU32 col = light == 1 ? ( base & 0x00FFFFFF ) | 0x80000000 :
+                                              base;
+                            dl->AddRectFilled( ImVec2( mx + xx * mp_dot + 0.5f, mini_y + yy * mp_dot + 0.5f ),
+                                               ImVec2( mx + ( xx + 1 ) * mp_dot - 0.5f,
+                                                       mini_y + ( yy + 1 ) * mp_dot - 0.5f ), col );
                         }
                     }
                     // Critter beacons (diamonds), like the host's minimap.
                     for( const minimap_frame::beacon &b : mp_mini_map.beacons ) {
-                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx ) * dot + dot / 2.0f;
-                        const float by = mini_y + ( mp_mini_map.height / 2 + b.dy ) * dot + dot / 2.0f;
+                        const float bx = mx + ( mp_mini_map.width / 2 + b.dx ) * mp_dot + mp_dot / 2.0f;
+                        const float by = mini_y + ( mp_mini_map.height / 2 + b.dy ) * mp_dot + mp_dot / 2.0f;
                         const ImU32 bcol = cataimgui::ImU32_from_color(
                                                decode_cell_color( static_cast<int>( b.color ) ) );
-                        dl->AddQuadFilled( ImVec2( bx, by - dot ), ImVec2( bx + dot, by ),
-                                           ImVec2( bx, by + dot ), ImVec2( bx - dot, by ), bcol );
+                        dl->AddQuadFilled( ImVec2( bx, by - mp_dot ), ImVec2( bx + mp_dot, by ),
+                                           ImVec2( bx, by + mp_dot ), ImVec2( bx - mp_dot, by ), bcol );
                     }
                     // Player marker: white diamond at the centre tile.
-                    const float cx = mx + ( mp_mini_map.width / 2 ) * dot + dot / 2.0f;
-                    const float cy = mini_y + ( mp_mini_map.height / 2 ) * dot + dot / 2.0f;
-                    dl->AddQuadFilled( ImVec2( cx, cy - dot * 0.6f ), ImVec2( cx + dot * 0.6f, cy ),
-                                       ImVec2( cx, cy + dot * 0.6f ), ImVec2( cx - dot * 0.6f, cy ),
+                    const float cx = mx + ( mp_mini_map.width / 2 ) * mp_dot + mp_dot / 2.0f;
+                    const float cy = mini_y + ( mp_mini_map.height / 2 ) * mp_dot + mp_dot / 2.0f;
+                    dl->AddQuadFilled( ImVec2( cx, cy - mp_dot * 0.6f ), ImVec2( cx + mp_dot * 0.6f, cy ),
+                                       ImVec2( cx, cy + mp_dot * 0.6f ), ImVec2( cx - mp_dot * 0.6f, cy ),
                                        IM_COL32( 255, 255, 255, 255 ) );
                 }
             }

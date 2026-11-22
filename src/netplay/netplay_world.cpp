@@ -704,11 +704,16 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
                 }
             }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                const int mp_vs = viewer != nullptr ? viewer->sight_max : -1;
+                const int mp_vr = viewer != nullptr ? viewer->unimpaired_range() : -1;
+                const int mp_vsl = viewer != nullptr ? ( viewer->in_sleep_state() ? 1 : 0 ) : -1;
+                const int mp_vb = viewer != nullptr ? ( viewer->is_blind() ? 1 : 0 ) : -1;
                 std::fprintf( f,
-                              "snap #%d viewer=%d center=%d,%d raw=%d,%d ll 0=%d 1=%d 2=%d 3=%d 4=%d 5=%d 6=%d\n",
+                              "snap #%d viewer=%d center=%d,%d raw=%d,%d sight=%d range=%d sleep=%d blind=%d ll 0=%d 1=%d 2=%d 3=%d 4=%d 5=%d 6=%d\n",
                               mp_snap_no, viewer != nullptr ? 1 : 0, center.x(), center.y(),
                               viewer != nullptr ? viewer->pos_bub().x() : -1,
                               viewer != nullptr ? viewer->pos_bub().y() : -1,
+                              mp_vs, mp_vr, mp_vsl, mp_vb,
                               hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6] );
                 std::fclose( f );
             }
@@ -3028,6 +3033,12 @@ static void av_send_status( int sid )
                     const lit_level ll = here.get_cache_ref( center.z() ).visibility_cache[p.x()][p.y()];
                     if( ll != lit_level::BLANK && ll != lit_level::DARK ) {
                         light = ll == lit_level::LOW ? 1 : 2;
+                    }
+                    // DDA MP v4.0a-227: the shared visibility cache can have
+                    // gaps outside the snapshot frame. Draw those cells dim
+                    // instead of leaving black wedges in the client's disc.
+                    if( light == 0 ) {
+                        light = 1;
                     }
                     if( const optional_vpart_position vp = here.veh_at( p ) ) {
                         col = vp->vehicle().get_display_of_tile( vp->mount_pos() ).color;

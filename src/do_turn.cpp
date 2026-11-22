@@ -857,15 +857,38 @@ bool game::do_turn()
                 // DDA MP v4.0a-175: in long wait the host auto-passes, but its
                 // keyboard must keep working - ESC opens the main menu so the
                 // mode can be switched off again.
-                if( netplay::long_wait_active() ) {
-                    if( handle_action() ) {
-                        ++moves_since_last_save;
-                        u.action_taken();
+                if( netplay::long_wait_active() || !netplay::host_input_done() ) {
+                    static auto mp_lw_poll_log = std::chrono::steady_clock::now() -
+                                                 std::chrono::seconds( 10 );
+                    const auto mp_lw_now = std::chrono::steady_clock::now();
+                    if( netplay::mp_diag_enabled() &&
+                        mp_lw_now - mp_lw_poll_log > std::chrono::seconds( 1 ) ) {
+                        mp_lw_poll_log = mp_lw_now;
+                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                            std::fprintf( f, "lw poll\n" );
+                            std::fclose( f );
+                        }
+                    }
+                    // DDA MP v4.0a-227: poll only the main-menu action here.
+                    // handle_action() can return the input timeout action (which
+                    // pauses the turn), and while the round gate waits it did not
+                    // reliably open the menu, so the host could not switch long
+                    // wait off with ESC.
+                    static input_context mp_lw_ctxt = get_default_mode_input_context();
+                    mp_lw_ctxt.set_timeout( 0 );
+                    if( mp_lw_ctxt.handle_input() == "main_menu" ) {
+                        if( netplay::mp_diag_enabled() ) {
+                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                                std::fprintf( f, "lw menu\n" );
+                                std::fclose( f );
+                            }
+                        }
+                        handle_main_menu();
+                    } else if( !netplay::long_wait_active() &&
+                               !netplay::host_input_done() &&
+                               handle_key_blocking_activity() ) {
                         netplay::host_mark_input_done();
                     }
-                } else if( !netplay::host_input_done() &&
-                           handle_key_blocking_activity() ) {
-                    netplay::host_mark_input_done();
                 }
             }
             if( is_game_over() ) {

@@ -238,6 +238,20 @@ language.
 - Not covered: packet loss, jitter, reordering, a real Internet link and a
   client that disconnects mid-turn.
 
+## Client view and minimap
+
+- The client minimap now scales to the sidebar width, keeps a bottom margin and
+  fills tiles whose shared visibility-cache entry is `BLANK` with a dim colour,
+  so a cache gap no longer cuts the disc into black wedges.
+- While the round gate waits, the host polls the main-menu action directly, so
+  ESC opens the main menu even in long wait mode and the mode can be switched
+  off again.
+- Known issue (v4.0a-227): a client frame can still be built mostly from
+  `MEMORIZED`/`BLANK` visibility entries for the session NPC (see
+  `snap ... ll 4=... 6=...` in `netplay_tiles.log`). The client may then draw a
+  remembered interior brighter than the host sees it. This needs a per-viewer
+  light/FOV cache fix, not a renderer workaround.
+
 ## Session safety and diagnostics
 
 - A session that has not created or bound a character must never drive the

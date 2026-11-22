@@ -505,13 +505,25 @@ class MainWindow(QMainWindow):
         self._launch_game()
 
     def host(self) -> None:
-        if not self._launch_game():
+        if self.busy or not is_installed(self._install_dir()):
+            QMessageBox.information(
+                self, self.tr("app_title"), self.tr("need_install")
+            )
             return
-        QMessageBox.information(
-            self,
-            self.tr("host_title"),
-            self.tr("host_text", ip=local_ip(), port=DEFAULT_PORT),
+        # Show the hosting instructions BEFORE launching. A modal box opened
+        # after the game starts ends up behind the fullscreen game window and
+        # the launcher looks frozen.
+        box = QMessageBox(self)
+        box.setWindowTitle(self.tr("host_title"))
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(self.tr("host_text", ip=local_ip(), port=DEFAULT_PORT))
+        launch_button = box.addButton(
+            self.tr("btn_launch"), QMessageBox.ButtonRole.AcceptRole
         )
+        box.addButton(self.tr("cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is launch_button:
+            self._launch_game()
 
     def join(self) -> None:
         if self.busy or not is_installed(self._install_dir()):
@@ -545,6 +557,11 @@ class MainWindow(QMainWindow):
         if self.busy or not is_installed(install_dir):
             QMessageBox.information(
                 self, self.tr("app_title"), self.tr("need_install")
+            )
+            return False
+        if self.game_running:
+            QMessageBox.information(
+                self, self.tr("app_title"), self.tr("status_game_running")
             )
             return False
         try:
