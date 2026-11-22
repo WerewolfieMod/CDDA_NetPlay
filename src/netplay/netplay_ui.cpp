@@ -45,6 +45,7 @@
 #include "sdl_wrappers.h" // GetTicks (view probe timestamps)
 #include "sdltiles.h"     // display_buffer_draw_scope (single-pass client frame)
 #include "game.h"        // g (fat client world data load)
+#include "line.h"        // line_to (aim trajectory)
 #include "weather.h"      // host clock/weather for native lighting
 #include "map.h"         // get_map (client-side pickup selector scratch tile)
 #include "mapbuffer.h"   // synthetic client-side map bubble
@@ -1146,11 +1147,6 @@ static int mp_last_spell_dx = 0;
 static int mp_last_spell_dy = 0;
 static int mp_cursor_dx = 0;
 static int mp_cursor_dy = 0;
-/* DDA MP v4.0a-232: last view offset sent to the host. In cursor modes the
- * streamed frame is centred on avatar + this offset, so the camera scrolls
- * with the reticle (look/fire/spell/throw). */
-static int mp_view_req_dx = 0;
-static int mp_view_req_dy = 0;
 static bool mp_look_fast_scroll = false;
 
 /* Tile under the look/fire/throw reticle. The snapshot origin is the pivot
@@ -1161,17 +1157,12 @@ static bool mp_cursor_target( const snapshot &snap, tripoint_abs_ms &ap,
     if( mp_cursor == mp_cursor_mode::none && !mp_throw_active ) {
         return false;
     }
-    // The frame is centred on avatar + snap.view, so the reticle's cell inside
-    // the frame is (cursor - view) away from its centre.
-    const int rdx = ( mp_throw_active ? mp_throw_dx : mp_cursor_dx ) - snap.view_dx;
-    const int rdy = ( mp_throw_active ? mp_throw_dy : mp_cursor_dy ) - snap.view_dy;
-    const int tx = snap.width / 2 + rdx;
-    const int ty = snap.height / 2 + rdy;
-    if( tx < 0 || ty < 0 || tx >= snap.width || ty >= snap.height ) {
-        return false;
-    }
-    ap = tripoint_abs_ms( snap.origin_x + tx - snap.width / 2,
-                          snap.origin_y + ty - snap.height / 2, snap.origin_z );
+    // The reticle is always offset from the CHARACTER, never from the frame:
+    // in look mode the camera moves to the reticle locally (from the client's
+    // own mirror map), while aiming keeps the camera on the character.
+    const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
+    const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
+    ap = get_avatar().pos_abs() + tripoint_rel_ms( rdx, rdy, 0 );
     map &here = get_map();
     lp = here.get_bub( ap );
     return here.inbounds( lp );
@@ -5794,26 +5785,6 @@ void run_view_loop()
                     netplay::client_send_view( mp_cols, mp_rows );
                 }
             }
-            // DDA MP v4.0a-232: in look/fire/spell/throw mode the reticle is
-            // the camera. Ask the host to centre the streamed frame on
-            // avatar + reticle offset whenever that offset changes; the reply
-            // carries the offset it actually used, so the reticle stays exact.
-            {
-                int want_dx = 0;
-                int want_dy = 0;
-                if( mp_throw_active ) {
-                    want_dx = mp_throw_dx;
-                    want_dy = mp_throw_dy;
-                } else if( mp_cursor != mp_cursor_mode::none ) {
-                    want_dx = mp_cursor_dx;
-                    want_dy = mp_cursor_dy;
-                }
-                if( want_dx != mp_view_req_dx || want_dy != mp_view_req_dy ) {
-                    mp_view_req_dx = want_dx;
-                    mp_view_req_dy = want_dy;
-                    netplay::client_request_snapshot( want_dx, want_dy );
-                }
-            }
             // DDA MP v4.0a-88: long wait no longer sends WAIT orders; the client
             // only tells the host it is AFK (see the menu toggle), so the active
             // player's actions drive the world turns one by one.
@@ -6792,6 +6763,32 @@ void run_view_loop()
             // panel stays on top of the map.
 #if defined(TILES)
             if( mp_have_picture && mp_native_render_enabled() && g->w_terrain ) {
+                // DDA MP v4.0a-233: the look camera is fully local. The host
+                // streams only the on-screen frame, but the client keeps its
+                // own map memory (filled from the streamed mem_* fields as it
+                // walks), and both the tile renderer and the look panel fall
+                // back to that memory outside the avatar's sight - exactly what
+                // single player shows for areas the character has seen. So the
+                // reticle moves the camera inside the loaded mirror map and no
+                // data is requested from the host. Aiming keeps the camera on
+                // the character; the reticle moves across the frame instead.
+                map &mp_here = get_map();
+                const tripoint_bub_ms mp_ab = get_avatar().pos_bub();
+                if( mp_cursor == mp_cursor_mode::look ) {
+                    // Keep the whole streamed window inside the loaded mirror.
+                    const int mp_cam_w = cur_w > 0 ? cur_w : 49;
+                    const int mp_cam_h = cur_h > 0 ? cur_h : 32;
+                    const int mp_cx = clamp( mp_ab.x() + mp_cursor_dx, mp_cam_w / 2,
+                                             MAPSIZE_X - mp_cam_w / 2 - 1 );
+                    const int mp_cy = clamp( mp_ab.y() + mp_cursor_dy, mp_cam_h / 2,
+                                             MAPSIZE_Y - mp_cam_h / 2 - 1 );
+                    mp_cursor_dx = mp_cx - mp_ab.x();
+                    mp_cursor_dy = mp_cy - mp_ab.y();
+                    g->ter_view_p = tripoint_bub_ms( mp_cx, mp_cy, mp_ab.z() );
+                } else if( mp_have_origin ) {
+                    g->ter_view_p = mp_here.get_bub(
+                                        tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
+                }
                 wnoutrefresh( g->w_terrain );
             }
 #endif
@@ -6830,12 +6827,16 @@ void run_view_loop()
                 int rdy = 0;
                 if( mp_throw_active ) {
                     have_target = true;
-                    rdx = mp_throw_dx - snap.view_dx;
-                    rdy = mp_throw_dy - snap.view_dy;
+                    // Aiming: the camera stays on the character, so the
+                    // reticle moves across the frame.
+                    rdx = mp_throw_dx;
+                    rdy = mp_throw_dy;
                 } else if( mp_cursor != mp_cursor_mode::none ) {
                     have_target = true;
-                    rdx = mp_cursor_dx - snap.view_dx;
-                    rdy = mp_cursor_dy - snap.view_dy;
+                    // Looking: the camera sits on the reticle (v4.0a-233), so
+                    // the reticle is always at the frame centre.
+                    rdx = mp_cursor == mp_cursor_mode::look ? 0 : mp_cursor_dx;
+                    rdy = mp_cursor == mp_cursor_mode::look ? 0 : mp_cursor_dy;
                 }
                 const int tx = snap.width / 2 + rdx;
                 const int ty = snap.height / 2 + rdy;
@@ -6870,48 +6871,62 @@ void run_view_loop()
                 }
             }
             // DDA MP v4.0a-154: the host's line_trail is a dot on every tile
-            // between the character and the target. Draw the same dots for
-            // fire/throw, so the trajectory is readable even if the tileset
-            // line sprite does not resolve in the replay backend.
-            if( ( mp_throw_active || mp_cursor == mp_cursor_mode::fire ) &&
-                mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+            // between the character and the target. v4.0a-233: on the native
+            // renderer use the host's own call (game::draw_line queues the
+            // tileset's line_target sprite along the trajectory); the ImGui
+            // dots remain only for the replay backend.
+            if( mp_throw_active || mp_cursor == mp_cursor_mode::fire ) {
+                map &mp_lh = get_map();
                 const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
                 const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
-                const int cx = snap.width / 2;
-                const int cy = snap.height / 2;
-                const int tx = cx + rdx;
-                const int ty = cy + rdy;
-                if( tx >= 0 && ty >= 0 && tx < snap.width && ty < snap.height ) {
-                    ImDrawList *dl = ImGui::GetForegroundDrawList();
-                    const ImU32 dot = IM_COL32( 255, 255, 255, 200 );
-                    const float rad = std::max( 2.0f, std::min( mp_canvas_tw,
-                                                                mp_canvas_th ) * 0.08f );
-                    int x = cx;
-                    int y = cy;
-                    const int dx = std::abs( tx - cx );
-                    const int sx = cx < tx ? 1 : -1;
-                    const int dy = -std::abs( ty - cy );
-                    const int sy = cy < ty ? 1 : -1;
-                    int err = dx + dy;
-                    while( true ) {
-                        if( !( x == cx && y == cy ) && !( x == tx && y == ty ) ) {
-                            const float pcx = mp_canvas_cx +
-                                              ( x - snap.width / 2.0f ) * mp_canvas_tw;
-                            const float pcy = mp_canvas_cy +
-                                              ( y - snap.height / 2.0f ) * mp_canvas_th;
-                            dl->AddCircleFilled( ImVec2( pcx, pcy ), rad, dot );
-                        }
-                        if( x == tx && y == ty ) {
-                            break;
-                        }
-                        const int e2 = 2 * err;
-                        if( e2 >= dy ) {
-                            err += dy;
-                            x += sx;
-                        }
-                        if( e2 <= dx ) {
-                            err += dx;
-                            y += sy;
+                const tripoint_bub_ms mp_av = get_avatar().pos_bub();
+                const tripoint_bub_ms mp_tg = mp_lh.get_bub(
+                                                  get_avatar().pos_abs() +
+                                                  tripoint_rel_ms( rdx, rdy, 0 ) );
+                if( mp_lh.inbounds( mp_tg ) ) {
+                    if( mp_native_render_enabled() ) {
+                        const std::vector<tripoint_bub_ms> mp_pts = line_to( mp_av, mp_tg );
+                        g->draw_line( mp_tg, g->ter_view_p, mp_pts );
+                    } else if( mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+                        const int cx = snap.width / 2;
+                        const int cy = snap.height / 2;
+                        const int tx = cx + rdx;
+                        const int ty = cy + rdy;
+                        if( tx >= 0 && ty >= 0 && tx < snap.width && ty < snap.height ) {
+                            ImDrawList *dl = ImGui::GetForegroundDrawList();
+                            const ImU32 dot = IM_COL32( 255, 255, 255, 200 );
+                            const float rad = std::max( 2.0f, std::min( mp_canvas_tw,
+                                                                        mp_canvas_th ) * 0.08f );
+                            int x = cx;
+                            int y = cy;
+                            const int dx = std::abs( tx - cx );
+                            const int sx = cx < tx ? 1 : -1;
+                            const int dy = -std::abs( ty - cy );
+                            const int sy = cy < ty ? 1 : -1;
+                            int err = dx + dy;
+                            while( true ) {
+                                if( !( x == cx && y == cy ) && !( x == tx && y == ty ) ) {
+                                    // Cell centres: the canvas centre is a cell
+                                    // corner, so add half a tile.
+                                    const float pcx = mp_canvas_cx +
+                                                      ( x - snap.width / 2.0f + 0.5f ) * mp_canvas_tw;
+                                    const float pcy = mp_canvas_cy +
+                                                      ( y - snap.height / 2.0f + 0.5f ) * mp_canvas_th;
+                                    dl->AddCircleFilled( ImVec2( pcx, pcy ), rad, dot );
+                                }
+                                if( x == tx && y == ty ) {
+                                    break;
+                                }
+                                const int e2 = 2 * err;
+                                if( e2 >= dy ) {
+                                    err += dy;
+                                    x += sx;
+                                }
+                                if( e2 <= dx ) {
+                                    err += dx;
+                                    y += sy;
+                                }
+                            }
                         }
                     }
                 }

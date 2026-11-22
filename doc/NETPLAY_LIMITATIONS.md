@@ -245,11 +245,15 @@ language.
   own rule: a tile is drawn only when it is visible right now, never from map
   memory, so old tiles disappear when the player walks away. The block is
   121x121 tiles at 2 px per tile and is always centred on the player.
-- Look (`x`), fire and throw cursors scroll the streamed view: the client sends
-  its reticle offset with the snapshot request and the host centres the frame
-  on avatar + offset, transmitting the offset it used. The reticle's world tile
-  is therefore exact for aiming, and the camera is no longer pinned to the
-  character.
+- The look camera (`x`) is fully local: the reticle moves the camera inside the
+  client's loaded mirror map and cells outside the avatar's sight are drawn from
+  the client's own map memory - the same `MEMORIZED` tiles single player shows
+  for areas the character has already seen. Nothing is requested from the host
+  while looking; never-seen cells stay black, exactly like single player.
+- Aiming (fire/throw) keeps the camera on the character and the reticle moves
+  across the frame. The trajectory is drawn with the host's own call
+  (`game::draw_line`, the tileset `line_target` sprite) on the native renderer;
+  the ImGui dot fallback is only used by the replay backend.
 - While a cursor is active the look window owns the sidebar (the panels and the
   client log step aside, like the host's look screen), and it is drawn above the
   terrain layer. The tile under the reticle is outlined in every renderer.
