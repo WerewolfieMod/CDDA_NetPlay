@@ -1,4 +1,4 @@
-﻿// CataDDA Multiplayer ("DDA MP") вЂ” host glue between the world simulation
+// CataDDA Multiplayer ("DDA MP") вЂ” host glue between the world simulation
 // and the network transport (v1.5 "watch-and-remote-control"):
 //  * per-turn ascii snapshots of the host's own view, streamed to sessions,
 //  * remote KEYS decoded into DEFAULTMODE action ids for input injection.
@@ -237,8 +237,11 @@ static const trait_id trait_INATTENTIVE( "INATTENTIVE" );
  * netplay_light_trace.log lines are produced by this TU (mine traces,
  * snapshot size logs). Flip to true and rebuild to re-enable. */
 /* DDA MP v3.9: diagnostics master switch вЂ” built-in (mp_diag_dir).
- * Default ON without any env; DDA_MP_DIAG=0|off disables. */
-static const bool mp_netplay_diag = mp_diag_enabled();
+ * Off by default; the host menu can switch it on, DDA_MP_DIAG overrides. */
+static bool mp_netplay_diag_on()
+{
+    return mp_diag_enabled();
+}
 
 /* DDA MP v4.0a-2: each netplay avatar keeps its OWN map memory on the host,
  * keyed by its stable unique id ("netplay_avatar:<nick>"). Freshly seen
@@ -315,7 +318,7 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
     // cell for cell with the client's rows (prefix H) and the blue-tile issue.
     static int mp_light_trace_frame = 0;
     static std::string mp_light_trace;
-    const bool mp_light_trace_this = mp_netplay_diag &&
+    const bool mp_light_trace_this = mp_netplay_diag_on() &&
         ( mp_light_trace_frame < 4 ||
         ( mp_light_trace_frame < 400 && mp_light_trace_frame % 96 < 2 ) );
     for( int dy = 0; dy < FRAMEH; dy++ ) {
@@ -637,7 +640,7 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
             out.tiles.push_back( std::move( t ) );
         }
     }
-    if( mp_netplay_diag && mp_light_trace_this && !mp_light_trace.empty() ) {
+    if( mp_netplay_diag_on() && mp_light_trace_this && !mp_light_trace.empty() ) {
         if( std::FILE *f = netplay::mp_diag_open( "netplay_light_trace.log" ) ) {
             std::fputs( mp_light_trace.c_str(), f );
             std::fclose( f );
@@ -683,7 +686,7 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         here.invalidate_visibility_cache();
         here.update_visibility_cache( center.z(), viewer );
     }
-    if( mp_netplay_diag ) {
+    if( mp_netplay_diag_on() ) {
         // Compact per-snapshot visibility histogram: shows whether the frame is
         // being mined from the avatar's view or from map memory.
         static int mp_snap_no = 0;
@@ -1121,6 +1124,9 @@ static bool mp_session_heartbeat_busy( int sid )
     }
     const npc *av = av_session_npc( sid );
     if( av == nullptr || av->is_dead() ) {
+        // NOTE (v4.0a-226): a session without a bound avatar is not pinged;
+        // its socket can linger until TCP closes it. Accepted for host + 1
+        // client. A dead avatar is waiting for the respawn screen.
         return true;
     }
     if( av->has_effect( effect_sleep_id ) || !av->activity.is_null() ) {
@@ -1775,6 +1781,12 @@ static void host_pump_avatar_deaths()
     }
 }
 
+/* DDA MP v4.0a-226: sessions that already started the avatar list/create/
+ * resume flow. A KEYS frame from such a session is dropped while its bind is
+ * pending; a KEYS frame from a session that never started the flow is treated
+ * as an attempt to drive the host and gets the session kicked. */
+static std::set<int> av_session_avatar_flow;
+
 void host_pump_avatar_ops()
 {
     host_pump_avatar_deaths();
@@ -1782,6 +1794,9 @@ void host_pump_avatar_ops()
     avatar_op op;
     int budget = 16;
     while( budget-- > 0 && host_pop_avatar_op( op ) ) {
+        // The client is in the avatar selection/creation flow; do not treat
+        // its early input as host control.
+        av_session_avatar_flow.insert( op.sid );
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
             std::fprintf( f, "avatar op sid=%d kind=%d nick=%s\n", op.sid, op.kind, op.nick.c_str() );
             std::fclose( f );
@@ -1796,8 +1811,10 @@ void host_pump_avatar_ops()
 /* DDA MP v4.0a-2: per-session keyboard. Bound sessions steer their own
  * avatar вЂ” one step per movement key, standard collision rules (no forced
  * moves, no pathfinding); any non-movement key is swallowed for now.
- * Sessions without a bound avatar fall back onto the legacy queue so the
- * watchers keep the v3.x "drive the host player" behavior unchanged. */
+ * Sessions without a bound avatar must never drive the host. A KEYS frame
+ * from a session that has not started the avatar list/create/resume flow is
+ * treated as an attempt to control the host and gets the session kicked; a
+ * KEYS frame from a session whose bind is still pending is dropped. */
 /* DDA MP v4.0a-2: turn parity. The engine's world turn runs once every
  * bound avatar has stepped since the previous tick, so one player's movement
  * does not fast-forward the world under the others; the host player keeps
@@ -1826,6 +1843,9 @@ static bool av_all_acted()
 {
     // Drop avatars whose session is gone: a client that disconnected between
     // turns must not block the parity gate for the remaining players.
+    // NOTE (v4.0a-226): trade/mission/vehicle per-sid maps are not cleared
+    // here; they are bounded by the session count and only grow until the
+    // host restarts. Accepted for host + 1 client.
     const std::vector<int> sessions = netplay::host_session_ids();
     for( auto it = av_sid_to_npc.begin(); it != av_sid_to_npc.end(); ) {
         if( std::find( sessions.begin(), sessions.end(), it->first ) == sessions.end() ) {
@@ -1833,6 +1853,7 @@ static bool av_all_acted()
             av_waiting_for_turn.erase( it->first );
             av_move_pool.erase( it->first );
             av_speed_cache.erase( it->first );
+            av_session_avatar_flow.erase( it->first );
             it = av_sid_to_npc.erase( it );
         } else {
             ++it;
@@ -2325,8 +2346,20 @@ void host_pump_avatar_keys()
         // client's order, the client's keys were being ignored).
         const auto it = av_sid_to_npc.find( sk.sid );
         if( it == av_sid_to_npc.end() ) {
-            // watcher: legacy host player injection
-            netplay::host_push_legacy_key( sk.code );
+            if( av_session_avatar_flow.find( sk.sid ) == av_session_avatar_flow.end() ) {
+                // DDA MP v4.0a-226: this session never started the avatar
+                // flow, so a game key can only be an attempt to drive the
+                // host (the old v3.x watcher behaviour). Kick it; the client
+                // shows the reason and returns to the main menu.
+                netplay::host_kick_session(
+                    sk.sid,
+                    "The host removed this client: bind a character before sending game input." );
+            } else if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "key dropped unbound sid=%d (avatar flow pending)\n", sk.sid );
+                    std::fclose( f );
+                }
+            }
             continue;
         }
         shared_ptr_fast<npc> npc_ptr = av_find_npc( it->second );

@@ -36,14 +36,20 @@ using socket_t = std::int64_t;
 /// Default TCP port for DDA NetPlay.
 constexpr int DEFAULT_PORT = 24224;
 
-/// DDA MP built-in diagnostics (v4.0a: no powershell / env needed).
-/// Default ON; all forensics land in %TEMP%\opencode\ddadiag — never inside
-/// the game folder. Escape hatches: env DDA_MP_DIAG=0|off disables,
-/// DDA_MP_DIAG=<dir> reroutes the folder. Returns "" when disabled.
-const std::string &mp_diag_dir();
+/// DDA MP built-in diagnostics.
+/// Default OFF. The host menu can switch them on for a session; logs then land
+/// in %TEMP%\opencode\ddadiag — never inside the game folder. The env variable
+/// overrides the switch: DDA_MP_DIAG=<dir> forces them on and reroutes the
+/// folder, DDA_MP_DIAG=0|off forces them off. Returns "" when disabled.
+std::string mp_diag_dir();
 
-/// True when diagnostics are enabled (mp_diag_dir() is non-empty).
-inline bool mp_diag_enabled() { return !mp_diag_dir().empty(); }
+/// True when diagnostics are enabled in this process.
+bool mp_diag_enabled();
+
+/// Host menu switch: write diagnostics to the default folder. Has no effect
+/// when DDA_MP_DIAG is set.
+void set_diag_enabled( bool enabled );
+bool diag_enabled_by_user();
 
 /// Opens `name` (e.g. "netplay_tiles.log") inside the diag folder for
 /// appending; nullptr when diagnostics are disabled.
@@ -393,6 +399,16 @@ void host_pump();
 std::vector<int> host_heartbeat_tick( const std::function<bool( int )> &busy );
 /// DDA MP: unblock a session's reader; it then runs the normal close path.
 void host_drop_session( int sid );
+
+/// DDA MP v4.0a-226: close a session on purpose and send the client a reason.
+/// The client shows the reason and returns to the main menu instead of
+/// offering a reconnect. The reader thread still owns the final close.
+void host_kick_session( int sid, const std::string &reason );
+
+/// DDA MP v4.0a-226: true when the host kicked this client (read after the
+/// client session loop ends).
+bool client_kicked();
+std::string client_kick_reason();
 
 /// Broadcast a screen frame to every live session (thread-safe; session
 /// sockets that fail to receive are dropped).

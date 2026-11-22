@@ -238,3 +238,21 @@ language.
 - Not covered: packet loss, jitter, reordering, a real Internet link and a
   client that disconnects mid-turn.
 
+## Session safety and diagnostics
+
+- A session that has not created or bound a character must never drive the
+  host. If it sends gameplay keys before starting the avatar flow, the host
+  kicks it and the client shows the reason and returns to the main menu.
+- Keys that arrive while an avatar bind is still pending are dropped, not
+  punished, so a first-time client is never kicked during character selection;
+  it only sends `AVATAR_LIST_REQ` / `AVATAR_PROFILE` / `AVATAR_RESUME` at that
+  point.
+- Diagnostics are opt-in per host session: the host chooses when starting the
+  listener. `DDA_MP_DIAG=<dir>` overrides the choice, `DDA_MP_DIAG=0` forces
+  them off.
+- Accepted limits for the host + 1 client target, noted in the code: host sends
+  hold the session lock during a blocking send (5 s timeout), client sends have
+  no send timeout, sessions without an avatar are not pinged, and per-session
+  trade/mission maps are cleared on the next world turn or rebind.
+
+

@@ -334,6 +334,11 @@ struct netplay_state {
     std::string client_address;
     std::string last_address;
     std::string deny_reason;
+    /* DDA MP v4.0a-226: set by the reader when the host sends BYE with a
+     * reason; the client UI then returns to the main menu, not the reconnect
+     * screen. Read after client_run() ends. */
+    bool client_kicked_flag = false;
+    std::string client_kick_reason_text;
     /* world the host announced in WELCOME (fat client) */
     std::string host_world_name;
     std::string client_last_host_world;
@@ -630,23 +635,43 @@ bool tiles_replay_enabled()
 }
 
 /* ------------------------------------------------------------------ */
-/* built-in diagnostics folder (no env / powershell required)            */
+/* built-in diagnostics folder                                          */
 /* ------------------------------------------------------------------ */
 
-const std::string &mp_diag_dir()
+namespace
+{
+// Runtime switch from the host menu. DDA_MP_DIAG overrides it: a folder
+// forces diagnostics on, 0/off forces them off.
+std::atomic<bool> netplay_diag_on{ false };
+
+const std::string &env_diag_dir()
 {
     static const std::string dir = []() -> std::string {
         const char *env = std::getenv( "DDA_MP_DIAG" );
-        if( env ) {
-            const std::string v( env );
-            if( v.empty() || v == "0" || v == "off" ) {
-                return std::string();
-            }
-            CreateDirectoryA( v.c_str(), nullptr );
-            return v;
+        if( env == nullptr ) {
+            return std::string();
         }
+        const std::string v( env );
+        if( v.empty() || v == "0" || v == "off" ) {
+            return std::string();
+        }
+        CreateDirectoryA( v.c_str(), nullptr );
+        return v;
+    }();
+    return dir;
+}
+
+bool env_diag_present()
+{
+    static const bool present = std::getenv( "DDA_MP_DIAG" ) != nullptr;
+    return present;
+}
+
+const std::string &runtime_diag_dir()
+{
+    static const std::string dir = []() -> std::string {
         const char *temp = std::getenv( "TEMP" );
-        if( !temp ) {
+        if( temp == nullptr ) {
             temp = std::getenv( "TMP" );
         }
         std::string d = ( temp ? temp : "." );
@@ -657,9 +682,42 @@ const std::string &mp_diag_dir()
     return dir;
 }
 
+const std::string &active_diag_dir()
+{
+    static const std::string empty;
+    if( env_diag_present() ) {
+        return env_diag_dir();
+    }
+    if( netplay_diag_on.load() ) {
+        return runtime_diag_dir();
+    }
+    return empty;
+}
+} // namespace
+
+void set_diag_enabled( bool enabled )
+{
+    netplay_diag_on.store( enabled );
+}
+
+bool diag_enabled_by_user()
+{
+    return netplay_diag_on.load();
+}
+
+std::string mp_diag_dir()
+{
+    return active_diag_dir();
+}
+
+bool mp_diag_enabled()
+{
+    return !active_diag_dir().empty();
+}
+
 std::FILE *mp_diag_open( const char *name )
 {
-    const std::string &dir = mp_diag_dir();
+    const std::string &dir = active_diag_dir();
     if( dir.empty() ) {
         return nullptr;
     }
@@ -921,6 +979,10 @@ static void host_session_reader( int sid, socket_t sock )
                 } else {
                     std::vector<char> d;
                     put_str( d, "Server busy, avatar request dropped. Try again." );
+                    // NOTE (v4.0a-226): this send runs on the reader thread
+                    // without a per-socket send lock, while the main thread
+                    // may be writing a snapshot to the same socket. Rare path
+                    // (avatar queue full); accepted for host + 1 client.
                     send_all( sock, encode_frame( frame::AVATAR_DENIED, d ) );
                 }
             }
@@ -1424,6 +1486,35 @@ void host_drop_session( int sid )
 #endif
 }
 
+void host_kick_session( int sid, const std::string &reason )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return;
+    }
+    std::vector<char> payload;
+    put_str( payload, reason );
+    // Best effort: the client may already be gone. The reader thread still
+    // owns the close and unregisters the session.
+    send_all( it->second, encode_frame( frame::BYE, payload ) );
+#ifdef _WIN32
+    ::shutdown( static_cast<SOCKET>( it->second ), SD_BOTH );
+#else
+    ::shutdown( it->second, SHUT_RDWR );
+#endif
+}
+
+bool client_kicked()
+{
+    return state.client_kicked_flag;
+}
+
+std::string client_kick_reason()
+{
+    return state.client_kick_reason_text;
+}
+
 std::vector<int> host_heartbeat_tick( const std::function<bool( int )> &busy )
 {
     std::vector<int> dead;
@@ -1760,6 +1851,13 @@ std::vector<int> host_session_ids()
 
 bool host_send_snapshot_to_sid( int sid, const snapshot &snap )
 {
+    // NOTE (v4.0a-226): sends run under sessions_mutex. With the 5 s
+    // SO_SNDTIMEO a stuck peer can delay every other send by up to 5 s.
+    // Accepted for host + 1 client; move sends to a per-session writer before
+    // scaling.
+    // NOTE (v4.0a-226): a send failure drops the session silently. Planned
+    // fix: route it through a shared host_end_session() so the chat notice,
+    // heartbeat bookkeeping and reader-owned close are not skipped.
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
     const auto it = state.id2sock.find( sid );
     if( it == state.id2sock.end() ) {
@@ -1851,6 +1949,14 @@ std::string fork_text( const char *msgid )
             { "Craft something first.", "Сначала что-нибудь создайте." },
             { "Disassembly is not available for netplay clients yet.", "Разбор предметов пока недоступен клиентам сетевой игры." },
             { "Disconnect from server", "Отключиться от сервера" },
+            { "The host removed this client: bind a character before sending game input.",
+              "Хост отключил клиента: создайте или выберите персонажа перед отправкой игровых команд." },
+            { "Netplay diagnostics for this host session",
+              "Диагностика netplay для этого хостинга" },
+            { "Start without diagnostics (recommended)",
+              "Запустить без диагностики (рекомендуется)" },
+            { "Start with debug logging",
+              "Запустить с отладочными логами" },
             { "Failed to bind the listener. Port %d may be in use.", "Не удалось занять порт. Возможно, порт %d уже используется." },
             { "Firing mode: %s", "Режим стрельбы: %s" },
             { "HP: %d/%d | %s | %s", "ОЗ: %d/%d | %s | %s" },
@@ -3100,10 +3206,12 @@ bool host_pop_snapshot_request()
 /* ------------------------------------------------------------------ */
 
 /* DDA MP v3.9: diagnostics master switch (rx snapshot size logs through
- * netplay_tiles.log). Flip to true and rebuild to re-enable. */
-/* DDA MP v3.9: diagnostics master switch — built-in (mp_diag_dir).
- * Default ON without any env; DDA_MP_DIAG=0|off disables. */
-static const bool mp_netplay_diag = mp_diag_enabled();
+ * netplay_tiles.log). Off by default; the host menu can switch it on,
+ * DDA_MP_DIAG overrides. */
+static bool mp_netplay_diag_on()
+{
+    return mp_diag_enabled();
+}
 
 static void client_run( socket_t sock )
 {
@@ -3317,7 +3425,7 @@ static void client_run( socket_t sock )
                     // loop sees later.
                     {
                         static int mp_rx_log = 0;
-                        if( mp_netplay_diag && mp_rx_log < 120 ) {
+                        if( mp_netplay_diag_on() && mp_rx_log < 120 ) {
                             ++mp_rx_log;
                             std::size_t lit = 0;
                             for( const tile_cell &t : snap.tiles ) {
@@ -3626,6 +3734,19 @@ static void client_run( socket_t sock )
             // one that keeps the session alive.
             client_send_on( sock, frame::PONG, {} );
         } else if( op == frame::BYE ) {
+            // DDA MP v4.0a-226: a BYE payload means the host removed this
+            // client on purpose. Remember the reason so the UI can show it and
+            // return to the main menu instead of offering a reconnect.
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            if( payload.size() >= 2 ) {
+                const std::string reason = r.get_str();
+                if( r.ok && !reason.empty() ) {
+                    state.client_kicked_flag = true;
+                    state.client_kick_reason_text = reason;
+                }
+            }
             break;
         }
     }
@@ -3699,10 +3820,15 @@ bool client_connect( const std::string &address_, int port )
     }
 
     state.deny_reason.clear();
+    state.client_kicked_flag = false;
+    state.client_kick_reason_text.clear();
     state.client_address = string_format( "%s:%d", host, port );
     state.last_address = state.client_address;
     state.connected = true;
     state.client_sock = sock;
+    // NOTE (v4.0a-226): client sends have no SO_SNDTIMEO, unlike accepted host
+    // sockets. A frozen host can block a send on the UI thread. Accepted for
+    // host + 1 client; add a send timeout or a writer thread before scaling.
     state.client_thread = std::thread( [] { client_run( state.client_sock ); } );
 
     // HELLO

@@ -136,9 +136,11 @@ avatar. This is why extra clients do not require new code paths.
 
 ### Diagnostics
 
-Netplay ships with its own diagnostics folder (`%TEMP%\opencode\ddadiag` by
-default) rather than writing into the game directory. `DDA_MP_DIAG=0` disables
-it, `DDA_MP_DIAG=<dir>` redirects it.
+Diagnostics are off by default. When the host starts a network world it chooses
+whether to write debug logs for that session; the logs go to
+`%TEMP%\opencode\ddadiag`, never inside the game folder. `DDA_MP_DIAG=<dir>`
+forces them on and redirects the folder; `DDA_MP_DIAG=0` forces them off and
+overrides the menu choice.
 
 ---
 

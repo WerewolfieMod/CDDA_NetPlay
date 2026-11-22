@@ -257,6 +257,19 @@ void show_host_dialog()
             break;
         } else if( action == "CONFIRM" ) {
             if( !host_is_running() ) {
+                // DDA MP v4.0a-226: diagnostics used to be on for every build.
+                // They now cost disk I/O, so the host chooses per session.
+                uilist diag_menu;
+                diag_menu.text = netplay::fork_text( "Netplay diagnostics for this host session" );
+                diag_menu.addentry( 0, true, 'n',
+                                    netplay::fork_text( "Start without diagnostics (recommended)" ) );
+                diag_menu.addentry( 1, true, 'd',
+                                    netplay::fork_text( "Start with debug logging" ) );
+                diag_menu.query();
+                if( diag_menu.ret < 0 ) {
+                    continue;
+                }
+                netplay::set_diag_enabled( diag_menu.ret == 1 );
                 if( netplay::host_start( netplay::DEFAULT_PORT ) ) {
                 } else {
                     popup( string_format( netplay::fork_text( "Failed to bind the listener. Port %d may be in use." ), DEFAULT_PORT ) );
@@ -275,14 +288,17 @@ void show_host_dialog()
 static std::string fat_client_loaded_world;
 
 /* DDA MP v3.9: diagnostics master switch (fat-load notes, tiles frame
- * traces, view probes) - built-in (mp_diag_dir). Default ON without any
- * env; DDA_MP_DIAG=0|off disables. */
-static const bool mp_netplay_diag = mp_diag_enabled();
+ * traces, view probes) - built-in (mp_diag_dir). Off by default; the host
+ * menu can switch it on, DDA_MP_DIAG overrides. */
+static bool mp_netplay_diag_on()
+{
+    return mp_diag_enabled();
+}
 
 // Appends to netplay_tiles.log (same channel as the replay renderer trace).
 static void mp_fat_log( const std::string &msg )
 {
-    if( !mp_netplay_diag ) {
+    if( !mp_netplay_diag_on() ) {
         return;
     }
     try {
@@ -1490,7 +1506,7 @@ static bool mp_key_action_parity()
  * compiled, gated by DDA_MP_DIAG at runtime. */
 static void mp_inv_log( const std::string &msg )
 {
-    if( !mp_netplay_diag ) {
+    if( !mp_netplay_diag_on() ) {
         return;
     }
     try {
@@ -5319,7 +5335,7 @@ void run_view_loop()
     // Diagnostics trace for the tileset replay renderer. Written next to the
     // exe when the game is launched without a changed working dir.
     static auto mp_tlog = []( const std::string & msg ) {
-        if( !mp_netplay_diag ) {
+        if( !mp_netplay_diag_on() ) {
             return;
         }
         try {
@@ -6156,7 +6172,7 @@ void run_view_loop()
                 ensure_window( snap.width, snap.height );
                 // DDA MP diag: when did the client actually adopt a picture
                 // (signature of a few cells tells changed frames apart).
-                if( mp_netplay_diag ) {
+                if( mp_netplay_diag_on() ) {
                     static int mp_rx_count = 0;
                     static std::size_t mp_last_hash = 0;
                     std::size_t mp_hash = 1469598103934665603ull;
@@ -7558,6 +7574,13 @@ void run_view_loop()
         }
 
         if( voluntary_quit ) {
+            break;
+        }
+        if( netplay::client_kicked() ) {
+            // DDA MP v4.0a-226: the host removed this client on purpose.
+            // Explain why and return to the main menu without a reconnect
+            // prompt.
+            popup( "%s", netplay::fork_text( netplay::client_kick_reason().c_str() ) );
             break;
         }
         const std::string addr = client_last_address();
