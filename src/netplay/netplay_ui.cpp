@@ -2225,6 +2225,48 @@ static void mp_run_host_inventory( const std::string &text )
     }
 }
 
+/* DDA MP v4.0a-235: the host's "Wield what?" / "Wear what?" menus. The client
+ * runs the same inventory selector on its mirror and sends only the chosen
+ * item's command, instead of opening the whole inventory with its row menu. */
+static void mp_run_equip_select( int key, const std::string &title,
+                                 const std::string &hint )
+{
+    try {
+        ui_adaptor mp_session_blocker( ui_adaptor::disable_uis_below{} );
+        if( !mp_native_avatar_ready ) {
+            mp_inv_log( "equip: no character mirror yet" );
+            return;
+        }
+        avatar &viewer = get_avatar();
+        inventory_selector_preset inv_preset;
+        inventory_pick_selector sel( viewer, inv_preset );
+        sel.set_title( title );
+        sel.set_hint( hint );
+        sel.set_display_stats( false );
+        sel.clear_items();
+        sel.add_character_items( viewer );
+        if( sel.empty() ) {
+            popup( _( "You have nothing suitable." ) );
+            return;
+        }
+        item_location chosen = sel.execute();
+        if( !chosen ) {
+            return;
+        }
+        const std::string uid = chosen->get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            mp_inv_log( "equip: item has no mp_uid, ignored" );
+            return;
+        }
+        netplay::client_send_inventory_uid( uid, key );
+        mp_inv_log( string_format( "equip: uid key=%c", static_cast<char>( key ) ) );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "equip error: " ) + e.what() );
+    } catch( ... ) {
+        mp_inv_log( "equip error: unknown" );
+    }
+}
+
 /* DDA MP v4.0a-159: 't' opens the throw-item selection (like the host's
  * avatar_action::plthrow -> game_menus::inv::titled_menu( "Throw item" )),
  * not the general inventory. Picking an item starts the throw reticle. */
@@ -4300,10 +4342,8 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             break;
         case ACTION_DROP:
         case ACTION_EAT:
-        case ACTION_WEAR:
         case ACTION_TAKE_OFF:
         case ACTION_READ:
-        case ACTION_WIELD:
         case ACTION_USE:
         case ACTION_RELOAD_ITEM:
         case ACTION_RELOAD_WEAPON:
@@ -4316,6 +4356,17 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         case ACTION_ORGANIZE:
         case ACTION_ITEMACTION:
             mp_run_host_inventory( inv_text );
+            break;
+        case ACTION_WIELD:
+            // DDA MP v4.0a-235: the host's "Wield what?" list, not the whole
+            // inventory with its row menu.
+            mp_run_equip_select( 'w', _( "Wield what?" ),
+                                 _( "Choose an item to wield" ) );
+            break;
+        case ACTION_WEAR:
+            // DDA MP v4.0a-235: the host's "Wear what?" list.
+            mp_run_equip_select( 'W', _( "Wear what?" ),
+                                 _( "Choose an item to wear" ) );
             break;
         case ACTION_CAST_SPELL:
             mp_run_spellbook( false );
@@ -4912,7 +4963,12 @@ static void mp_native_apply_avatar_json()
             you.view_offset = keep_off;
             applied = json;
             mp_native_avatar_ready = true;
-            mp_inv_log( "native: avatar mirror applied" );
+            mp_inv_log( string_format( "native: avatar mirror applied armed=%d weapon=%s worn=%d top=%d",
+                                       you.is_armed() ? 1 : 0,
+                                       you.get_wielded_item() ?
+                                       you.get_wielded_item()->tname().c_str() : "-",
+                                       static_cast<int>( you.worn.size() ),
+                                       static_cast<int>( you.inv_dump().size() ) ) );
             return;
         } catch( const std::exception &e ) {
             mp_inv_log( std::string( "native: avatar mirror error " ) + e.what() );
