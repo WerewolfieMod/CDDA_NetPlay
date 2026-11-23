@@ -411,6 +411,14 @@ bind_result permanent_render_target_bind( const SDL_Renderer_Ptr &renderer, SDL_
         renderer_boundary_signal_recovery_required();
         return bind_result::failed_in_switch;
     }
+    // DDA MP v4.0a-254: do not issue a redundant target switch. The SDL3 GPU
+    // renderer crashed on some drivers when SDL_SetRenderTarget() was called
+    // while the requested target was already bound; ImGui's end_frame can
+    // leave the null target bound, and the display-buffer scope then issued a
+    // no-op switch into the crashed backend path.
+    if( SDL_GetRenderTarget( renderer.get() ) == target ) {
+        return bind_result::ok;
+    }
     const bool failed = printErrorIf( !SDL_SetRenderTarget( renderer.get(), target ),
                                       "SDL_SetRenderTarget failed" );
     if( failed ) {
