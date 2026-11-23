@@ -870,6 +870,43 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
                 out.tiles[mk.first].marker = mk.second;
             }
         }
+        // DDA MP v4.0a-248: vehicles in the whole visible range, not just the
+        // 49x32 frame. The client draws them with the tileset vpart override;
+        // without this a car outside the frame only appeared after pressing x
+        // (which streams a frame centred on it).
+        const auto &mp_viscache = here.get_cache_ref( center.z() ).visibility_cache;
+        constexpr int MP_VEH_R = 60;
+        for( int dy = -MP_VEH_R; dy <= MP_VEH_R; dy++ ) {
+            for( int dx = -MP_VEH_R; dx <= MP_VEH_R; dx++ ) {
+                const tripoint_bub_ms p = center + tripoint_rel_ms( dx, dy, 0 );
+                if( !here.inbounds( p ) ) {
+                    continue;
+                }
+                const lit_level mp_ll = mp_viscache[p.x()][p.y()];
+                if( mp_ll == lit_level::BLANK ) {
+                    continue;
+                }
+                const optional_vpart_position ovp = here.veh_at( p );
+                if( !ovp ) {
+                    continue;
+                }
+                const vehicle &veh = ovp->vehicle();
+                const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
+                if( vd.id.is_null() ) {
+                    continue;
+                }
+                snapshot::vehicle_part_frame f;
+                const tripoint_abs_ms ap = here.get_abs( p );
+                f.ax = ap.x();
+                f.ay = ap.y();
+                f.az = ap.z();
+                f.id = "vp_" + vd.id.str();
+                f.variant = vd.variant.id;
+                f.sub = vd.is_open ? 1 : vd.is_broken ? 2 : 0;
+                f.rot = static_cast<uint8_t>( angle_to_dir4( veh.face.dir() - 270_degrees ) );
+                out.vehicle_parts.push_back( std::move( f ) );
+            }
+        }
     }
 #endif
 
@@ -1174,8 +1211,9 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
     // travels with the frame so the client's reticle stays exact.
     if( viewer != nullptr && center == viewer->pos_bub() ) {
         const point off = netplay::host_snapshot_view( sid );
-        if( off.x != 0 || off.y != 0 ) {
-            center += tripoint_rel_ms( off.x, off.y, 0 );
+        const int offz = netplay::host_snapshot_view_z( sid );
+        if( off.x != 0 || off.y != 0 || offz != 0 ) {
+            center += tripoint_rel_ms( off.x, off.y, offz );
             view_dx = off.x;
             view_dy = off.y;
         }

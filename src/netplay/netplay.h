@@ -426,6 +426,19 @@ struct snapshot {
         std::vector<item_desc> items;
     };
     std::vector<item_tile> item_tiles;
+    /// DDA MP v4.0a-248: vehicle parts in the avatar's visible range, not just
+    /// inside the streamed frame. The mirror map has no vehicle objects, so the
+    /// client draws these through the tileset's vpart override.
+    struct vehicle_part_frame {
+        int ax = 0;
+        int ay = 0;
+        int az = 0;
+        std::string id;       // "vp_<part>" (no variant)
+        std::string variant;
+        uint8_t sub = 0;      // 1 = open, 2 = broken, 0 = closed
+        uint8_t rot = 0;      // angle_to_dir4 value
+    };
+    std::vector<vehicle_part_frame> vehicle_parts;
 };
 
 /// One keyboard pseudo-event from the client.
@@ -746,6 +759,8 @@ bool host_pop_snapshot_request();
 /// client with its last SNAP_REQ. The host builds the streamed frame around
 /// avatar + offset, so the client's look/fire cursor can scroll the camera.
 point host_snapshot_view( int sid );
+/// DDA MP v4.0a-248: vertical look offset requested by the session.
+int host_snapshot_view_z( int sid );
 
 /* ---- DDA MP v4.0 avatar protocol (game glue in netplay_world.cpp) ---- */
 
@@ -937,7 +952,7 @@ void overlay_end();
 /// Ask the host to send its current picture right away. The host streams
 /// snapshots only on its own turn, so a freshly-loaded client needs this to
 /// see anything before somebody presses a key. Safe to call often.
-void client_request_snapshot( int view_dx = 0, int view_dy = 0 );
+void client_request_snapshot( int view_dx = 0, int view_dy = 0, int view_dz = 0 );
 /// DDA MP v4.0a-94 test hook: post-connect join flow without the dialog.
 void client_bootstrap_session( const std::string &nick );
 /// Send an input batch upstream.

@@ -44,6 +44,7 @@
 #include "flat_set.h" // IWYU pragma: keep
 #include "fungal_effects.h"
 #include "game.h"
+#include "gates.h"
 #include "game_constants.h"
 #include "game_inventory.h"
 #include "handle_liquid.h"
@@ -1419,7 +1420,7 @@ void iexamine::controls_gate( Character &you, const tripoint_bub_ms &examp )
         none( you, examp );
         return;
     }
-    g->open_gate( examp );
+    gates::open_gate( examp, you );
 }
 
 bool iexamine::can_hack( Character &you )

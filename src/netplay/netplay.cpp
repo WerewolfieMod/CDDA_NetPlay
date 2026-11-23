@@ -429,6 +429,7 @@ struct netplay_state {
     /* DDA MP v4.0a-232: view offset (tiles from the avatar) the client wants
      * the streamed frame centred on. Look/fire camera scrolling. */
     std::map<int, std::pair<int, int>> client_view_offsets;
+    std::map<int, int> client_view_z;
     std::vector<std::vector<char>> client_out;
     std::mutex client_out_mutex;
 
@@ -961,9 +962,14 @@ static void host_session_reader( int sid, socket_t sock )
                 r.size = payload.size();
                 const int dx = static_cast<int>( r.get_u16() ) - 32768;
                 const int dy = static_cast<int>( r.get_u16() ) - 32768;
+                int dz = 0;
+                if( payload.size() >= 6 ) {
+                    dz = static_cast<int>( r.get_u16() ) - 32768;
+                }
                 if( r.ok ) {
                     std::lock_guard<std::mutex> lk( state.view_mutex );
                     state.client_view_offsets[sid] = { dx, dy };
+                    state.client_view_z[sid] = dz;
                 }
             }
             state.snap_request_pending = true;
@@ -1752,6 +1758,20 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
                 put_u16( p, static_cast<uint16_t>( std::max( 0, std::min( 65535, d.count ) ) ) );
                 put_u32( p, static_cast<uint32_t>( std::max( 0, std::min( 1000000, d.damage ) ) ) );
             }
+        }
+    }
+    // DDA MP v4.0a-248: vehicle parts in the visible range (magic "MPVP").
+    if( !snap.vehicle_parts.empty() ) {
+        put_u32( p, 0x5056504Du ); // "MPVP" in LE byte order
+        put_u16( p, static_cast<uint16_t>( std::min<size_t>( snap.vehicle_parts.size(), 65535 ) ) );
+        for( const snapshot::vehicle_part_frame &vp : snap.vehicle_parts ) {
+            put_i32( p, vp.ax );
+            put_i32( p, vp.ay );
+            put_i32( p, vp.az );
+            put_str8( p, vp.id );
+            put_str8( p, vp.variant );
+            p.push_back( static_cast<char>( vp.sub ) );
+            p.push_back( static_cast<char>( vp.rot ) );
         }
     }
     // Optional tileset replay payload. Append only when it matches 1:1 with
@@ -3464,6 +3484,13 @@ point host_snapshot_view( int sid )
     return point( it->second.first, it->second.second );
 }
 
+int host_snapshot_view_z( int sid )
+{
+    std::lock_guard<std::mutex> lk( state.view_mutex );
+    const auto it = state.client_view_z.find( sid );
+    return it == state.client_view_z.end() ? 0 : it->second;
+}
+
 /* ------------------------------------------------------------------ */
 /* client                                                              */
 /* ------------------------------------------------------------------ */
@@ -3558,6 +3585,30 @@ static void client_run( socket_t sock )
                     }
                     if( ir.ok ) {
                         r.off = ir.off;
+                    }
+                }
+                // DDA MP v4.0a-248: wide vehicle-part section, magic "MPVP".
+                if( r.ok && r.off + 6 <= body.size() &&
+                    body[r.off + 0] == 'M' && body[r.off + 1] == 'P' &&
+                    body[r.off + 2] == 'V' && body[r.off + 3] == 'P' ) {
+                    reader vr;
+                    vr.data = body.data();
+                    vr.size = body.size();
+                    vr.off = r.off + 4;
+                    const uint16_t mp_nvp = vr.get_u16();
+                    for( uint16_t i = 0; i < mp_nvp && vr.ok; i++ ) {
+                        snapshot::vehicle_part_frame vp;
+                        vp.ax = static_cast<int>( vr.get_i32() );
+                        vp.ay = static_cast<int>( vr.get_i32() );
+                        vp.az = static_cast<int>( vr.get_i32() );
+                        vp.id = vr.get_str8();
+                        vp.variant = vr.get_str8();
+                        vp.sub = vr.get_u8();
+                        vp.rot = vr.get_u8();
+                        snap.vehicle_parts.push_back( std::move( vp ) );
+                    }
+                    if( vr.ok ) {
+                        r.off = vr.off;
                     }
                 }
                 if( r.ok ) {
@@ -4478,16 +4529,18 @@ void client_send_keys( const std::vector<key_event> &keys )
     }
 }
 
-void client_request_snapshot( int view_dx, int view_dy )
+void client_request_snapshot( int view_dx, int view_dy, int view_dz )
 {
     if( !state.connected ) {
         return;
     }
-    // DDA MP v4.0a-232: carry the wanted view offset (tiles from the avatar)
-    // so the host can centre the frame on the look/fire cursor.
+    // DDA MP v4.0a-232/248: carry the wanted view offset (tiles from the
+    // avatar) so the host can centre the frame on the look/fire cursor,
+    // including one z-level up/down while looking.
     std::vector<char> p;
     put_u16( p, static_cast<uint16_t>( std::max( -30000, std::min( 30000, view_dx ) ) + 32768 ) );
     put_u16( p, static_cast<uint16_t>( std::max( -30000, std::min( 30000, view_dy ) ) + 32768 ) );
+    put_u16( p, static_cast<uint16_t>( std::max( -300, std::min( 300, view_dz ) ) + 32768 ) );
     if( !client_send_on( state.client_sock, frame::SNAP_REQ, p ) ) {
         // Sending failed: the session is dead (same policy as KEYS).
         state.stop_client();

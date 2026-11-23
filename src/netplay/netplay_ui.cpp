@@ -1150,6 +1150,12 @@ static int mp_last_spell_dx = 0;
 static int mp_last_spell_dy = 0;
 static int mp_cursor_dx = 0;
 static int mp_cursor_dy = 0;
+/// DDA MP v4.0a-248: vertical look offset (x can look one z-level up/down).
+static int mp_view_dz = 0;
+/// DDA MP v4.0a-248: 's' shows the host's "Smash where?" prompt and waits for
+/// a direction key (no tile cursor, like choose_direction()).
+static bool mp_smash_prompt = false;
+static std::string mp_smash_text;
 /// DDA MP v4.0a-246: the fire cursor is aimed with a reach weapon (spear)
 /// rather than a gun; confirm sends a reach attack instead of a shot.
 static bool mp_fire_reach = false;
@@ -1168,7 +1174,8 @@ static bool mp_cursor_target( const snapshot &snap, tripoint_abs_ms &ap,
     // own mirror map), while aiming keeps the camera on the character.
     const int rdx = mp_throw_active ? mp_throw_dx : mp_cursor_dx;
     const int rdy = mp_throw_active ? mp_throw_dy : mp_cursor_dy;
-    ap = get_avatar().pos_abs() + tripoint_rel_ms( rdx, rdy, 0 );
+    const int rdz = ( !mp_throw_active && mp_cursor == mp_cursor_mode::look ) ? mp_view_dz : 0;
+    ap = get_avatar().pos_abs() + tripoint_rel_ms( rdx, rdy, rdz );
     map &here = get_map();
     lp = here.get_bub( ap );
     return here.inbounds( lp );
@@ -4258,6 +4265,7 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_cursor = mp_cursor_mode::look;
             mp_cursor_dx = 0;
             mp_cursor_dy = 0;
+            mp_view_dz = 0;
             break;
         case ACTION_EXAMINE: {
             // DDA MP v4.0a-246: a mechanical winch asks "Use the ...?" on the
@@ -4533,13 +4541,13 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             break;
         }
         case ACTION_SMASH: {
-            // DDA MP v4.0a-246: the host asks "Smash where?". Use the client's
-            // own visible cursor (arrow keys, Enter, Esc/5 cancels) instead of
-            // a blocking local choose_adjacent() prompt.
-            mp_cursor = mp_cursor_mode::smash;
-            mp_cursor_dx = 1;
-            mp_cursor_dy = 0;
-            mp_inv_log( "action: smash cursor" );
+            // DDA MP v4.0a-248: the host's choose_direction shows a popup and
+            // waits for a direction key; it does NOT move a tile cursor. Show
+            // the same message and accept the same direction keys.
+            mp_smash_prompt = true;
+            mp_smash_text = string_format( _( "%s (Direction button or mouse)" ),
+                                           _( "Smash where?" ) );
+            mp_inv_log( "action: smash prompt" );
             break;
         }
         case ACTION_CONSTRUCT:
@@ -5337,9 +5345,11 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // DDA MP v4.0a-232: the frame centre may be offset from the avatar while
     // the look/fire camera is scrolled. Keep the mirror avatar at its real
     // world position; only the view moves.
+    const bool mp_looking = mp_cursor == mp_cursor_mode::look;
+    const int mp_av_z = mp_looking ? get_avatar().posz() : center_abs.z();
     const tripoint_abs_ms avatar_abs( center_abs.x() - snap.view_dx,
-                                      center_abs.y() - snap.view_dy, center_abs.z() );
-    mp_native_ensure_bubble( center_abs );
+                                      center_abs.y() - snap.view_dy, mp_av_z );
+    mp_native_ensure_bubble( tripoint_abs_ms( center_abs.x(), center_abs.y(), mp_av_z ) );
     map &here = get_map();
     get_avatar().setpos( avatar_abs, false );
     if( netplay::mp_diag_enabled() ) {
@@ -5504,6 +5514,21 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                 here.add_item_or_charges( p, itm, false );
             }
         }
+    }
+    // DDA MP v4.0a-248: merge the wide vehicle list (vehicles outside the
+    // streamed frame, e.g. at zoom-out or beyond 24 tiles).
+    for( const snapshot::vehicle_part_frame &vp : snap.vehicle_parts ) {
+        std::string id = vp.id;
+        if( id.rfind( "vp_", 0 ) == 0 ) {
+            id.erase( 0, 3 );
+        }
+        mp_cached_vpart vc;
+        vc.pos = tripoint_abs_ms( vp.ax, vp.ay, vp.az );
+        vc.id = std::move( id );
+        vc.variant = vp.variant;
+        vc.sub = vp.sub;
+        vc.rot = vp.rot;
+        mp_vparts_cache.push_back( std::move( vc ) );
     }
     static const bool mp_creatures_on = []() {
         const char *v = std::getenv( "DDA_MP_NATIVE_CREATURES" );
@@ -6169,6 +6194,8 @@ void run_view_loop()
     static int mp_pick_gen = 0;
     static std::vector<point> mp_pick_tiles;
     static int mp_pick_sel = 0;
+    // DDA MP v4.0a-248: the smash prompt state lives at file scope so the
+    // action dispatcher can start it.
     // DDA MP v4.0a-10: draw the sidebar in the pixel layer (ImGui) so its
     // position matches the host's exactly and does not depend on the curses
     // grid scale.
@@ -6844,6 +6871,24 @@ void run_view_loop()
             }
             if( mp_native_render_enabled() ) {
                 mp_draw_native_sidebar_bg();
+                // DDA MP v4.0a-248: queue the tileset overlays before the UI
+                // draw. They used to be queued after it, so a static frame
+                // (no camera/snapshot change) never showed the pickup
+                // highlight, the cursor or the streamed vehicle parts until
+                // the map happened to redraw (e.g. after pressing x).
+                if( mp_pick_tiles_active ) {
+                    map &mp_ph0 = get_map();
+                    const tripoint_bub_ms mp_pav0 = get_avatar().pos_bub();
+                    for( const point &c : mp_pick_tiles ) {
+                        const tripoint_bub_ms mp_hp0( mp_pav0.x() + c.x, mp_pav0.y() + c.y,
+                                                      mp_pav0.z() );
+                        if( mp_ph0.inbounds( mp_hp0 ) ) {
+                            g->draw_highlight( mp_hp0 );
+                        }
+                    }
+                }
+                mp_queue_native_vparts();
+                mp_queue_native_cursor( snapshot() );
             }
             ui_manager::redraw();
 
@@ -7457,14 +7502,19 @@ void run_view_loop()
             // freshly stamped canvas (the canvas is stamped earlier in this
             // iteration, so the text survives until the present below).
             // DDA MP v4.0a-86: show the long wait state in the same line.
-            if( !mp_hint_text.empty() || netplay::long_wait_active() ) {
+            if( !mp_hint_text.empty() || netplay::long_wait_active() || mp_smash_prompt ||
+                mp_pick_tiles_active ) {
                 const int mp_hint_w = std::min( TERMX, 48 );
                 if( !mp_hint_win ) {
                     mp_hint_win = catacurses::newwin( 1, mp_hint_w,
                                                       point( std::max( 0, ( TERMX - mp_hint_w ) / 2 ), 0 ) );
                 }
                 werase( mp_hint_win );
-                std::string s = mp_hint_text;
+                std::string s = mp_smash_prompt ? mp_smash_text : mp_hint_text;
+                if( mp_pick_tiles_active && !mp_smash_prompt ) {
+                    s = string_format( _( "%s (Direction button or mouse)" ),
+                                       _( "Pick up items where?" ) );
+                }
                 if( netplay::long_wait_active() ) {
                     s = _( "Long wait mode is on" );
                     if( !mp_hint_text.empty() ) {
@@ -7552,7 +7602,7 @@ void run_view_loop()
                                              MAPSIZE_Y - mp_cam_h / 2 - 1 );
                     mp_cursor_dx = mp_cx - mp_ab.x();
                     mp_cursor_dy = mp_cy - mp_ab.y();
-                    g->ter_view_p = tripoint_bub_ms( mp_cx, mp_cy, mp_ab.z() );
+                    g->ter_view_p = tripoint_bub_ms( mp_cx, mp_cy, mp_ab.z() + mp_view_dz );
                 } else if( mp_have_origin ) {
                     g->ter_view_p = mp_here.get_bub(
                                         tripoint_abs_ms( mp_origin_x, mp_origin_y, mp_origin_z ) );
@@ -8251,6 +8301,45 @@ void run_view_loop()
                 }
                 continue;
             }
+            // DDA MP v4.0a-248: the host's "Smash where?" direction prompt.
+            if( mp_smash_prompt ) {
+                const input_event mp_sm_ev = ctxt.get_raw_input();
+                const int mp_sm_key = mp_sm_ev.get_first_input();
+                if( mp_sm_key == 27 || action == "QUIT" ||
+                    action == "pause" || mp_sm_key == '5' ) {
+                    mp_smash_prompt = false;
+                    continue;
+                }
+                point mp_sm_dir( 0, 0 );
+                bool mp_sm_have = true;
+                if( action == "UP" ) {
+                    mp_sm_dir = point( 0, -1 );
+                } else if( action == "DOWN" ) {
+                    mp_sm_dir = point( 0, 1 );
+                } else if( action == "LEFT" ) {
+                    mp_sm_dir = point( -1, 0 );
+                } else if( action == "RIGHT" ) {
+                    mp_sm_dir = point( 1, 0 );
+                } else if( action == "LEFTUP" ) {
+                    mp_sm_dir = point( -1, -1 );
+                } else if( action == "RIGHTUP" ) {
+                    mp_sm_dir = point( 1, -1 );
+                } else if( action == "LEFTDOWN" ) {
+                    mp_sm_dir = point( -1, 1 );
+                } else if( action == "RIGHTDOWN" ) {
+                    mp_sm_dir = point( 1, 1 );
+                } else {
+                    mp_sm_have = false;
+                }
+                if( mp_sm_have ) {
+                    netplay::client_send_intent( "smash", 0,
+                                                 { mp_sm_dir.x, mp_sm_dir.y } );
+                    mp_inv_log( string_format( "smash: target %d,%d",
+                                               mp_sm_dir.x, mp_sm_dir.y ) );
+                    mp_smash_prompt = false;
+                }
+                continue;
+            }
             // DDA MP v4.0a-150: look/fire cursor. Arrow keys move the reticle,
             // Enter confirms (fire sends the offset to the host), Esc cancels.
             if( mp_cursor != mp_cursor_mode::none ) {
@@ -8259,6 +8348,10 @@ void run_view_loop()
                 if( mp_key == 27 || action == "QUIT" ||
                     ( mp_cursor == mp_cursor_mode::smash &&
                       ( action == "pause" || mp_key == '5' ) ) ) {
+                    if( mp_cursor == mp_cursor_mode::look && mp_view_dz != 0 ) {
+                        mp_view_dz = 0;
+                        netplay::client_request_snapshot( mp_cursor_dx, mp_cursor_dy, 0 );
+                    }
                     mp_cursor = mp_cursor_mode::none;
                     continue;
                 }
@@ -8268,7 +8361,16 @@ void run_view_loop()
                 input_context lctxt( "LOOK", keyboard_mode::keycode );
                 lctxt.register_action( "EXTENDED_DESCRIPTION" );
                 lctxt.register_action( "TOGGLE_FAST_SCROLL" );
+                lctxt.register_action( "LEVEL_UP" );
+                lctxt.register_action( "LEVEL_DOWN" );
                 const std::string look_act = lctxt.input_to_action( mp_ev );
+                if( mp_cursor == mp_cursor_mode::look &&
+                    ( look_act == "LEVEL_UP" || look_act == "LEVEL_DOWN" ) ) {
+                    mp_view_dz = clamp( mp_view_dz + ( look_act == "LEVEL_UP" ? 1 : -1 ),
+                                        -2, 2 );
+                    netplay::client_request_snapshot( mp_cursor_dx, mp_cursor_dy, mp_view_dz );
+                    continue;
+                }
                 if( look_act == "TOGGLE_FAST_SCROLL" ) {
                     mp_look_fast_scroll = !mp_look_fast_scroll;
                     continue;
