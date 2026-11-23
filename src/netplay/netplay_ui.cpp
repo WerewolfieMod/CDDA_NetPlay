@@ -6013,10 +6013,38 @@ static void mp_apply_overmap_block( const netplay::overmap_block &ob )
                                static_cast<int>( ob.notes.size() ) ) );
 }
 
+/* DDA MP v4.0a-247: show a vanilla host prompt on this client and return the
+ * answer. The host is blocked in the matching vanilla UI while we do this. */
+static void mp_run_prompt( const netplay::prompt_request &pr )
+{
+    netplay::prompt_answer ans;
+    ans.id = pr.id;
+    if( pr.type == netplay::prompt_type::query_yn ) {
+        ans.canceled = false;
+        ans.retval = query_yn( "%s", pr.text ) ? 1 : 0;
+    } else {
+        uilist menu;
+        menu.text = pr.text;
+        for( const netplay::prompt_entry &e : pr.entries ) {
+            menu.addentry( e.retval, e.enabled, e.key > 0 ? e.key : 0, e.txt );
+        }
+        if( !pr.entries.empty() ) {
+            menu.selected = clamp( pr.selected, 0, static_cast<int>( pr.entries.size() ) - 1 );
+        }
+        menu.query();
+        ans.canceled = menu.ret < 0;
+        ans.retval = menu.ret;
+        ans.index = menu.selected;
+    }
+    netplay::client_send_prompt_answer( ans );
+    mp_inv_log( string_format( "prompt: type=%d ret=%d idx=%d canceled=%d",
+                               static_cast<int>( pr.type ), ans.retval, ans.index,
+                               ans.canceled ? 1 : 0 ) );
+}
+
 void run_view_loop()
 {
-#if defined(TILES)
-    // Diagnostics trace for the tileset replay renderer. Written next to the
+#if defined(TILES)    // Diagnostics trace for the tileset replay renderer. Written next to the
     // exe when the game is launched without a changed working dir.
     static auto mp_tlog = []( const std::string & msg ) {
         if( !mp_netplay_diag_on() ) {
@@ -6436,6 +6464,15 @@ void run_view_loop()
         int mp_last_rows = -1;
 
         while( client_is_connected() && !voluntary_quit ) {
+            {
+                // DDA MP v4.0a-247: a vanilla host prompt for this session runs
+                // here, on the client, and blocks until answered.
+                netplay::prompt_request mp_pr;
+                if( netplay::client_take_prompt( mp_pr ) ) {
+                    mp_run_prompt( mp_pr );
+                    continue;
+                }
+            }
             {
                 int mp_cols = TERMX;
                 int mp_rows = TERMY;

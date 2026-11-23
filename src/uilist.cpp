@@ -17,6 +17,7 @@
 #include "input.h"
 #include "memory_fast.h"
 #include "output.h"
+#include "netplay/netplay.h"  // v4.0a-247 generic prompt bridge
 #include "sdltiles.h"
 #include "input_popup.h"
 #include "translations.h"
@@ -890,6 +891,35 @@ shared_ptr_fast<uilist_impl> uilist::create_or_get_ui()
 
 shared_ptr_fast<uilist_impl> uilist::query( bool loop, int timeout, bool allow_unfiltered_hotkeys )
 {
+    // DDA MP v4.0a-247: while a session avatar's vanilla action is running on
+    // the host, show its menu on that client and use the returned retval.
+    if( netplay::host_prompt_owner() != 0 ) {
+        std::vector<netplay::prompt_entry> pe;
+        pe.reserve( entries.size() );
+        for( const uilist_entry &e : entries ) {
+            netplay::prompt_entry p;
+            p.txt = e.txt;
+            p.retval = e.retval;
+            p.enabled = e.enabled;
+            p.key = e.hotkey ? e.hotkey->get_first_input() : -1;
+            pe.push_back( std::move( p ) );
+        }
+        if( auto ans = netplay::host_prompt_uilist( text, selected, pe ) ) {
+            if( ans->canceled ) {
+                ret = UILIST_CANCEL;
+                ret_act = "UILIST.QUIT";
+            } else {
+                ret = ans->retval;
+                selected = entries.empty() ? 0 :
+                           clamp( ans->index, 0, static_cast<int>( entries.size() ) - 1 );
+                ret_act = "CONFIRM";
+            }
+            if( !query_setup() ) {
+                return nullptr;
+            }
+            return create_or_get_ui();
+        }
+    }
     input_context ctxt = create_main_input_context();
 
 #if defined(__ANDROID__)

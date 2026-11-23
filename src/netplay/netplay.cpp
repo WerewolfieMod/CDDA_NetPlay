@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
@@ -389,6 +390,16 @@ struct netplay_state {
     std::mutex overmap_mutex;
     overmap_block overmap;
     bool have_overmap = false;
+    /* DDA MP v4.0a-247: generic prompt bridge. One host prompt at a time. */
+    std::mutex prompt_mutex;
+    std::condition_variable prompt_cv;
+    bool prompt_has_answer = false;
+    prompt_answer prompt_result;
+    uint16_t prompt_next_id = 1;
+    /* Client side: prompts waiting to be shown, and the last answer id. */
+    std::mutex client_prompt_mutex;
+    std::deque<prompt_request> client_prompts;
+    uint16_t prompt_answer_id = 0;
     /* DDA MP v4.0a-14: inventory listing text. */
     std::mutex inv_mutex;
     std::string inv_text;
@@ -965,6 +976,23 @@ static void host_session_reader( int sid, socket_t sock )
             if( r.ok && cols > 0 && rows > 0 ) {
                 std::lock_guard<std::mutex> lk( state.view_mutex );
                 state.client_views[sid] = { cols, rows };
+            }
+        } else if( op == frame::PROMPT_RES ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            prompt_answer ans;
+            ans.id = r.get_u16();
+            ans.canceled = r.get_u8() != 0;
+            ans.retval = static_cast<int>( r.get_i32() );
+            ans.index = static_cast<int>( r.get_i32() );
+            if( r.ok ) {
+                {
+                    std::lock_guard<std::mutex> lk( state.prompt_mutex );
+                    state.prompt_result = ans;
+                    state.prompt_has_answer = true;
+                }
+                state.prompt_cv.notify_all();
             }
         } else if( op == frame::AVATAR_LIST_REQ || op == frame::AVATAR_RESUME ||
                    op == frame::AVATAR_PROFILE ) {
@@ -2795,6 +2823,88 @@ bool host_send_overmap_to_sid( int sid, const overmap_block &ob )
     return true;
 }
 
+/* DDA MP v4.0a-247: generic prompt bridge — host side. */
+static bool mp_send_prompt_req( int sid, const prompt_request &pr )
+{
+    std::vector<char> p;
+    put_u16( p, pr.id );
+    p.push_back( static_cast<char>( pr.type ) );
+    put_str8( p, pr.text );
+    put_i32( p, pr.selected );
+    put_u16( p, static_cast<uint16_t>( std::min<size_t>( pr.entries.size(), 65535 ) ) );
+    for( const prompt_entry &e : pr.entries ) {
+        put_str8( p, e.txt );
+        put_i32( p, e.retval );
+        p.push_back( static_cast<char>( e.enabled ? 1 : 0 ) );
+        put_i32( p, e.key );
+    }
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    return send_all( it->second, encode_frame( frame::PROMPT_REQ, p ) );
+}
+
+static std::optional<prompt_answer> mp_wait_prompt_answer( const prompt_request &pr )
+{
+    if( !mp_send_prompt_req( host_prompt_owner(), pr ) ) {
+        return std::nullopt;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 60 );
+    std::unique_lock<std::mutex> lk( state.prompt_mutex );
+    while( std::chrono::steady_clock::now() < deadline ) {
+        if( state.prompt_cv.wait_for( lk, std::chrono::milliseconds( 500 ), [&] {
+        return state.prompt_has_answer && state.prompt_result.id == pr.id;
+        } ) ) {
+            return state.prompt_result;
+        }
+        if( host_session_count() == 0 ) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> host_prompt_query_yn( const std::string &text )
+{
+    if( host_prompt_owner() == 0 || !host_is_running() ) {
+        return std::nullopt;
+    }
+    prompt_request pr;
+    pr.type = prompt_type::query_yn;
+    pr.text = text;
+    {
+        std::lock_guard<std::mutex> lk( state.prompt_mutex );
+        pr.id = state.prompt_next_id++;
+        state.prompt_has_answer = false;
+    }
+    const auto ans = mp_wait_prompt_answer( pr );
+    if( !ans ) {
+        return std::nullopt;
+    }
+    return !ans->canceled && ans->retval != 0;
+}
+
+std::optional<prompt_answer> host_prompt_uilist( const std::string &text, int selected,
+        const std::vector<prompt_entry> &entries )
+{
+    if( host_prompt_owner() == 0 || !host_is_running() ) {
+        return std::nullopt;
+    }
+    prompt_request pr;
+    pr.type = prompt_type::uilist;
+    pr.text = text;
+    pr.selected = selected;
+    pr.entries = entries;
+    {
+        std::lock_guard<std::mutex> lk( state.prompt_mutex );
+        pr.id = state.prompt_next_id++;
+        state.prompt_has_answer = false;
+    }
+    return mp_wait_prompt_answer( pr );
+}
+
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
 {
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
@@ -3895,6 +4005,30 @@ static void client_run( socket_t sock )
                     }
                 }
             }
+        } else if( op == frame::PROMPT_REQ ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            prompt_request pr;
+            pr.id = r.get_u16();
+            pr.type = static_cast<prompt_type>( r.get_u8() );
+            pr.text = r.get_str8();
+            pr.selected = static_cast<int>( r.get_i32() );
+            const uint16_t n = r.get_u16();
+            for( uint16_t i = 0; i < n && r.ok; i++ ) {
+                prompt_entry e;
+                e.txt = r.get_str8();
+                e.retval = static_cast<int>( r.get_i32() );
+                e.enabled = r.get_u8() != 0;
+                e.key = static_cast<int>( r.get_i32() );
+                pr.entries.push_back( std::move( e ) );
+            }
+            if( r.ok ) {
+                std::lock_guard<std::mutex> lk( state.client_prompt_mutex );
+                if( state.client_prompts.size() < 8 ) {
+                    state.client_prompts.push_back( std::move( pr ) );
+                }
+            }
         } else if( op == frame::OVERMAP ) {
             reader r;
             r.data = payload.data();
@@ -4156,6 +4290,30 @@ bool client_take_overmap( overmap_block &out )
     state.overmap = overmap_block();
     state.have_overmap = false;
     return true;
+}
+
+/* DDA MP v4.0a-247: generic prompt bridge — client side. */
+static bool client_send_on( socket_t sock, frame op, const std::vector<char> &payload );
+
+bool client_take_prompt( prompt_request &out )
+{
+    std::lock_guard<std::mutex> lk( state.client_prompt_mutex );
+    if( state.client_prompts.empty() ) {
+        return false;
+    }
+    out = std::move( state.client_prompts.front() );
+    state.client_prompts.pop_front();
+    return true;
+}
+
+bool client_send_prompt_answer( const prompt_answer &ans )
+{
+    std::vector<char> p;
+    put_u16( p, ans.id );
+    p.push_back( static_cast<char>( ans.canceled ? 1 : 0 ) );
+    put_i32( p, ans.retval );
+    put_i32( p, ans.index );
+    return client_send_on( state.client_sock, frame::PROMPT_RES, p );
 }
 
 bool client_take_event( std::string &out, int &msg_type )

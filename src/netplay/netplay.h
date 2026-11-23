@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -120,6 +121,11 @@ enum class frame : int {
     /// DDA MP v4.0a-243: seen overmap tiles around the avatar (stock map UI
     /// and any overmap-based sidebar widget read these).
     OVERMAP = 46,           ///< host -> client: sparse overmap block
+    /// DDA MP v4.0a-247: generic prompt bridge. A vanilla host action running
+    /// for a session avatar sends its UI request here; the client shows the
+    /// same vanilla widget and returns the choice.
+    PROMPT_REQ = 47,        ///< host -> client: prompt request
+    PROMPT_RES = 48,        ///< client -> host: prompt answer
     /// DDA MP v4.1: a single player intent — what the client wants done.
     /// Payload: [str action][i32 generation][u16 n][i32 args[n]][str data].
     /// The host runs it with the session avatar's own engine code; the old
@@ -192,6 +198,31 @@ struct overmap_block {
         std::string text;
     };
     std::vector<note> notes;
+};
+
+/// DDA MP v4.0a-247: one remote UI prompt.
+enum class prompt_type : uint8_t {
+    query_yn = 0,  ///< text only; answer.retval = 1 yes / 0 no
+    uilist = 1     ///< title + entries; answer.retval/index
+};
+struct prompt_entry {
+    std::string txt;
+    int retval = 0;
+    bool enabled = true;
+    int key = -1;      // first input of the entry's hotkey, -1 = none
+};
+struct prompt_request {
+    uint16_t id = 0;
+    prompt_type type = prompt_type::query_yn;
+    std::string text;
+    int selected = 0;
+    std::vector<prompt_entry> entries;
+};
+struct prompt_answer {
+    uint16_t id = 0;
+    bool canceled = true;
+    int retval = 0;
+    int index = 0;
 };
 
 /// DDA MP: one creature in the session avatar's local frame, raw facts for the
@@ -623,6 +654,14 @@ void host_broadcast_event( const std::string &text, int msg_type );
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
 /// DDA MP v4.0a-243: send the seen-overmap block to a session.
 bool host_send_overmap_to_sid( int sid, const overmap_block &om );
+/// DDA MP v4.0a-247: the session whose action is currently executing on the
+/// host (0 = none). Set around client action/intent execution and activities.
+int host_prompt_owner();
+/// Bridge a vanilla host prompt to the owner session. nullopt = no owner/no
+/// answer (caller falls back to its normal local prompt).
+std::optional<bool> host_prompt_query_yn( const std::string &text );
+std::optional<prompt_answer> host_prompt_uilist( const std::string &text, int selected,
+                                                 const std::vector<prompt_entry> &entries );
 /// DDA MP: send local-frame creature facts for the aim panel.
 bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list );
 /// Client side: latest aim target list.
@@ -882,6 +921,10 @@ std::string format_event_text( const std::string &payload );
 bool client_minimap( minimap_frame &out );
 /// DDA MP v4.0a-243: take the latest seen-overmap block (consumed once).
 bool client_take_overmap( overmap_block &out );
+/// DDA MP v4.0a-247: take a pending host prompt (consumed once).
+bool client_take_prompt( prompt_request &out );
+/// Answer a host prompt.
+bool client_send_prompt_answer( const prompt_answer &ans );
 /// DDA MP v4.0a-14: latest inventory listing (copied per call).
 bool client_inventory( std::string &out );
 /// Show a short status hint on the client's screen (empty clears it).

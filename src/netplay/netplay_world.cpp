@@ -946,6 +946,26 @@ bool av_npc_alive( const shared_ptr_fast<npc> &p );
 /* session id -> the npc id of the avatar that session drives (see the
  * avatar-registry section; main thread only) */
 static std::map<int, int> av_sid_to_npc;
+/* DDA MP v4.0a-247: the session whose vanilla action is executing right now.
+ * A host UI called from that action is sent to this client instead of being
+ * shown on the host. */
+static int mp_prompt_sid = 0;
+struct mp_prompt_scope {
+    int prev;
+    explicit mp_prompt_scope( int sid ) : prev( mp_prompt_sid ) {
+        mp_prompt_sid = sid;
+    }
+    ~mp_prompt_scope() {
+        mp_prompt_sid = prev;
+    }
+    mp_prompt_scope( const mp_prompt_scope & ) = delete;
+    mp_prompt_scope &operator=( const mp_prompt_scope & ) = delete;
+};
+
+int host_prompt_owner()
+{
+    return mp_prompt_sid;
+}
 /* DDA MP v4.0a-216: sessions already told that their avatar died. Cleared on
  * every bind, so a respawned character gets its own death notice. */
 static std::map<int, bool> av_death_notified;
@@ -4141,6 +4161,7 @@ void host_pump_client_actions()
         if( !netplay::host_pop_client_action( sid, action ) ) {
             break;
         }
+        mp_prompt_scope mp_ps( sid );
         const auto sid_it = av_sid_to_npc.find( sid );
         if( sid_it == av_sid_to_npc.end() ) {
             continue;
@@ -6059,6 +6080,7 @@ void host_pump_intents()
         // DDA MP v4.0a-142: intents are handled in the requesting session's
         // region (the map-bound ones would otherwise run against the host).
         region_scope scope( in.sid );
+        mp_prompt_scope mp_ps( in.sid );
         // DDA MP v4.0a-131: crafting recipe chosen in the client's own UI.
         if( ( in.action == "craft" || in.action == "craft.all" ) && !in.data.empty() ) {
             npc *av = av_session_npc( in.sid );
@@ -7272,6 +7294,7 @@ void host_note_world_turn()
             // construction, disassembly) are safe as well; engine activity
             // code may pop dialogs, so prompts stay suppressed.
             if( av->activity ) {
+                mp_prompt_scope mp_ps( sid );
                 mp_quiet_remote_data quiet;
                 av->process_activity();
                 if( av_repair_pending[sid] && av->activity.is_null() ) {

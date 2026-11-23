@@ -1,4 +1,5 @@
 #include "output.h"
+#include "netplay/netplay.h"  // v4.0a-247 generic prompt bridge
 
 #include <cctype>
 // IWYU pragma: no_include <sys/errno.h>
@@ -855,6 +856,11 @@ bool query_yn( const std::string &text )
         return result;
     }
 #endif // defined(__ANDROID__)
+    if( netplay::host_prompt_owner() != 0 ) {
+        if( auto answer = netplay::host_prompt_query_yn( text ) ) {
+            return *answer;
+        }
+    }
     const bool force_uc = get_option<bool>( "FORCE_CAPITAL_YN" );
     const auto &allow_key = force_uc ? input_context::disallow_lower_case_or_non_modified_letters
                             : input_context::allow_all_keys;
