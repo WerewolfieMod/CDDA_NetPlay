@@ -4582,61 +4582,92 @@ void host_pump_client_actions()
                 if( it.typeId().str() != row.type ) {
                     continue;
                 }
-                if( craft_reservation::contains_reserved_or_live_craft( it ) ||
-                    !npc_ptr->can_stash( it ) ) {
+                if( craft_reservation::contains_reserved_or_live_craft( it ) ) {
                     break;
+                }
+                // DDA MP v4.0a-237: only a plain "take" has to fit the
+                // inventory. Wielding/wearing from the pickup menu goes
+                // straight from the map (like the host's pickup_selector),
+                // so a backpack that does not fit in the pockets can still be
+                // worn - the old stash check refused it with "You can't carry
+                // anything more.".
+                if( equip == 0 ) {
+                    if( !npc_ptr->can_stash( it ) ) {
+                        break;
+                    }
+                } else if( equip == 1 ) {
+                    const ret_val<void> rv = npc_ptr->can_wield( it );
+                    if( !rv.success() ) {
+                        netplay::host_send_event_to_sid( psid, rv.str(),
+                                                         static_cast<int>( m_info ) );
+                        break;
+                    }
+                } else {
+                    const ret_val<void> rv = npc_ptr->can_wear( it );
+                    if( !rv.success() ) {
+                        netplay::host_send_event_to_sid( psid, rv.str(),
+                                                         static_cast<int>( m_info ) );
+                        break;
+                    }
                 }
                 what.emplace_back( item_location( map_cursor( p ), &it ), it.count() );
                 break;
             }
         }
         if( what.empty() ) {
-            netplay::host_send_event_to_sid(
-                psid, netplay::fork_text( "You can't carry anything more." ), static_cast<int>( m_info ) );
+            if( equip == 0 ) {
+                netplay::host_send_event_to_sid(
+                    psid, netplay::fork_text( "You can't carry anything more." ),
+                    static_cast<int>( m_info ) );
+            }
             continue;
         }
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-            std::fprintf( f, "pickup take sid=%d gen=%d rows=%d what=%d\n",
+            std::fprintf( f, "pickup take sid=%d gen=%d rows=%d what=%d equip=%d\n",
                           psid, generation, static_cast<int>( nodes.size() ),
-                          static_cast<int>( what.size() ) );
+                          static_cast<int>( what.size() ), equip );
             std::fclose( f );
         }
-        // The vanilla pickup activity runs for npcs as of v4.0a-90; finish it
-        // while the bubble is anchored so no item_location outlives the call.
-        static const activity_id mp_act_pickup( "ACT_PICKUP" );
-        npc_ptr->pick_up( what );
-        npc_ptr->set_moves( std::max( npc_ptr->get_moves(), 1000 ) );
-        for( int guard = 0;
-             guard < 100 && npc_ptr->activity && npc_ptr->activity.id() == mp_act_pickup;
-             guard++ ) {
-            npc_ptr->process_activity();
-        }
-        if( npc_ptr->activity && npc_ptr->activity.id() == mp_act_pickup ) {
-            npc_ptr->cancel_activity();
-        }
-        // v4.0a-101: the client asked for the item in hand / worn right away,
-        // like the host's own pickup row (pickup.cpp handle_problematic_pickup).
-        if( equip != 0 && !nodes.empty() ) {
-            const av_pick_row &frow = nodes_it->second[nodes.front()];
-            item *picked = nullptr;
-            for( item *cand : npc_ptr->inv_dump() ) {
-                if( cand != nullptr && cand->typeId().str() == frow.type ) {
-                    picked = cand;
-                    break;
-                }
+        if( equip != 0 ) {
+            // DDA MP v4.0a-237: wield/wear straight from the map with the same
+            // activity the host's pickup selector uses. No stash step, so an
+            // item that does not fit in the pockets can still be taken in
+            // hand or worn.
+            const item_location loc = what.front().first;
+            if( equip == 1 ) {
+                npc_ptr->assign_activity( wield_activity_actor( loc, loc->count() ) );
+            } else {
+                std::vector<item_location> items{ loc };
+                std::vector<int> quantities{ 0 };
+                npc_ptr->assign_activity( wear_activity_actor( items, quantities ) );
             }
-            bool equipped = false;
-            if( picked != nullptr ) {
-                if( equip == 1 ) {
-                    equipped = npc_ptr->wield( *picked );
-                } else if( equip == 2 ) {
-                    equipped = npc_ptr->wear_item( *picked, false ).has_value();
-                }
+            npc_ptr->set_moves( std::max( npc_ptr->get_moves(), 1000 ) );
+            for( int guard = 0; guard < 100 && npc_ptr->activity; guard++ ) {
+                npc_ptr->process_activity();
+            }
+            if( npc_ptr->activity ) {
+                npc_ptr->cancel_activity();
             }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-                std::fprintf( f, "pickup equip sid=%d equip=%d item=%s ok=%d\n",
-                              psid, equip, frow.type.c_str(), equipped ? 1 : 0 );
+                std::fprintf( f, "pickup equip sid=%d equip=%d armed=%d worn=%d\n",
+                              psid, equip, npc_ptr->is_armed() ? 1 : 0,
+                              static_cast<int>( npc_ptr->worn.size() ) );
                 std::fclose( f );
+            }
+        } else {
+            // The vanilla pickup activity runs for npcs as of v4.0a-90; finish
+            // it while the bubble is anchored so no item_location outlives the
+            // call.
+            static const activity_id mp_act_pickup( "ACT_PICKUP" );
+            npc_ptr->pick_up( what );
+            npc_ptr->set_moves( std::max( npc_ptr->get_moves(), 1000 ) );
+            for( int guard = 0;
+                 guard < 100 && npc_ptr->activity && npc_ptr->activity.id() == mp_act_pickup;
+                 guard++ ) {
+                npc_ptr->process_activity();
+            }
+            if( npc_ptr->activity && npc_ptr->activity.id() == mp_act_pickup ) {
+                npc_ptr->cancel_activity();
             }
         }
         // Picking items up takes a turn; count the session as acted.

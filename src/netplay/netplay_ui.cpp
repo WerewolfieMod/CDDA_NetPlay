@@ -6893,6 +6893,22 @@ void run_view_loop()
             // the replay backend (two outlines at once looked different from
             // the host).
             if( mp_native_render_enabled() ) {
+                // DDA MP v4.0a-237: the pickup-tile chooser marks every
+                // candidate with the tileset's "highlight" sprite, exactly like
+                // the host's choose_adjacent_highlight. The replay path had
+                // this; the native path did not, so the client showed the menu
+                // over unhighlighted tiles.
+                if( mp_pick_tiles_active ) {
+                    map &mp_ph = get_map();
+                    const tripoint_bub_ms mp_pav = get_avatar().pos_bub();
+                    for( const point &c : mp_pick_tiles ) {
+                        const tripoint_bub_ms mp_hp( mp_pav.x() + c.x, mp_pav.y() + c.y,
+                                                     mp_pav.z() );
+                        if( mp_ph.inbounds( mp_hp ) ) {
+                            g->draw_highlight( mp_hp );
+                        }
+                    }
+                }
                 mp_queue_native_cursor( snap );
             } else {
                 bool have_target = false;
