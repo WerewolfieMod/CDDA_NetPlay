@@ -7102,6 +7102,31 @@ void run_view_loop()
                            mp_tiles_cache.size() == snap.cells.size() ) {
                     snap.tiles = mp_tiles_cache;
                 }
+                // DDA MP v4.0a-253: the origin/view offsets ride the optional
+                // tile extension. When the host omits it, reuse the cached
+                // origin as well; otherwise the client jumps to world 0,0 for
+                // a frame (black map, cleared car cache) until the next frame.
+                static int mp_tiles_ox = 0;
+                static int mp_tiles_oy = 0;
+                static int mp_tiles_oz = 0;
+                static int mp_tiles_vdx = 0;
+                static int mp_tiles_vdy = 0;
+                static bool mp_tiles_has_origin = false;
+                if( snap.has_origin ) {
+                    mp_tiles_ox = snap.origin_x;
+                    mp_tiles_oy = snap.origin_y;
+                    mp_tiles_oz = snap.origin_z;
+                    mp_tiles_vdx = snap.view_dx;
+                    mp_tiles_vdy = snap.view_dy;
+                    mp_tiles_has_origin = true;
+                } else if( mp_tiles_has_origin ) {
+                    snap.has_origin = true;
+                    snap.origin_x = mp_tiles_ox;
+                    snap.origin_y = mp_tiles_oy;
+                    snap.origin_z = mp_tiles_oz;
+                    snap.view_dx = mp_tiles_vdx;
+                    snap.view_dy = mp_tiles_vdy;
+                }
                 // Dimensions feed the canvas centering below even without the
                 // ASCII window. A valid picture also stops the snapshot
                 // request loop above.
