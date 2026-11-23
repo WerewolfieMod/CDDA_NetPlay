@@ -57,6 +57,11 @@ struct inv_entry_view {
     // mp_uid), so the client's mirror can address the same host item
     // regardless of order or of items appearing/disappearing in between.
     std::string uid;
+    /// DDA MP v4.0a-257: exact host item JSON for ground pickup rows. It
+    /// carries state the flat fields cannot (corpse mtype/pulped flag, itype
+    /// variant, contents, dirtiness details), so the client menu shows the
+    /// same names and badges as the host. Empty for carried-inventory rows.
+    std::string item_json;
 };
 
 /// Header numbers shown above the host inventory (volume/weight/space).
@@ -302,6 +307,8 @@ inline std::string serialize_inv_entries( const std::vector<inv_entry_view> &ent
         out += inv_wire::field( e.can_take ? 1 : 0 );
         out += inv_wire::sep;
         out += inv_wire::clean( e.uid );
+        out += inv_wire::sep;
+        out += inv_wire::clean( e.item_json );
         out += '\n';
     }
     return out;
@@ -382,6 +389,9 @@ inline std::vector<inv_entry_view> parse_inv_entries( const std::string &text )
         }
         if( f.size() > 24 ) {
             e.uid = f[24];
+        }
+        if( f.size() > 25 ) {
+            e.item_json = f[25];
         }
         out.push_back( std::move( e ) );
     }

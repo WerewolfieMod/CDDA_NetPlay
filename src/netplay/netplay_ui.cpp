@@ -1841,6 +1841,12 @@ namespace
 class mp_pickup_preset : public inventory_selector_preset
 {
     public:
+        mp_pickup_preset() {
+            // DDA MP v4.0a-257: use the same persisted pickup layout as the
+            // host (hierarchy/categories), so the client's menu groups rows and
+            // sizes itself like the host's instead of a flat default list.
+            save_state = &pickup_ui_default_state;
+        }
         std::string get_denial( const item_location &loc ) const override {
             if( loc && loc->get_var( "mp_can_take", std::string( "1" ) ) == "0" ) {
                 return _( "You can't carry that." );
@@ -1954,19 +1960,29 @@ static void mp_run_pickup( const std::string &text )
                 continue;
             }
             item it( itype_id( e.id ), calendar::turn );
+            if( !e.item_json.empty() ) {
+                try {
+                    JsonValue jv = json_loader::from_string( e.item_json );
+                    it.deserialize( jv.get_object() );
+                } catch( ... ) {
+                    // Malformed row: keep the flat fallback below.
+                }
+            }
             it.set_var( "mp_node", std::to_string( i ) );
             it.set_var( "mp_can_take", e.can_take ? "1" : "0" );
-            if( e.charges > 0 &&
-                ( it.count_by_charges() || it.is_magazine() || it.is_ammo() || it.is_tool() ) ) {
-                it.charges = e.charges;
+            if( e.item_json.empty() ) {
+                if( e.charges > 0 &&
+                    ( it.count_by_charges() || it.is_magazine() || it.is_ammo() || it.is_tool() ) ) {
+                    it.charges = e.charges;
+                }
+                if( e.damage > 0 ) {
+                    it.set_damage( e.damage );
+                }
+                if( e.filthy ) {
+                    it.set_flag( flag_FILTHY );
+                }
             }
             it.is_favorite = e.favorite;
-            if( e.damage > 0 ) {
-                it.set_damage( e.damage );
-            }
-            if( e.filthy ) {
-                it.set_flag( flag_FILTHY );
-            }
             here.add_item_or_charges( scratch, it, false );
             ++added;
         }

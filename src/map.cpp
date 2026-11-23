@@ -20,6 +20,7 @@
 #include "avatar.h"
 #include "basecamp.h"
 #include "bodypart.h"
+#include "bubble_context.h"
 #include "cached_options.h"
 #include "calendar.h"
 #include "cata_assert.h"
@@ -10179,7 +10180,12 @@ void map::copy_grid( const tripoint_rel_sm &to, const tripoint_rel_sm &from )
 void map::spawn_monsters_submap_group( const tripoint_rel_sm &gp, mongroup &group,
                                        bool ignore_sight )
 {
-    Character &player_character = get_player_character();
+    // DDA MP v4.0a-257: use the current bubble's viewer, not the host avatar.
+    // In a split netplay region the map and the session avatar are a different
+    // world bubble; the host avatar's bubble coordinates there are meaningless,
+    // so the sight check spawned zombies at the wrong distance/place.
+    Character *spawn_ch = current_bubble_context().viewer;
+    Character &player_character = spawn_ch != nullptr ? *spawn_ch : get_player_character();
     const int s_range = std::min( HALF_MAPSIZE_X,
                                   player_character.sight_range( g->light_level( player_character.posz() ) ) );
     int pop = group.population;

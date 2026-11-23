@@ -2674,12 +2674,12 @@ void host_pump_avatar_keys()
             av_send_session_picture( sk.sid, npc_ptr->pos_bub(), npc_ptr.get() );
             break;
         }
-        if( npc_ptr->in_vehicle ) {
-            netplay::host_send_event_to_sid(
-                sk.sid, netplay::fork_text( "You are in a vehicle. Use the vehicle controls to get out." ),
-                static_cast<int>( m_info ) );
-            break;
-        }
+        // DDA MP v4.0a-257: do not refuse walking while `in_vehicle`. A tile
+        // with a boardable vehicle part (a trash can cart, a car trunk, ...)
+        // boards the avatar when it steps on; the old refusal then trapped it
+        // with "use the vehicle controls" even when the part has no controls.
+        // The engine's npc::move_to already unboards the old tile and boards
+        // the new one, exactly like the host player's walk.
         // DDA MP v4.0a-116: walking into a creature is a melee attack, the
         // same rule game::plmove applies (a blocked step would silently drop
         // the key). The attack spends the avatar's own attack cost; the
@@ -4120,6 +4120,17 @@ static void mp_send_pickup_listing( int sid, npc &av,
             e.side_mm = static_cast<int>( units::to_millimeter( it.length() ) );
             e.container = it.is_container();
             e.color_index = netplay::inv_color_index( it.color_in_inventory() );
+            e.damage = it.damage();
+            e.filthy = it.is_filthy();
+            // DDA MP v4.0a-257: the exact item state for the client's menu:
+            // corpse mtype/pulped flag, variant, contents, dirtiness. The flat
+            // fields above cannot reconstruct it.
+            {
+                std::ostringstream mp_item_os;
+                JsonOut mp_item_js( mp_item_os );
+                it.serialize( mp_item_js );
+                e.item_json = mp_item_os.str();
+            }
             const item_category &cat = it.get_category_shallow();
             e.category = cat.name_header();
             e.category_id = cat.get_id().str();
