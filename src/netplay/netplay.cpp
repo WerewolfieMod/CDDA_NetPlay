@@ -1705,6 +1705,23 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
         put_u32( p, static_cast<uint32_t>( c.glyph ) );
         put_i32( p, static_cast<int32_t>( c.color ) );
     }
+    // DDA MP v4.0a-239: item-descriptor section, placed before the optional
+    // sprite payload so the existing exact-fit tile ladder still works.
+    if( !snap.item_tiles.empty() ) {
+        put_u32( p, 0x4D504954u ); // "MPIT"
+        put_u16( p, static_cast<uint16_t>( std::min<size_t>( snap.item_tiles.size(), 65535 ) ) );
+        for( const snapshot::item_tile &it : snap.item_tiles ) {
+            put_u32( p, static_cast<uint32_t>( it.index ) );
+            p.push_back( static_cast<char>( std::min<size_t>( it.items.size(), 255 ) ) );
+            for( const snapshot::item_desc &d : it.items ) {
+                put_str8( p, d.type );
+                put_str8( p, d.variant );
+                put_str8( p, d.mtype );
+                put_u16( p, static_cast<uint16_t>( std::max( 0, std::min( 65535, d.count ) ) ) );
+                put_u32( p, static_cast<uint32_t>( std::max( 0, std::min( 1000000, d.damage ) ) ) );
+            }
+        }
+    }
     // Optional tileset replay payload. Append only when it matches 1:1 with
     // the ascii cells; legacy (shorter) payloads end here, and the reader
     // detects the extension by remaining bytes (backwards compatible).
@@ -3298,6 +3315,36 @@ static void client_run( socket_t sock )
                     c.glyph = static_cast<int>( r.get_u32() );
                     c.color = r.get_i32();
                     snap.cells.push_back( c );
+                }
+                // DDA MP v4.0a-239: item descriptors sit between the cells and
+                // the optional sprite payload. put_u32 writes little-endian, so
+                // 0x4D504954 ("MPIT") lands as T,I,P,M.
+                if( r.ok && r.off + 6 <= body.size() &&
+                    body[r.off + 0] == 'T' && body[r.off + 1] == 'I' &&
+                    body[r.off + 2] == 'P' && body[r.off + 3] == 'M' ) {
+                    reader ir;
+                    ir.data = body.data();
+                    ir.size = body.size();
+                    ir.off = r.off + 4;
+                    const uint16_t mp_nit = ir.get_u16();
+                    for( uint16_t i = 0; i < mp_nit && ir.ok; i++ ) {
+                        snapshot::item_tile it;
+                        it.index = static_cast<int>( ir.get_u32() );
+                        const uint8_t cnt = ir.get_u8();
+                        for( uint8_t k = 0; k < cnt && ir.ok; k++ ) {
+                            snapshot::item_desc d;
+                            d.type = ir.get_str8();
+                            d.variant = ir.get_str8();
+                            d.mtype = ir.get_str8();
+                            d.count = static_cast<int>( ir.get_u16() );
+                            d.damage = static_cast<int>( ir.get_u32() );
+                            it.items.push_back( std::move( d ) );
+                        }
+                        snap.item_tiles.push_back( std::move( it ) );
+                    }
+                    if( ir.ok ) {
+                        r.off = ir.off;
+                    }
                 }
                 if( r.ok ) {
                     // Optional tileset replay extension: present when bytes

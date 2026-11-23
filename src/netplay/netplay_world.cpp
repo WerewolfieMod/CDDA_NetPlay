@@ -595,6 +595,32 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                                 }
                             }
                         }
+                        // DDA MP v4.0a-239: the real items on this tile, so the
+                        // client's native renderer draws the top item, its
+                        // layering contexts, the pile badge and the revival "!"
+                        // with the tile's own light - exactly like the host.
+                        {
+                            snapshot::item_tile mp_it;
+                            mp_it.index = static_cast<int>( out.tiles.size() );
+                            for( const item &gi : here.i_at( p ) ) {
+                                if( mp_it.items.size() >= 8 ) {
+                                    break;
+                                }
+                                snapshot::item_desc d;
+                                const mtype *mon = gi.get_mtype();
+                                d.type = gi.typeId().str();
+                                d.variant = gi.has_itype_variant() ? gi.itype_variant().id : "";
+                                if( gi.typeId() == itype_corpse && mon != nullptr ) {
+                                    d.mtype = mon->id.str();
+                                }
+                                d.count = gi.count();
+                                d.damage = gi.damage();
+                                mp_it.items.push_back( std::move( d ) );
+                            }
+                            if( !mp_it.items.empty() ) {
+                                out.item_tiles.push_back( std::move( mp_it ) );
+                            }
+                        }
                         // DDA MP v3.9.1: stream the layer draws resolved + the
                         // skip-top fact for the seen-item case.
                         bool drawtop = true;

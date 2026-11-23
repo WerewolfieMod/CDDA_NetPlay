@@ -1205,11 +1205,8 @@ static std::vector<std::string> mp_client_aim_lines;
 static std::string mp_char_json_cache;
 static netplay::minimap_frame mp_aim_minimap;
 static std::vector<netplay::aim_target> mp_aim_targets;
-/* DDA MP v4.0a-238: extra tileset sprites the host renderer would draw over a
- * tile but the native client renderer cannot infer from the mirror map:
- * container/item layers (e.g. the dish rack contents), the "more items" badge
- * and the zombie revival indicator. Filled per snapshot, queued per frame. */
-static std::vector<std::pair<tripoint_bub_ms, std::string>> mp_async_overlays;
+/* DDA MP v4.0a-239: item descriptors arrive per frame and are applied to the
+ * mirror map, so the renderer draws items/layers/badges itself. */
 static std::string mp_throw_name;
 static int mp_throw_range = 1;
 static std::string mp_aim_text;
@@ -5100,7 +5097,11 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     you.prepare_map_memory_region(
         here.get_abs( center + tripoint_rel_ms( -snap.width / 2, -snap.height / 2, 0 ) ),
         here.get_abs( center + tripoint_rel_ms( snap.width / 2, snap.height / 2, 0 ) ) );
-    mp_async_overlays.clear();
+    // DDA MP v4.0a-239: streamed item lists, keyed by frame cell index.
+    std::map<int, const snapshot::item_tile *> mp_items_by_tile;
+    for( const snapshot::item_tile &it : snap.item_tiles ) {
+        mp_items_by_tile[it.index] = &it;
+    }
     for( int y = 0; y < snap.height; y++ ) {
         for( int x = 0; x < snap.width; x++ ) {
             const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
@@ -5152,10 +5153,41 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                 you.memorize_symbol( ap, t.mem_sym );
             }
             here.i_clear( p );
-            if( string_starts_with( t.item, "corpse_" ) ) {
-                // The host names monster corpses "corpse_<mtype>"; the real
-                // itype is always "corpse" with the mtype attached, so build
-                // it the same way the engine does.
+            const auto mp_items_it = mp_items_by_tile.find( y * snap.width + x );
+            if( mp_items_it != mp_items_by_tile.end() ) {
+                // DDA MP v4.0a-239: real item descriptors. The native renderer
+                // draws the items, their layering overlays, the pile badge and
+                // the revival "!" itself, with the tile's own light.
+                for( const snapshot::item_desc &d : mp_items_it->second->items ) {
+                    if( d.type.empty() ) {
+                        continue;
+                    }
+                    if( !d.mtype.empty() ) {
+                        const mtype_id mt( d.mtype );
+                        if( mt.is_valid() ) {
+                            here.add_item_or_charges(
+                                p, item::make_corpse( mt, calendar::turn, "" ), false );
+                        }
+                        continue;
+                    }
+                    if( !item::type_is_defined( itype_id( d.type ) ) ) {
+                        continue;
+                    }
+                    item itm( itype_id( d.type ), calendar::turn );
+                    if( !d.variant.empty() ) {
+                        itm.set_itype_variant( d.variant );
+                    }
+                    if( d.count > 1 && ( itm.count_by_charges() || itm.is_magazine() ||
+                                         itm.is_ammo() || itm.is_tool() ) ) {
+                        itm.charges = d.count;
+                    }
+                    if( d.damage > 0 ) {
+                        itm.set_damage( d.damage );
+                    }
+                    here.add_item_or_charges( p, itm, false );
+                }
+            } else if( string_starts_with( t.item, "corpse_" ) ) {
+                // Legacy payload without item descriptors.
                 const mtype_id mt( t.item.substr( 7 ) );
                 if( mt.is_valid() ) {
                     here.add_item_or_charges( p, item::make_corpse( mt, calendar::turn, "" ),
@@ -5167,20 +5199,6 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                     itm.set_itype_variant( t.item_variant );
                 }
                 here.add_item_or_charges( p, itm, false );
-            }
-            // DDA MP v4.0a-238: sprites the host renderer paints over this tile
-            // that the mirror map cannot reproduce. async_anim keeps one sprite
-            // per tile, so the badge / revival indicator wins over a layer.
-            for( const netplay::tile_item_layer &l : t.item_layers ) {
-                if( !l.sprite.empty() ) {
-                    mp_async_overlays.emplace_back( p, l.sprite );
-                    break;
-                }
-            }
-            if( t.flags & 128 ) {
-                mp_async_overlays.emplace_back( p, "zombie_revival_indicator" );
-            } else if( t.flags & 2 ) {
-                mp_async_overlays.emplace_back( p, "highlight_item" );
             }
         }
     }
@@ -6987,32 +7005,19 @@ void run_view_loop()
                 if( mp_pick_tiles_active ) {
                     map &mp_ph = get_map();
                     const tripoint_bub_ms mp_pav = get_avatar().pos_bub();
-                    ImDrawList *mp_hdl = ImGui::GetForegroundDrawList();
-                    const ImU32 mp_hcol = IM_COL32( 255, 235, 80, 230 );
-                    const float mp_hth = std::max( 1.5f, std::min( mp_canvas_tw,
-                                                    mp_canvas_th ) * 0.08f );
                     for( const point &c : mp_pick_tiles ) {
                         const tripoint_bub_ms mp_hp( mp_pav.x() + c.x, mp_pav.y() + c.y,
                                                      mp_pav.z() );
                         if( mp_ph.inbounds( mp_hp ) ) {
+                            // Exactly the host: choose_adjacent_highlight draws
+                            // the tileset's own "highlight" sprite, nothing else.
                             g->draw_highlight( mp_hp );
-                            // The tileset's own highlight sprite is subtle; add
-                            // an outline so the chooser always shows its tiles.
-                            if( mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
-                                const ImVec2 mp_a( mp_canvas_cx + c.x * mp_canvas_tw,
-                                                   mp_canvas_cy + c.y * mp_canvas_th );
-                                mp_hdl->AddRect( mp_a, ImVec2( mp_a.x + mp_canvas_tw,
-                                                               mp_a.y + mp_canvas_th ),
-                                                 mp_hcol, 1.0f, 0, mp_hth );
-                            }
                         }
                     }
                 }
-                // Item layers (container content over furniture), the pile
-                // badge and the revival indicator the host renderer draws.
-                for( const std::pair<tripoint_bub_ms, std::string> &ov : mp_async_overlays ) {
-                    tilecontext->init_draw_async_anim( ov.first, ov.second );
-                }
+                // DDA MP v4.0a-239: the item lists are applied to the mirror
+                // map, so the game's own renderer draws items, layers, the pile
+                // badge and the revival indicator itself.
                 mp_queue_native_cursor( snap );
             } else {
                 bool have_target = false;

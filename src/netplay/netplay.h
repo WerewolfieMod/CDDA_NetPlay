@@ -350,6 +350,22 @@ struct snapshot {
         std::string json;
     };
     std::vector<creature_frame> creatures;
+    /// DDA MP v4.0a-239: real item descriptors for the frame's tiles. The
+    /// native renderer then draws items, container/item layers, the pile badge
+    /// and the zombie revival "!" itself, with the tile's own light - no client
+    /// side approximations.
+    struct item_desc {
+        std::string type;
+        std::string variant;
+        std::string mtype;   // corpse monster type
+        int count = 1;
+        int damage = 0;      // raw damage points, like item::damage()
+    };
+    struct item_tile {
+        int index = 0;       // cell index in the frame: y * width + x
+        std::vector<item_desc> items;
+    };
+    std::vector<item_tile> item_tiles;
 };
 
 /// One keyboard pseudo-event from the client.
