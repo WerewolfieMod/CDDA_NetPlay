@@ -1675,10 +1675,28 @@ static void av_bind_session( int sid, int npc_id )
     mp_round_start = std::chrono::steady_clock::now();
 }
 
+/* DDA MP v4.0a-255: a client profile (or a registry entry saved by an older
+ * build) can carry in_vehicle=true even though the host map has no vehicle
+ * under the avatar: the client's local car is not the host's. The session then
+ * refuses every step with "You are in a vehicle..." while ^ reports "You can't
+ * drive here." Clear the flag whenever no vehicle exists at the avatar tile. */
+static void av_fix_vehicle_state( npc &n )
+{
+    map &here = get_map();
+    if( here.veh_at( n.pos_bub() ) ) {
+        return;
+    }
+    if( n.in_vehicle || n.controlling_vehicle ) {
+        n.in_vehicle = false;
+        n.controlling_vehicle = false;
+    }
+}
+
 static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
 {
     npc_ptr->remove_effect( effect_sleep );
     npc_ptr->wake_up();
+    av_fix_vehicle_state( *npc_ptr );
 }
 
 /* DDA MP v4.0a-214: a malformed client profile must never pop a modal on the
@@ -1877,6 +1895,7 @@ static void host_handle_one_avatar_op( const avatar_op &op )
                     }
                     const tripoint_bub_ms cand( hp.x() + dx, hp.y() + dy, hp.z() );
                     if( !here.inbounds( cand ) || !here.passable( cand ) ||
+                        here.veh_at( cand ) ||
                         get_creature_tracker().creature_at( cand, true ) ) {
                         continue;
                     }
@@ -2630,6 +2649,11 @@ void host_pump_avatar_keys()
         const long long mp_anchor_ms = mp_ms_since( mp_t0 );
         const tripoint_bub_ms mp_from = npc_ptr->pos_bub();
         const tripoint_bub_ms dst = mp_from + dir_it->second;
+        // DDA MP v4.0a-255: drop a stale in_vehicle flag restored from a
+        // client profile (no vehicle at this tile on the host map). Without
+        // this every step is refused with the "use the vehicle controls"
+        // message and ^ says "You can't drive here."
+        av_fix_vehicle_state( *npc_ptr );
         // DDA MP v4.0a-132: driving. The movement keys steer/thrust the
         // vehicle instead of moving the avatar on foot.
         if( npc_ptr->controlling_vehicle ) {
