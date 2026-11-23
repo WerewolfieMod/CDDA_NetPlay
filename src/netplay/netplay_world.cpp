@@ -43,6 +43,7 @@
 #include "effect.h"
 #include "field.h"
 #include "field_type.h"
+#include "flag.h"
 #include "game.h"
 #include "gates.h"
 #include "item.h"
@@ -65,6 +66,7 @@
 #include "ranged.h"
 #include "recipe.h"
 #include "panels.h"
+#include "path_info.h"
 #include "projectile.h"
 #include "messages.h"
 #include "cata_utility.h"
@@ -254,6 +256,20 @@ static std::map<std::string, map_memory> av_mem_store;
 static map_memory &av_mem_for( const npc &n )
 {
     return av_mem_store[n.get_unique_id()];
+}
+
+/* DDA MP v4.0a-259: always-on vehicle control trace. The user's launcher
+ * does not set DDA_MP_DIAG, so the regular diag log is empty; this one line
+ * per ^ / drive key pinpoints whether the host found controls and moved the
+ * vehicle. */
+static void mp_ctrl_log( const std::string &s )
+{
+    if( std::FILE *f = std::fopen( ( PATH_INFO::config_dir() + "netplay_control.log" ).c_str(),
+                                   "a" ) ) {
+        std::fputs( s.c_str(), f );
+        std::fputc( '\n', f );
+        std::fclose( f );
+    }
 }
 
 static void mp_render_memory( const memorized_tile &mt, tile_cell &t )
@@ -620,6 +636,24 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                                 d.count = gi.count();
                                 d.damage = gi.damage();
                                 d.seed = gi.seed;
+                                d.filthy = gi.is_filthy();
+                                if( gi.is_corpse() ) {
+                                    if( gi.has_flag( flag_PULPED ) ) {
+                                        d.corpse_flags |= 1;
+                                    }
+                                    if( gi.has_flag( flag_FIELD_DRESS ) ) {
+                                        d.corpse_flags |= 2;
+                                    }
+                                    if( gi.has_flag( flag_FIELD_DRESS_FAILED ) ) {
+                                        d.corpse_flags |= 4;
+                                    }
+                                    if( gi.has_flag( flag_QUARTERED ) ) {
+                                        d.corpse_flags |= 8;
+                                    }
+                                    if( gi.has_flag( flag_SKINNED ) ) {
+                                        d.corpse_flags |= 16;
+                                    }
+                                }
                                 mp_it.items.push_back( std::move( d ) );
                             }
                             if( !mp_it.items.empty() ) {
@@ -2658,8 +2692,22 @@ void host_pump_avatar_keys()
         // vehicle instead of moving the avatar on foot.
         if( npc_ptr->controlling_vehicle ) {
             if( const optional_vpart_position vp = here.veh_at( npc_ptr->pos_bub() ) ) {
+                const tripoint_abs_ms vp_before = vp->vehicle().pos_abs();
+                const int vel_before = vp->vehicle().velocity;
                 vp->vehicle().pldrive( here, *npc_ptr, dir_it->second.x(),
                                        dir_it->second.y(), 0 );
+                mp_ctrl_log( string_format(
+                                 "drive sid=%d dir=%d,%d veh=%d,%d->%d,%d vel=%d->%d av=%d,%d in=%d",
+                                 sk.sid, dir_it->second.x(), dir_it->second.y(),
+                                 vp_before.x(), vp_before.y(),
+                                 vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
+                                 vel_before, vp->vehicle().velocity,
+                                 npc_ptr->pos_bub().x(), npc_ptr->pos_bub().y(),
+                                 npc_ptr->in_vehicle ? 1 : 0 ) );
+            } else {
+                mp_ctrl_log( string_format( "drive sid=%d no-veh av=%d,%d drv=1",
+                                            sk.sid, npc_ptr->pos_bub().x(),
+                                            npc_ptr->pos_bub().y() ) );
             }
             av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
             npc_ptr->set_moves( av_move_pool[sk.sid] );
@@ -4548,6 +4596,10 @@ void host_pump_client_actions()
                 // move to that part and take control.
                 map &here = get_map();
                 const tripoint_bub_ms pos = av->pos_bub();
+                mp_ctrl_log( string_format( "ctrl sid=%d pos=%d,%d in=%d drv=%d",
+                                            sid, pos.x(), pos.y(),
+                                            av->in_vehicle ? 1 : 0,
+                                            av->controlling_vehicle ? 1 : 0 ) );
                 if( av->controlling_vehicle ) {
                     av->controlling_vehicle = false;
                     netplay::host_send_event_to_sid(
@@ -4573,6 +4625,8 @@ void host_pump_client_actions()
                     }
                 }
                 if( !controls_pos ) {
+                    mp_ctrl_log( string_format( "ctrl sid=%d no-controls pos=%d,%d",
+                                                sid, pos.x(), pos.y() ) );
                     netplay::host_send_event_to_sid(
                         sid, netplay::fork_text( "No vehicle controls found." ),
                         static_cast<int>( m_info ) );
@@ -4580,14 +4634,26 @@ void host_pump_client_actions()
                 }
                 const optional_vpart_position vp = here.veh_at( *controls_pos );
                 if( !vp ) {
+                    mp_ctrl_log( string_format( "ctrl sid=%d controls-tile-no-veh pos=%d,%d",
+                                                sid, controls_pos->x(), controls_pos->y() ) );
                     break;
                 }
+                mp_ctrl_log( string_format(
+                                 "ctrl sid=%d found pos=%d,%d controls=%d,%d veh=%d,%d in=%d",
+                                 sid, pos.x(), pos.y(), controls_pos->x(), controls_pos->y(),
+                                 vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
+                                 av->in_vehicle ? 1 : 0 ) );
                 if( av->in_vehicle && av->pos_bub() != *controls_pos ) {
                     here.unboard_vehicle( av->pos_bub(), false );
                 }
                 av->setpos( here, *controls_pos, false );
                 here.board_vehicle( *controls_pos, av );
                 av->controlling_vehicle = true;
+                mp_ctrl_log( string_format(
+                                 "ctrl sid=%d take pos=%d,%d veh=%d,%d in=%d drv=%d",
+                                 sid, av->pos_bub().x(), av->pos_bub().y(),
+                                 vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
+                                 av->in_vehicle ? 1 : 0, av->controlling_vehicle ? 1 : 0 ) );
                 netplay::host_send_event_fmt_to_sid(
                     sid, "You take control of the %s.", { vp->vehicle().name },
                     static_cast<int>( m_info ) );

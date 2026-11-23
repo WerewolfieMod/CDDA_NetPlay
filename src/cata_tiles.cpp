@@ -4693,7 +4693,12 @@ bool cata_tiles::draw_vpart( const tripoint_bub_ms &p, lit_level ll, int &height
             }
             return ret;
         }
-    } else if( !roof && invisible[0] ) {
+    } else if( !roof && ( invisible[0] || ll == lit_level::MEMORIZED ||
+                          ll == lit_level::DARK ) ) {
+        // DDA MP v4.0a-259: also use the memory sprite for a memorized cell
+        // inside the visible window. The netplay mirror has no vehicle object,
+        // so without this a remembered car simply vanished in the look view
+        // (invisible[0] is false for cells inside the window).
         // try drawing memory if invisible and not overridden
         const memorized_tile &t = get_vpart_memory_at( here.get_abs( p ) );
         std::string_view tid = t.get_dec_id();

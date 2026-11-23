@@ -5529,8 +5529,33 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                     if( !d.mtype.empty() ) {
                         const mtype_id mt( d.mtype );
                         if( mt.is_valid() ) {
-                            here.add_item_or_charges(
-                                p, item::make_corpse( mt, calendar::turn, "" ), false );
+                            item corpse = item::make_corpse( mt, calendar::turn, "" );
+                            // DDA MP v4.0a-259: carry the corpse state that
+                            // removes the "!" revival badge. The host sets the
+                            // PULPED/FIELD_DRESS/... flags during pulping; the
+                            // mirror used to rebuild a fresh revivable corpse.
+                            if( d.damage > 0 ) {
+                                corpse.set_damage( d.damage );
+                            }
+                            if( d.corpse_flags & 1 ) {
+                                corpse.set_flag( flag_PULPED );
+                            }
+                            if( d.corpse_flags & 2 ) {
+                                corpse.set_flag( flag_FIELD_DRESS );
+                            }
+                            if( d.corpse_flags & 4 ) {
+                                corpse.set_flag( flag_FIELD_DRESS_FAILED );
+                            }
+                            if( d.corpse_flags & 8 ) {
+                                corpse.set_flag( flag_QUARTERED );
+                            }
+                            if( d.corpse_flags & 16 ) {
+                                corpse.set_flag( flag_SKINNED );
+                            }
+                            if( d.filthy ) {
+                                corpse.set_flag( flag_FILTHY );
+                            }
+                            here.add_item_or_charges( p, corpse, false );
                         }
                         continue;
                     }
@@ -5550,6 +5575,9 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                     }
                     if( d.damage > 0 ) {
                         itm.set_damage( d.damage );
+                    }
+                    if( d.filthy ) {
+                        itm.set_flag( flag_FILTHY );
                     }
                     here.add_item_or_charges( p, itm, false );
                 }

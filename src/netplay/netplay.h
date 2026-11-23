@@ -430,6 +430,11 @@ struct snapshot {
         int count = 1;
         int damage = 0;      // raw damage points, like item::damage()
         int seed = 0;        // item::seed (stable layering roll)
+        bool filthy = false; // FILTHY flag, so the mirror item reads the same
+        /// Corpse preparation flags (they decide can_revive() and therefore
+        /// the "!" revival badge): bit0 PULPED, bit1 FIELD_DRESS,
+        /// bit2 FIELD_DRESS_FAILED, bit3 QUARTERED, bit4 SKINNED.
+        uint8_t corpse_flags = 0;
     };
     struct item_tile {
         int index = 0;       // cell index in the frame: y * width + x
