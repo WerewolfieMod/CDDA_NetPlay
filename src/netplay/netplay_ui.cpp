@@ -1139,7 +1139,9 @@ enum class mp_cursor_mode : int {
     none = 0,
     look,
     fire,
-    spell
+    spell,
+    /// DDA MP v4.0a-246: the tile the client's 's' will smash.
+    smash
 };
 static mp_cursor_mode mp_cursor = mp_cursor_mode::none;
 static std::string mp_pending_spell;
@@ -1148,6 +1150,9 @@ static int mp_last_spell_dx = 0;
 static int mp_last_spell_dy = 0;
 static int mp_cursor_dx = 0;
 static int mp_cursor_dy = 0;
+/// DDA MP v4.0a-246: the fire cursor is aimed with a reach weapon (spear)
+/// rather than a gun; confirm sends a reach attack instead of a shot.
+static bool mp_fire_reach = false;
 static bool mp_look_fast_scroll = false;
 
 /* Tile under the look/fire/throw reticle. The snapshot origin is the pivot
@@ -1174,8 +1179,19 @@ static void mp_inv_log( const std::string &msg );
 static void mp_begin_client_fire()
 {
     const item_location weapon = get_avatar().get_wielded_item();
-    if( !weapon || !weapon->is_gun() ) {
-        mp_inv_log( "fire: no gun wielded" );
+    if( !weapon ) {
+        mp_inv_log( "fire: nothing wielded" );
+        return;
+    }
+    // DDA MP v4.0a-246: the host's fire() uses a reach weapon (spear) for a
+    // reach attack target UI; mirror that with the client's own reticle.
+    mp_fire_reach = false;
+    if( weapon->is_gun() ) {
+        // gun target UI
+    } else if( weapon->current_reach_range( get_avatar() ).first > 1 ) {
+        mp_fire_reach = true;
+    } else {
+        mp_inv_log( "fire: wielded item is neither a gun nor a reach weapon" );
         return;
     }
     mp_cursor = mp_cursor_mode::fire;
@@ -4243,13 +4259,44 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_cursor_dx = 0;
             mp_cursor_dy = 0;
             break;
-        case ACTION_EXAMINE:
-            // DDA MP v4.0a-181: plain examine triggers the terrain/furniture/
-            // trap action on the host. It used to open the look cursor, which
-            // made the host's examine implementation unreachable from the
-            // action menu.
-            netplay::client_send_client_action( act );
+        case ACTION_EXAMINE: {
+            // DDA MP v4.0a-246: a mechanical winch asks "Use the ...?" on the
+            // host. Ask it here instead and send the confirmed action, so the
+            // prompt appears on the client. Other examine targets still run on
+            // the host.
+            static const std::set<std::string> mp_winches = {
+                "t_gates_mech_control", "t_gates_mech_control_lab",
+                "t_gates_mech_control_lab_2"
+            };
+            map &mp_eh = get_map();
+            const tripoint_bub_ms mp_ep = get_avatar().pos_bub();
+            static const point mp_eoffs[] = {
+                { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+                { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+            };
+            bool mp_winch_found = false;
+            for( const point &off : mp_eoffs ) {
+                const tripoint_bub_ms p( mp_ep + tripoint_rel_ms( off.x, off.y, 0 ) );
+                if( !mp_eh.inbounds( p ) ) {
+                    continue;
+                }
+                if( mp_winches.count( mp_eh.ter( p ).id().str() ) == 0 ) {
+                    continue;
+                }
+                mp_winch_found = true;
+                if( query_yn( _( "Use the %s?" ), mp_eh.tername( p ) ) ) {
+                    netplay::client_send_intent( "use_winch", 0, { off.x, off.y } );
+                    mp_inv_log( string_format( "action: use_winch %d,%d", off.x, off.y ) );
+                }
+                break;
+            }
+            if( !mp_winch_found ) {
+                // DDA MP v4.0a-181: plain examine triggers the terrain/furniture/
+                // trap action on the host.
+                netplay::client_send_client_action( act );
+            }
             break;
+        }
 
         case ACTION_CRAFT:
             mp_run_client_craft( false );
@@ -4486,19 +4533,13 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             break;
         }
         case ACTION_SMASH: {
-            // The host's own 's' asks "Smash where?"; do the same locally and
-            // send the chosen direction (the old path always took the nearest
-            // bashable tile, which is not the host behaviour).
-            const std::optional<tripoint_bub_ms> sp =
-                choose_adjacent( _( "Smash where?" ), false );
-            if( sp ) {
-                const tripoint_rel_ms rel = *sp - get_avatar().pos_bub();
-                if( std::abs( rel.x() ) <= 1 && std::abs( rel.y() ) <= 1 &&
-                    ( rel.x() != 0 || rel.y() != 0 ) ) {
-                    netplay::client_send_intent( "smash", 0, { rel.x(), rel.y() } );
-                    mp_inv_log( string_format( "action: smash %d,%d", rel.x(), rel.y() ) );
-                }
-            }
+            // DDA MP v4.0a-246: the host asks "Smash where?". Use the client's
+            // own visible cursor (arrow keys, Enter, Esc/5 cancels) instead of
+            // a blocking local choose_adjacent() prompt.
+            mp_cursor = mp_cursor_mode::smash;
+            mp_cursor_dx = 1;
+            mp_cursor_dy = 0;
+            mp_inv_log( "action: smash cursor" );
             break;
         }
         case ACTION_CONSTRUCT:
@@ -8178,7 +8219,9 @@ void run_view_loop()
             if( mp_cursor != mp_cursor_mode::none ) {
                 const input_event mp_ev = ctxt.get_raw_input();
                 const int mp_key = mp_ev.get_first_input();
-                if( mp_key == 27 || action == "QUIT" ) {
+                if( mp_key == 27 || action == "QUIT" ||
+                    ( mp_cursor == mp_cursor_mode::smash &&
+                      ( action == "pause" || mp_key == '5' ) ) ) {
                     mp_cursor = mp_cursor_mode::none;
                     continue;
                 }
@@ -8207,28 +8250,64 @@ void run_view_loop()
                 }
                 const int mp_step = mp_look_fast_scroll
                                     ? std::max( 1, get_option<int>( "FAST_SCROLL_OFFSET" ) ) : 1;
+                const bool mp_smash = mp_cursor == mp_cursor_mode::smash;
+                auto mp_smash_move = [&]( int &v, int delta ) {
+                    const int before = v;
+                    v = clamp( v + delta, -1, 1 );
+                    if( mp_cursor_dx == 0 && mp_cursor_dy == 0 ) {
+                        v = before;
+                    }
+                };
                 if( action == "UP" ) {
-                    mp_cursor_dy -= mp_step;
+                    if( mp_smash ) {
+                        mp_smash_move( mp_cursor_dy, -1 );
+                    } else {
+                        mp_cursor_dy -= mp_step;
+                    }
                     continue;
                 }
                 if( action == "DOWN" ) {
-                    mp_cursor_dy += mp_step;
+                    if( mp_smash ) {
+                        mp_smash_move( mp_cursor_dy, 1 );
+                    } else {
+                        mp_cursor_dy += mp_step;
+                    }
                     continue;
                 }
                 if( action == "LEFT" ) {
-                    mp_cursor_dx -= mp_step;
+                    if( mp_smash ) {
+                        mp_smash_move( mp_cursor_dx, -1 );
+                    } else {
+                        mp_cursor_dx -= mp_step;
+                    }
                     continue;
                 }
                 if( action == "RIGHT" ) {
-                    mp_cursor_dx += mp_step;
+                    if( mp_smash ) {
+                        mp_smash_move( mp_cursor_dx, 1 );
+                    } else {
+                        mp_cursor_dx += mp_step;
+                    }
                     continue;
                 }
                 if( action == "CONFIRM" || mp_key == '\n' || mp_key == '\r' ) {
-                    if( mp_cursor == mp_cursor_mode::fire ) {
+                    if( mp_cursor == mp_cursor_mode::smash ) {
                         netplay::client_send_intent(
-                            "fire", 0, { mp_cursor_dx, mp_cursor_dy, 1 } );
-                        mp_inv_log( string_format( "fire: target %d,%d",
+                            "smash", 0, { mp_cursor_dx, mp_cursor_dy } );
+                        mp_inv_log( string_format( "smash: target %d,%d",
                                                    mp_cursor_dx, mp_cursor_dy ) );
+                    } else if( mp_cursor == mp_cursor_mode::fire ) {
+                        if( mp_fire_reach ) {
+                            netplay::client_send_intent(
+                                "reach_attack", 0, { mp_cursor_dx, mp_cursor_dy } );
+                            mp_inv_log( string_format( "reach: target %d,%d",
+                                                       mp_cursor_dx, mp_cursor_dy ) );
+                        } else {
+                            netplay::client_send_intent(
+                                "fire", 0, { mp_cursor_dx, mp_cursor_dy, 1 } );
+                            mp_inv_log( string_format( "fire: target %d,%d",
+                                                       mp_cursor_dx, mp_cursor_dy ) );
+                        }
                     } else if( mp_cursor == mp_cursor_mode::spell ) {
                         mp_last_spell = mp_pending_spell;
                         mp_last_spell_dx = mp_cursor_dx;

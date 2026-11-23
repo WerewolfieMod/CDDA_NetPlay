@@ -44,6 +44,7 @@
 #include "field.h"
 #include "field_type.h"
 #include "game.h"
+#include "gates.h"
 #include "item.h"
 #include "item_group.h"
 #include "itype.h"
@@ -6105,6 +6106,58 @@ void host_pump_intents()
                 } else {
                     netplay::host_send_event_to_sid(
                         in.sid, netplay::fork_text( "There's nothing to smash there." ),
+                        static_cast<int>( m_info ) );
+                }
+                av_send_status( in.sid );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        if( in.action == "reach_attack" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                map &here = get_map();
+                const tripoint_bub_ms target = av->pos_bub() +
+                                               tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                if( here.inbounds( target ) ) {
+                    const std::size_t msg_before = Messages::generation();
+                    av->reach_attack( target );
+                    av_mark_acted( in.sid );
+                    av_send_session_picture( in.sid, av->pos_bub(), av );
+                    mp_forward_new_messages( in.sid, msg_before );
+                }
+                av_send_status( in.sid );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        if( in.action == "use_winch" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                map &here = get_map();
+                const tripoint_bub_ms target = av->pos_bub() +
+                                               tripoint_rel_ms( in.args[0], in.args[1], 0 );
+                static const std::set<std::string> mp_winches = {
+                    "t_gates_mech_control", "t_gates_mech_control_lab",
+                    "t_gates_mech_control_lab_2"
+                };
+                const bool is_winch = here.inbounds( target ) &&
+                                      mp_winches.count( here.ter( target ).id().str() ) > 0;
+                if( is_winch ) {
+                    const std::size_t msg_before = Messages::generation();
+                    gates::open_gate( target, *av );
+                    mp_forward_new_messages( in.sid, msg_before );
+                    av_mark_acted( in.sid );
+                    av_send_session_picture( in.sid, av->pos_bub(), av );
+                } else {
+                    netplay::host_send_event_to_sid(
+                        in.sid, netplay::fork_text( "There is no winch there." ),
                         static_cast<int>( m_info ) );
                 }
                 av_send_status( in.sid );
