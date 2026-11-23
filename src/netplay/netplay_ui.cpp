@@ -5653,6 +5653,32 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // visibility cache only covered the streamed frame, so the sidebar
     // creature list and compass ignored monsters until they came very close.
     mp_native_apply_minimap_visibility();
+    // DDA MP v4.0a-256: make the host's per-cell light byte authoritative for
+    // the streamed frame. The client's own LOS can disagree with the host's
+    // viewer (especially while looking around). When it called a memorized car
+    // cell visible, the native renderer took the live path (no vehicle object
+    // in the mirror) and skipped the memory vpart because invisible[0] was
+    // false - the car vanished in the look view.
+    if( snap.tiles.size() == snap.cells.size() ) {
+        auto &mp_vc = here.access_cache( center.z() ).visibility_cache;
+        const uint8_t mp_ll_mem = static_cast<uint8_t>( static_cast<int>( lit_level::MEMORIZED ) );
+        const uint8_t mp_ll_dark = static_cast<uint8_t>( static_cast<int>( lit_level::DARK ) );
+        const uint8_t mp_ll_blank = static_cast<uint8_t>( static_cast<int>( lit_level::BLANK ) );
+        for( int y = 0; y < snap.height; y++ ) {
+            for( int x = 0; x < snap.width; x++ ) {
+                const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
+                if( t.light != mp_ll_mem && t.light != mp_ll_dark && t.light != mp_ll_blank ) {
+                    continue;
+                }
+                const tripoint_bub_ms p = center + tripoint_rel_ms( x - snap.width / 2,
+                                           y - snap.height / 2, 0 );
+                if( !here.inbounds( p ) ) {
+                    continue;
+                }
+                mp_vc[p.x()][p.y()] = lit_level::MEMORIZED;
+            }
+        }
+    }
     // DDA MP v4.0a-127: refresh the avatar's visible-creature cache. The
     // creature mirror is rebuilt on every snapshot, so a cache from an older
     // frame holds dangling npc/mtype pointers; the compass and the creature
@@ -5855,6 +5881,25 @@ static void mp_force_terrain_redraw()
     if( g->w_terrain ) {
         werase( g->w_terrain );
         wnoutrefresh( g->w_terrain );
+    }
+}
+
+/* DDA MP v4.0a-256: the host's "Smash where?" prompt marks the eight adjacent
+ * tiles with the tileset highlight, like choose_direction(). The client only
+ * showed the text, so there was no visible choice. */
+static void mp_queue_smash_highlights()
+{
+    static const point mp_smash_dirs[] = {
+        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+    };
+    map &here = get_map();
+    const tripoint_bub_ms av = get_avatar().pos_bub();
+    for( const point &c : mp_smash_dirs ) {
+        const tripoint_bub_ms p( av.x() + c.x, av.y() + c.y, av.z() );
+        if( here.inbounds( p ) ) {
+            g->draw_highlight( p );
+        }
     }
 }
 
@@ -6999,6 +7044,8 @@ void run_view_loop()
                             g->draw_highlight( mp_hp0 );
                         }
                     }
+                } else if( mp_smash_prompt ) {
+                    mp_queue_smash_highlights();
                 }
                 mp_queue_native_vparts();
                 mp_queue_native_cursor( snapshot() );
@@ -7006,17 +7053,21 @@ void run_view_loop()
             ui_manager::redraw();
             // DDA MP v4.0a-251: the UI pass may or may not redraw the terrain
             // window, and a static frame never marks it dirty. Re-queue the
-            // pickup highlight and draw the map here, after the UI pass, so the
-            // brackets actually reach the screen while the host is idle.
-            if( mp_native_render_enabled() && mp_pick_tiles_active ) {
-                map &mp_ph1 = get_map();
-                const tripoint_bub_ms mp_pav1 = get_avatar().pos_bub();
-                for( const point &c : mp_pick_tiles ) {
-                    const tripoint_bub_ms mp_hp1( mp_pav1.x() + c.x, mp_pav1.y() + c.y,
-                                                  mp_pav1.z() );
-                    if( mp_ph1.inbounds( mp_hp1 ) ) {
-                        g->draw_highlight( mp_hp1 );
+            // pickup/smash highlight and draw the map here, after the UI pass,
+            // so the brackets actually reach the screen while the host is idle.
+            if( mp_native_render_enabled() && ( mp_pick_tiles_active || mp_smash_prompt ) ) {
+                if( mp_pick_tiles_active ) {
+                    map &mp_ph1 = get_map();
+                    const tripoint_bub_ms mp_pav1 = get_avatar().pos_bub();
+                    for( const point &c : mp_pick_tiles ) {
+                        const tripoint_bub_ms mp_hp1( mp_pav1.x() + c.x, mp_pav1.y() + c.y,
+                                                      mp_pav1.z() );
+                        if( mp_ph1.inbounds( mp_hp1 ) ) {
+                            g->draw_highlight( mp_hp1 );
+                        }
                     }
+                } else {
+                    mp_queue_smash_highlights();
                 }
                 mp_force_terrain_redraw();
             }
@@ -7617,6 +7668,17 @@ void run_view_loop()
                                             c.x, c.y,
                                             static_cast<int>( lit_level::LIT ), 0, 0, true );
                                     }
+                                } else if( mp_smash_prompt ) {
+                                    static const point mp_sm_dirs[] = {
+                                        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+                                        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+                                    };
+                                    for( const point &c : mp_sm_dirs ) {
+                                        netplay::tiles_backend_draw(
+                                            tiles_backend, 6, "highlight", "",
+                                            c.x, c.y,
+                                            static_cast<int>( lit_level::LIT ), 0, 0, true );
+                                    }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
                                 // The sidebar/message adaptors were already
@@ -7817,6 +7879,9 @@ void run_view_loop()
                             g->draw_highlight( mp_hp );
                         }
                     }
+                } else if( mp_smash_prompt ) {
+                    // v4.0a-256: same highlight for the "Smash where?" choice.
+                    mp_queue_smash_highlights();
                 }
                 // DDA MP v4.0a-239: the item lists are applied to the mirror
                 // map, so the game's own renderer draws items, layers, the pile
@@ -8494,6 +8559,8 @@ void run_view_loop()
                 if( mp_sm_key == 27 || action == "QUIT" ||
                     action == "pause" || mp_sm_key == '5' ) {
                     mp_smash_prompt = false;
+                    // Clear the brackets from the last drawn frame.
+                    mp_force_terrain_redraw();
                     continue;
                 }
                 point mp_sm_dir( 0, 0 );
@@ -8523,6 +8590,7 @@ void run_view_loop()
                     mp_inv_log( string_format( "smash: target %d,%d",
                                                mp_sm_dir.x, mp_sm_dir.y ) );
                     mp_smash_prompt = false;
+                    mp_force_terrain_redraw();
                 }
                 continue;
             }

@@ -39,6 +39,7 @@
 #ifdef _WIN32
 #include <windows.h> // WideCharToMultiByte (crash diagnostics)
 #include <dbghelp.h> // MiniDumpWriteDump (crash diagnostics)
+#include <psapi.h>   // PROCESS_MEMORY_COUNTERS (host memory trace)
 #endif
 
 #include "zstd/zstd.h"
@@ -2051,6 +2052,8 @@ std::vector<int> host_session_ids()
     return out;
 }
 
+static void mp_mem_probe( int sid, const snapshot &snap );
+
 bool host_send_snapshot_to_sid( int sid, const snapshot &snap )
 {
     // NOTE (v4.0a-226): sends run under sessions_mutex. With the 5 s
@@ -2065,6 +2068,7 @@ bool host_send_snapshot_to_sid( int sid, const snapshot &snap )
     if( it == state.id2sock.end() ) {
         return false;
     }
+    mp_mem_probe( sid, snap );
     const std::vector<char> mp_raw = encode_snapshot_payload_raw( snap );
     std::vector<char> f = encode_frame( frame::SNAPSHOT, maybe_compress( mp_raw ) );
     {
@@ -2123,6 +2127,58 @@ static void fork_text_register( const std::string &msgid, const std::string &tex
         }
     }
     fork_text_entries.push_back( { msgid, text } );
+}
+
+/* DDA MP v4.0a-256: host memory black box for the pulping/butchery leak.
+ * Writes a line every 5 s while snapshots are flowing: process working set,
+ * fork-text table size and the item/vehicle/creature volume of the frame.
+ * If the working set grows while the snapshot counters stay flat, the leak is
+ * not the item stream. */
+static std::size_t mp_process_working_set()
+{
+#ifdef _WIN32
+    using get_mem_t = BOOL ( WINAPI * )( HANDLE, PROCESS_MEMORY_COUNTERS *, DWORD );
+    static get_mem_t get_mem = reinterpret_cast<get_mem_t>(
+                                   GetProcAddress( GetModuleHandleA( "kernel32.dll" ),
+                                           "K32GetProcessMemoryInfo" ) );
+    if( get_mem != nullptr ) {
+        PROCESS_MEMORY_COUNTERS pmc{};
+        if( get_mem( GetCurrentProcess(), &pmc, sizeof( pmc ) ) ) {
+            return static_cast<std::size_t>( pmc.WorkingSetSize );
+        }
+    }
+#endif
+    return 0;
+}
+
+static void mp_mem_probe( int sid, const snapshot &snap )
+{
+    static auto last = std::chrono::steady_clock::now() - std::chrono::seconds( 30 );
+    const auto now = std::chrono::steady_clock::now();
+    if( now - last < std::chrono::seconds( 5 ) ) {
+        return;
+    }
+    last = now;
+    std::size_t fork_count = 0;
+    {
+        std::lock_guard<std::mutex> lk( fork_text_mutex );
+        fork_count = fork_text_entries.size();
+    }
+    std::size_t items = 0;
+    for( const snapshot::item_tile &it : snap.item_tiles ) {
+        items += it.items.size();
+    }
+    std::FILE *f = std::fopen( ( PATH_INFO::config_dir() + "netplay_mem.log" ).c_str(), "a" );
+    if( f == nullptr ) {
+        return;
+    }
+    std::fprintf( f,
+                  "%lld ws=%zu fork=%zu sid=%d items=%zu itemtiles=%zu veh=%zu creatures=%zu\n",
+                  static_cast<long long>( std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch() ).count() ),
+                  mp_process_working_set(), fork_count, sid, items,
+                  snap.item_tiles.size(), snap.vehicle_parts.size(), snap.creatures.size() );
+    std::fclose( f );
 }
 
 static bool capture_fork_message( const std::string &text, std::string &msgid,
