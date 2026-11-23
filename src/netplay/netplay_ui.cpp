@@ -1809,7 +1809,24 @@ class mp_pickup_selector : public inventory_multiselector
     public:
         explicit mp_pickup_selector( Character &u, const inventory_selector_preset &preset ) :
             inventory_multiselector( u, preset, _( "ITEMS TO PICK UP" ), {},
-                                     /*allow_select_contained=*/true ) {}
+                                     /*allow_select_contained=*/true ) {
+            // DDA MP v4.0a-236: same actions and hint line as the host's
+            // pickup_selector, so the client's menu explains the same keys.
+            ctxt.register_action( "WEAR" );
+            ctxt.register_action( "WIELD" );
+            set_hint( string_format(
+                          _( "<color_yellow>%s</color> Wield  <color_yellow>%s</color> Wear  <color_yellow>%s</color> Expand  <color_yellow>%s</color> All  <color_yellow>%s</color> Examine\n"
+                             "Quantity: <color_yellow>%s</color> to mark selected  <color_yellow>%s</color>/<color_yellow>%s</color> to offset  type number then <color_yellow>%s</color> to set" ),
+                          ctxt.get_desc( "WIELD" ),
+                          ctxt.get_desc( "WEAR" ),
+                          ctxt.get_desc( "SHOW_HIDE_CONTENTS" ),
+                          ctxt.get_desc( "SHOW_HIDE_CONTENTS_ALL" ),
+                          ctxt.get_desc( "EXAMINE" ),
+                          ctxt.get_desc( "MARK_WITH_COUNT" ),
+                          ctxt.get_desc( "INCREASE_COUNT" ),
+                          ctxt.get_desc( "DECREASE_COUNT" ),
+                          ctxt.get_desc( "TOGGLE_ENTRY" ) ) );
+        }
 
         /// 0 = take, 1 = wield, 2 = wear; meaningful when nodes is non-empty.
         int equip = 0;
@@ -1853,31 +1870,33 @@ static void mp_run_pickup( const std::string &text )
         if( pkt.entries.empty() ) {
             return;
         }
-        // DDA MP v4.0a-93: the client's local map is a replay scratch space and
-        // is not safe to spawn items on (anchoring it logs unloaded-submap
-        // errors and can crash). Keep the display copies in a synthetic wielded
-        // container on a temporary NPC instead: force insertion bypasses
-        // capacity, so every streamed row is listed regardless of its volume.
-        npc viewer;
-        viewer.name = "client";
-        if( !item::type_is_defined( itype_id( "backpack" ) ) ) {
-            mp_inv_log( "pickup: backpack itype missing" );
-            return;
-        }
-        item bag( itype_id( "backpack" ), calendar::turn );
-        bag.set_var( "mp_can_take", "0" ); // the wrapper itself is not a row
-        viewer.set_wielded_item( bag );
-        item *bag_item = nullptr;
-        if( item_location w = viewer.get_wielded_item() ) {
-            bag_item = w.get_item();
-        }
-        if( bag_item == nullptr ) {
-            return;
-        }
-        // Contents are hidden by default for collapsed pockets; show them.
-        for( item_pocket *pocket : bag_item->get_standard_pockets() ) {
-            pocket->settings.set_collapse( false );
-        }
+        // DDA MP v4.0a-236: the host's pickup lists the streamed ground rows
+        // as MAP items (one category, flat list). The old client copy stacked
+        // them into a synthetic backpack, which made the selector print a
+        // container hierarchy and per-item category headers the host does not
+        // show. Put the display copies on a temporary scratch tile instead and
+        // restore it when the menu closes.
+        map &here = get_map();
+        // The selector's Character is the mirror avatar, so the header stats
+        // (volume/weight) are the character's own, like the host's pickup.
+        avatar &viewer = get_avatar();
+        const tripoint_bub_ms scratch( 2, 2, 0 );
+        struct mp_scratch_guard {
+            map &m;
+            tripoint_bub_ms p;
+            ter_id ter;
+            furn_id furn;
+            ~mp_scratch_guard() {
+                m.i_clear( p );
+                m.ter_set( p, ter );
+                m.furn_set( p, furn );
+            }
+        } scratch_guard{ here, scratch, here.ter( scratch ), here.furn( scratch ) };
+        static const ter_id t_floor( "t_floor" );
+        static const furn_id f_null( "f_null" );
+        here.ter_set( scratch, t_floor );
+        here.furn_set( scratch, f_null );
+        here.i_clear( scratch );
         int added = 0;
         for( size_t i = 0; i < pkt.entries.size(); i++ ) {
             const netplay::inv_entry_view &e = pkt.entries[i];
@@ -1898,7 +1917,7 @@ static void mp_run_pickup( const std::string &text )
             if( e.filthy ) {
                 it.set_flag( flag_FILTHY );
             }
-            bag_item->force_insert_item( it, pocket_type::CONTAINER );
+            here.add_item_or_charges( scratch, it, false );
             ++added;
         }
         if( added == 0 ) {
@@ -1911,9 +1930,8 @@ static void mp_run_pickup( const std::string &text )
             mp_pickup_preset preset;
             mp_pickup_selector sel( viewer, preset );
             sel.set_title( _( "Pickup" ) );
-            sel.set_hint( _( "Select the items to pick up" ) );
             sel.clear_items();
-            sel.add_character_items( viewer );
+            sel.add_map_items( scratch );
             const int wield_key = mp_action_hotkey( ACTION_WIELD, 'w' );
             const int wear_key = mp_action_hotkey( ACTION_WEAR, 'W' );
             sel.row_action_handler = [&sel, wield_key, wear_key]( const std::string & action,
