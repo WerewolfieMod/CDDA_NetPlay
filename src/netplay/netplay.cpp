@@ -1773,6 +1773,7 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             put_str8( p, vp.variant );
             p.push_back( static_cast<char>( vp.sub ) );
             p.push_back( static_cast<char>( vp.rot ) );
+            p.push_back( static_cast<char>( vp.memory ? 1 : 0 ) );
         }
     }
     // Optional tileset replay payload. Append only when it matches 1:1 with
@@ -3607,6 +3608,7 @@ static void client_run( socket_t sock )
                         vp.variant = vr.get_str8();
                         vp.sub = vr.get_u8();
                         vp.rot = vr.get_u8();
+                        vp.memory = vr.get_u8() != 0;
                         snap.vehicle_parts.push_back( std::move( vp ) );
                     }
                     if( vr.ok ) {

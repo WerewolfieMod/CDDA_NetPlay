@@ -299,7 +299,10 @@ struct tile_cell {
     ///        renderer's light map turn and paints lit path blue over
     ///        empty texels),
     /// bit6 = the tileset item layer consumed the uppermost item; the
-    ///        plain item draw is skipped for this cell (drawtop=false)
+    ///        plain item draw is skipped for this cell (drawtop=false),
+    /// bit7 = the vpart fields came from the viewer's map memory, not from a
+    ///        live vehicle; the native client must not queue a vpart override
+    ///        (the renderer draws it dim through map memory instead)
     uint8_t flags = 0;
     /// Smooth-lighting light texel color when flags & 16: r = light 0..255,
     /// g/b = hue shares. The client's smooth filter and lit shader consume
@@ -438,6 +441,7 @@ struct snapshot {
         std::string variant;
         uint8_t sub = 0;      // 1 = open, 2 = broken, 0 = closed
         uint8_t rot = 0;      // angle_to_dir4 value
+        bool memory = false;  // memorized decoration, not a live vehicle
     };
     std::vector<vehicle_part_frame> vehicle_parts;
 };

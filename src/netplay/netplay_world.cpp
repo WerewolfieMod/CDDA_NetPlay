@@ -275,12 +275,15 @@ static void mp_render_memory( const memorized_tile &mt, tile_cell &t )
         t.light = static_cast<uint8_t>( static_cast<int>( lit_level::MEMORIZED ) );
     }
     const std::string &dec = mt.get_dec_id();
+    // DDA MP v4.0a-251: a memorized vehicle part must not become a live
+    // override on the native path (that drew remembered cars bright). It is
+    // flagged so the client's override queue skips it; the replay backend can
+    // still draw the sprite with the cell's MEMORIZED light.
     if( string_starts_with( dec, "vp_" ) ) {
-        // Vehicle part memory: tileset id keeps the variant
-        // ("vp_{id}#{variant}"); the client splits it.
         t.vpart = dec;
         t.vpart_sub = static_cast<uint8_t>( mt.get_dec_subtile() );
         t.vpart_rot = static_cast<uint8_t>( mt.get_dec_rotation() );
+        t.flags |= 128;
     } else if( string_starts_with( dec, "f_" ) ) {
         t.furn = dec;
         t.furn_sub = static_cast<uint8_t>( mt.get_dec_subtile() );
@@ -657,6 +660,14 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                                           : vd.is_broken ? static_cast<uint8_t>( broken ) : 0;
                             t.vpart_rot =
                                 static_cast<uint8_t>( angle_to_dir4( veh.face.dir() - 270_degrees ) );
+                            // DDA MP v4.0a-251: the session avatar keeps its
+                            // own vehicle-part memory on the host, so a car it
+                            // walks away from is replayed as a dim memorized
+                            // decoration instead of a live override.
+                            if( npc_viewer != nullptr ) {
+                                av_mem_for( *npc_viewer ).set_tile_decoration(
+                                    here.get_abs( p ), t.vpart, t.vpart_sub, t.vpart_rot );
+                            }
                             // Savegame-invisible detail the game still draws:
                             // a cargo part with items gets the highlight_item
                             // badge on the part tile (cata_tiles::draw_vpart).
@@ -875,31 +886,67 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         // 49x32 frame. The client draws them with the tileset vpart override;
         // without this a car outside the frame only appeared after pressing x
         // (which streams a frame centred on it).
+        // DDA MP v4.0a-251: only currently visible cells get a live part; a
+        // memorized/dark cell gets the viewer's remembered decoration instead
+        // (the client stores it in its own map memory, so the renderer draws
+        // it dim). Before this the whole +-60 square was emitted as live, so
+        // cars appeared bright on cells the client only remembered.
         constexpr int MP_VEH_R = 60;
+        if( viewer != nullptr ) {
+            av_mem_for( *viewer ).prepare_region(
+                here.get_abs( center + tripoint_rel_ms( -MP_VEH_R, -MP_VEH_R, 0 ) ),
+                here.get_abs( center + tripoint_rel_ms( MP_VEH_R, MP_VEH_R, 0 ) ) );
+        }
+        const auto &mp_viscache = here.get_cache_ref( center.z() ).visibility_cache;
+        int mp_live_parts = 0;
+        int mp_mem_parts = 0;
         for( int dy = -MP_VEH_R; dy <= MP_VEH_R; dy++ ) {
             for( int dx = -MP_VEH_R; dx <= MP_VEH_R; dx++ ) {
                 const tripoint_bub_ms p = center + tripoint_rel_ms( dx, dy, 0 );
                 if( !here.inbounds( p ) ) {
                     continue;
                 }
-                const optional_vpart_position ovp = here.veh_at( p );
-                if( !ovp ) {
+                const lit_level ll = mp_viscache[p.x()][p.y()];
+                if( ll == lit_level::BLANK ) {
                     continue;
                 }
-                const vehicle &veh = ovp->vehicle();
-                const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
-                if( vd.id.is_null() ) {
-                    continue;
-                }
-                snapshot::vehicle_part_frame f;
                 const tripoint_abs_ms ap = here.get_abs( p );
+                snapshot::vehicle_part_frame f;
                 f.ax = ap.x();
                 f.ay = ap.y();
                 f.az = ap.z();
-                f.id = "vp_" + vd.id.str();
-                f.variant = vd.variant.id;
-                f.sub = vd.is_open ? 1 : vd.is_broken ? 2 : 0;
-                f.rot = static_cast<uint8_t>( angle_to_dir4( veh.face.dir() - 270_degrees ) );
+                const bool centered = viewer != nullptr && p == viewer->pos_bub();
+                if( ll == lit_level::LIT || ll == lit_level::LOW || centered ) {
+                    const optional_vpart_position ovp = here.veh_at( p );
+                    if( !ovp ) {
+                        continue;
+                    }
+                    const vehicle &veh = ovp->vehicle();
+                    const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
+                    if( vd.id.is_null() ) {
+                        continue;
+                    }
+                    f.id = "vp_" + vd.id.str();
+                    f.variant = vd.variant.id;
+                    f.sub = vd.is_open ? 1 : vd.is_broken ? 2 : 0;
+                    f.rot = static_cast<uint8_t>( angle_to_dir4( veh.face.dir() - 270_degrees ) );
+                    ++mp_live_parts;
+                } else {
+                    if( viewer == nullptr ) {
+                        continue;
+                    }
+                    const memorized_tile &mt = av_mem_for( *viewer ).get_tile( ap );
+                    const std::string &dec = mt.get_dec_id();
+                    if( !string_starts_with( dec, "vp_" ) ) {
+                        continue;
+                    }
+                    // Tileset id already carries the variant ("vp_id#variant").
+                    f.id = dec;
+                    f.sub = static_cast<uint8_t>( mt.get_dec_subtile() );
+                    f.rot = static_cast<uint8_t>( mt.get_dec_rotation() );
+                    f.memory = true;
+                    ++mp_mem_parts;
+                }
                 out.vehicle_parts.push_back( std::move( f ) );
             }
         }
@@ -908,9 +955,10 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
             if( mp_veh_log < 5 ) {
                 ++mp_veh_log;
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "vehlist center=%d,%d n=%d\n",
+                    std::fprintf( f, "vehlist center=%d,%d n=%d live=%d mem=%d\n",
                                   center.x(), center.y(),
-                                  static_cast<int>( out.vehicle_parts.size() ) );
+                                  static_cast<int>( out.vehicle_parts.size() ),
+                                  mp_live_parts, mp_mem_parts );
                     std::fclose( f );
                 }
             }

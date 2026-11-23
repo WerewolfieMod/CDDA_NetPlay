@@ -5404,7 +5404,10 @@ static void mp_native_apply_snapshot( const snapshot &snap )
             if( !here.inbounds( p ) ) {
                 continue;
             }
-            if( !t.vpart.empty() ) {
+            // DDA MP v4.0a-251: bit7 marks a vpart that came from map memory.
+            // The native renderer draws it dim via get_vpart_memory_at(); it
+            // must not be queued as a live override.
+            if( !t.vpart.empty() && ( t.flags & 128 ) == 0 ) {
                 std::string vp = t.vpart;
                 std::string variant;
                 const std::size_t sep = vp.find( '#' );
@@ -5518,9 +5521,33 @@ static void mp_native_apply_snapshot( const snapshot &snap )
             }
         }
     }
-    // DDA MP v4.0a-248: merge the wide vehicle list (vehicles outside the
-    // streamed frame, e.g. at zoom-out or beyond 24 tiles).
+    // DDA MP v4.0a-251: merge the wide vehicle list (vehicles outside the
+    // streamed frame, e.g. at zoom-out or beyond 24 tiles). Live entries feed
+    // the tileset override; memorized entries are stored in the client avatar's
+    // own map memory, so the native renderer draws them with MEMORIZED light
+    // instead of as bright live cars.
+    bool mp_wide_mem = false;
     for( const snapshot::vehicle_part_frame &vp : snap.vehicle_parts ) {
+        if( vp.memory ) {
+            mp_wide_mem = true;
+            break;
+        }
+    }
+    if( mp_wide_mem ) {
+        // The per-frame memory region only covers the streamed frame; a
+        // remembered car can sit up to 60 tiles away, so widen it once.
+        you.prepare_map_memory_region(
+            center_abs + tripoint_rel_ms( -60, -60, 0 ),
+            center_abs + tripoint_rel_ms( 60, 60, 0 ) );
+    }
+    int mp_mem_vparts = 0;
+    for( const snapshot::vehicle_part_frame &vp : snap.vehicle_parts ) {
+        if( vp.memory ) {
+            you.memorize_decoration( tripoint_abs_ms( vp.ax, vp.ay, vp.az ),
+                                     vp.id, vp.sub, vp.rot );
+            ++mp_mem_vparts;
+            continue;
+        }
         std::string id = vp.id;
         if( id.rfind( "vp_", 0 ) == 0 ) {
             id.erase( 0, 3 );
@@ -5537,8 +5564,9 @@ static void mp_native_apply_snapshot( const snapshot &snap )
         static int mp_vlist_log = 0;
         if( mp_vlist_log < 5 ) {
             ++mp_vlist_log;
-            mp_inv_log( string_format( "native: vehicle list n=%d (cache=%d)",
+            mp_inv_log( string_format( "native: vehicle list n=%d mem=%d (cache=%d)",
                                        static_cast<int>( snap.vehicle_parts.size() ),
+                                       mp_mem_vparts,
                                        static_cast<int>( mp_vparts_cache.size() ) ) );
         }
     }
@@ -5756,6 +5784,19 @@ static void mp_queue_native_vparts()
 {
 }
 #endif
+
+/* DDA MP v4.0a-251: force the terrain window to draw right now. Tileset
+ * overlays (the pickup highlight, streamed vpart overrides) are queued for
+ * the next cata_tiles::draw, but an idle host sends no new snapshot and a
+ * static frame never marks the window dirty: the overlay stayed in the queue
+ * and only appeared after pressing x (which requested a fresh frame). */
+static void mp_force_terrain_redraw()
+{
+    if( g->w_terrain ) {
+        werase( g->w_terrain );
+        wnoutrefresh( g->w_terrain );
+    }
+}
 
 /* DDA MP v4.0a-115/160: the sidebar itself, drawn by the game's own panel
  * code for the client's character mirror. The loop below mirrors
@@ -6903,6 +6944,22 @@ void run_view_loop()
                 mp_queue_native_cursor( snapshot() );
             }
             ui_manager::redraw();
+            // DDA MP v4.0a-251: the UI pass may or may not redraw the terrain
+            // window, and a static frame never marks it dirty. Re-queue the
+            // pickup highlight and draw the map here, after the UI pass, so the
+            // brackets actually reach the screen while the host is idle.
+            if( mp_native_render_enabled() && mp_pick_tiles_active ) {
+                map &mp_ph1 = get_map();
+                const tripoint_bub_ms mp_pav1 = get_avatar().pos_bub();
+                for( const point &c : mp_pick_tiles ) {
+                    const tripoint_bub_ms mp_hp1( mp_pav1.x() + c.x, mp_pav1.y() + c.y,
+                                                  mp_pav1.z() );
+                    if( mp_ph1.inbounds( mp_hp1 ) ) {
+                        g->draw_highlight( mp_hp1 );
+                    }
+                }
+                mp_force_terrain_redraw();
+            }
 
             // DDA MP test hook: walk N times without touching the OS window.
             // It uses the same client_send_keys path as a real key, so the
@@ -7684,6 +7741,11 @@ void run_view_loop()
                 // vehicle objects, so the native renderer had no cars at all).
                 mp_queue_native_vparts();
                 mp_queue_native_cursor( snap );
+                // DDA MP v4.0a-251: draw the freshly queued overlays now.
+                // The snapshot setup already drew the terrain a moment ago,
+                // before the overlays existed; without this second draw the
+                // cars/highlights stayed invisible until the next frame.
+                mp_force_terrain_redraw();
             } else {
                 bool have_target = false;
                 int rdx = 0;
@@ -8293,6 +8355,8 @@ void run_view_loop()
                 if( mp_key == 27 || action == "QUIT" ) {
                     mp_pick_tiles_active = false;
                     mp_tlog( "picktile: cancelled" );
+                    // Clear the brackets from the last drawn frame.
+                    mp_force_terrain_redraw();
                     continue;
                 }
                 // Same as the host's choose_adjacent_highlight: every candidate
@@ -8331,6 +8395,7 @@ void run_view_loop()
                             netplay::client_send_pickup_tile( mp_pick_gen, c.x, c.y );
                             mp_pick_tiles_active = false;
                             mp_tlog( string_format( "picktile: chose %d,%d", c.x, c.y ) );
+                            mp_force_terrain_redraw();
                             break;
                         }
                     }
