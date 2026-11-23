@@ -77,6 +77,7 @@
 #include "mission.h"
 #include "memory_fast.h"
 #include "messages.h"
+#include "netplay/netplay.h"  // client mirror maps legitimately have holes
 #include "mondeath.h"
 #include "mongroup.h"
 #include "monster.h"
@@ -1648,7 +1649,12 @@ VehicleList map::get_vehicles( const tripoint_bub_ms &start, const tripoint_bub_
             for( int cz = chunk_sz; cz <= chunk_ez; ++cz ) {
                 submap *current_submap = get_submap_at_grid( tripoint_rel_sm{ cx, cy, cz } );
                 if( current_submap == nullptr ) {
-                    debugmsg( "Tried to process vehicle at (%d,%d,%d) but the submap is not loaded", cx, cy, cz );
+                    // DDA MP v4.0a-243: a netplay client's mirror map covers
+                    // only the streamed bubble; holes here are expected and
+                    // must not flood debug.log (thousands of lines per query).
+                    if( !netplay::client_is_connected() ) {
+                        debugmsg( "Tried to process vehicle at (%d,%d,%d) but the submap is not loaded", cx, cy, cz );
+                    }
                     continue;
                 }
                 for( const auto &elem : current_submap->vehicles ) {
@@ -2265,8 +2271,12 @@ ter_id map::ter( const tripoint_bub_ms &p ) const
     point_sm_ms l;
     const submap *const current_submap = unsafe_get_submap_at( p, l );
     if( current_submap == nullptr ) {
-        debugmsg( "Tried to process terrain at (%d,%d) of submap of (%d,%d,%d) but the submap is not loaded.  my_MAPSIZE: %d",
-                  l.x(), l.y(), p.x(), p.y(), p.z(), my_MAPSIZE );
+        // DDA MP v4.0a-243: expected while the client mirror bubble is being
+        // (re)built; keep it out of debug.log.
+        if( !netplay::client_is_connected() ) {
+            debugmsg( "Tried to process terrain at (%d,%d) of submap of (%d,%d,%d) but the submap is not loaded.  my_MAPSIZE: %d",
+                      l.x(), l.y(), p.x(), p.y(), p.z(), my_MAPSIZE );
+        }
         return ter_str_id::NULL_ID().id();
     }
 

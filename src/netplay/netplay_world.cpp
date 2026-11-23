@@ -2989,6 +2989,76 @@ static void mp_diag_mark( const char *what, int sid )
     }
 }
 
+/* DDA MP v4.0a-243: stream the seen overmap around the session avatar. The
+ * stock map screen and any overmap-based sidebar widget then show the host's
+ * roads, buildings, vehicles and notes instead of the client's empty overmap.
+ * Only seen tiles are listed; the block is resent when the avatar crosses an
+ * overmap tile or every 20 turns. */
+static void mp_send_overmap_block( int sid, npc &av )
+{
+    static std::map<int, std::pair<tripoint_abs_omt, int>> mp_last_sent;
+    constexpr int R = 60;
+    const tripoint_abs_omt center = av.pos_abs_omt();
+    const int turn = to_turn<int>( calendar::turn );
+    auto &last = mp_last_sent[sid];
+    if( last.first == center && turn - last.second < 20 ) {
+        return;
+    }
+    last = { center, turn };
+
+    overmap_block ob;
+    // Keep the block inside the avatar's own overmap: generating a neighbour
+    // on the client is a multi-second freeze, and the host only has to show
+    // unseen beyond the border anyway.
+    const int om_x0 = ( center.x() / OMAPX ) * OMAPX;
+    const int om_y0 = ( center.y() / OMAPY ) * OMAPY;
+    const int x0 = std::max( center.x() - R, om_x0 );
+    const int x1 = std::min( center.x() + R, om_x0 + OMAPX - 1 );
+    const int y0 = std::max( center.y() - R, om_y0 );
+    const int y1 = std::min( center.y() + R, om_y0 + OMAPY - 1 );
+    ob.width = x1 - x0 + 1;
+    ob.height = y1 - y0 + 1;
+    ob.origin_x = x0;
+    ob.origin_y = y0;
+    ob.origin_z = center.z();
+    std::map<std::string, uint16_t> ter_index;
+    for( int dy = 0; dy < ob.height; dy++ ) {
+        for( int dx = 0; dx < ob.width; dx++ ) {
+            const tripoint_abs_omt p( ob.origin_x + dx, ob.origin_y + dy, ob.origin_z );
+            const om_vision_level vis = overmap_buffer.seen( p );
+            if( vis == om_vision_level::unseen ) {
+                continue;
+            }
+            const std::string ter = overmap_buffer.ter( p ).id().str();
+            auto ins = ter_index.emplace( ter, static_cast<uint16_t>( ter_index.size() ) );
+            if( ins.second ) {
+                ob.ter_table.push_back( ter );
+            }
+            overmap_block::cell c;
+            c.index = static_cast<uint16_t>( dy * ob.width + dx );
+            c.ter = ins.first->second;
+            c.vision = static_cast<uint8_t>( vis );
+            c.vehicle = overmap_buffer.has_vehicle( p ) ? 1 : 0;
+            ob.cells.push_back( c );
+            if( overmap_buffer.has_note( p ) ) {
+                ob.notes.push_back( overmap_block::note{
+                    c.index, overmap_buffer.note( p ) } );
+            }
+        }
+    }
+    netplay::host_send_overmap_to_sid( sid, ob );
+    if( netplay::mp_diag_enabled() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "overmap block sid=%d center=%d,%d seen=%d ter=%d notes=%d\n",
+                          sid, center.x(), center.y(),
+                          static_cast<int>( ob.cells.size() ),
+                          static_cast<int>( ob.ter_table.size() ),
+                          static_cast<int>( ob.notes.size() ) );
+            std::fclose( f );
+        }
+    }
+}
+
 static void av_send_status( int sid )
 {
     mp_quiet_remote_data quiet;
@@ -3292,6 +3362,9 @@ static void av_send_status( int sid )
     }
     mp_diag_mark( "status-minimap-done", sid );
 #endif
+    // DDA MP v4.0a-243: seen-overmap block for the stock map screen and any
+    // overmap-based sidebar widget.
+    mp_send_overmap_block( sid, *av );
     mp_diag_mark( "status-end", sid );
     // DDA MP v4.1: no row listing is streamed any more. The client's mirror
     // names items by mp_uid, so inventory/throw/pocket intents address the

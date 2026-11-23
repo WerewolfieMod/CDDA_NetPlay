@@ -117,6 +117,9 @@ enum class frame : int {
     /// DDA MP v4.0a-147: the host's panel_manager layout (json), so the client
     /// draws the same native sidebar and its log starts at the same row.
     PANEL_LAYOUT = 45,      ///< host -> client: str json
+    /// DDA MP v4.0a-243: seen overmap tiles around the avatar (stock map UI
+    /// and any overmap-based sidebar widget read these).
+    OVERMAP = 46,           ///< host -> client: sparse overmap block
     /// DDA MP v4.1: a single player intent — what the client wants done.
     /// Payload: [str action][i32 generation][u16 n][i32 args[n]][str data].
     /// The host runs it with the session avatar's own engine code; the old
@@ -163,6 +166,32 @@ struct minimap_frame {
         std::string wielded;       // tname with colour tags
     };
     std::vector<beacon> beacons;
+};
+
+/// DDA MP v4.0a-243: sparse seen-overmap block around the session avatar.
+/// Only tiles the host player has actually seen are listed; everything else
+/// stays unseen on the client, exactly like the host's own map screen.
+struct overmap_block {
+    /// Block bounds in overmap tiles; origin is the top-left corner.
+    int width = 0;
+    int height = 0;
+    int origin_x = 0;   // absolute OMT
+    int origin_y = 0;
+    int origin_z = 0;
+    /// Terrain ids, deduplicated once per block.
+    std::vector<std::string> ter_table;
+    struct cell {
+        uint16_t index = 0;   // y * width + x
+        uint16_t ter = 0;     // index into ter_table
+        uint8_t vision = 0;   // om_vision_level
+        uint8_t vehicle = 0;  // 1 when the host tracks a vehicle here
+    };
+    std::vector<cell> cells;
+    struct note {
+        uint16_t index = 0;
+        std::string text;
+    };
+    std::vector<note> notes;
 };
 
 /// DDA MP: one creature in the session avatar's local frame, raw facts for the
@@ -592,6 +621,8 @@ void host_restore_region_monsters();
 void host_broadcast_event( const std::string &text, int msg_type );
 /// DDA MP v4.0a-12: send the overmap minimap block to a session.
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm );
+/// DDA MP v4.0a-243: send the seen-overmap block to a session.
+bool host_send_overmap_to_sid( int sid, const overmap_block &om );
 /// DDA MP: send local-frame creature facts for the aim panel.
 bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list );
 /// Client side: latest aim target list.
@@ -849,6 +880,8 @@ bool client_take_event( std::string &out, int &msg_type );
 std::string format_event_text( const std::string &payload );
 /// DDA MP v4.0a-12: latest overmap minimap block (copied per call).
 bool client_minimap( minimap_frame &out );
+/// DDA MP v4.0a-243: take the latest seen-overmap block (consumed once).
+bool client_take_overmap( overmap_block &out );
 /// DDA MP v4.0a-14: latest inventory listing (copied per call).
 bool client_inventory( std::string &out );
 /// Show a short status hint on the client's screen (empty clears it).

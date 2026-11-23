@@ -4208,11 +4208,12 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             }
             break;
         case ACTION_MAP:
-            // DDA MP v4.0a-186: full-screen view of the streamed overmap
-            // minimap block (the host does not send its whole explored map).
+            // DDA MP v4.0a-243: the stock overmap screen over the seen block
+            // streamed by the host (terrain, vehicles and notes).
             if( mp_native_avatar_ready ) {
-                mp_map_open = true;
-                mp_inv_log( "ui: map open" );
+                mp_inv_log( "ui: overmap open" );
+                ui::omap::display();
+                mp_inv_log( "ui: overmap closed" );
             }
             break;
         case ACTION_ZONES:
@@ -4902,8 +4903,20 @@ static void mp_native_ensure_bubble( const tripoint_abs_ms &center_abs )
             for( int dx = 0; dx < 2; dx++ ) {
                 for( int dy = 0; dy < 2; dy++ ) {
                     for( int z = -OVERMAP_DEPTH; z <= OVERMAP_HEIGHT; z++ ) {
-                        if( !MAPBUFFER.submap_exists(
-                                tripoint_abs_sm( base.x() + dx, base.y() + dy, z ) ) ) {
+                        const tripoint_abs_sm addr( base.x() + dx, base.y() + dy, z );
+                        if( !MAPBUFFER.submap_exists( addr ) ) {
+                            // DDA MP v4.0a-243: repair any hole in the exact
+                            // 11x11 bubble (all z). A missing submap made the
+                            // engine's caches emit thousands of debugmsg lines
+                            // per frame, which is what made the whole machine
+                            // crawl while the host was saving.
+                            auto sm = std::make_unique<submap>();
+                            for( int mx = 0; mx < SEEX; mx++ ) {
+                                for( int my = 0; my < SEEY; my++ ) {
+                                    sm->set_ter( point_sm_ms( mx, my ), t_open_air );
+                                }
+                            }
+                            MAPBUFFER.add_submap( addr, sm );
                             ++missing;
                         }
                     }
@@ -5628,6 +5641,63 @@ static std::string mp_effect_label( const std::string &id )
     return id;
 }
 
+/* DDA MP v4.0a-243: write the host's seen-overmap block into the client's
+ * overmap buffer. The stock map screen and any overmap-based sidebar widget
+ * then draw the host's roads, buildings, vehicles and notes. */
+static void mp_apply_overmap_block( const netplay::overmap_block &ob )
+{
+    if( ob.width <= 0 || ob.height <= 0 ) {
+        return;
+    }
+    const point_abs_omt tl( ob.origin_x, ob.origin_y );
+    const point_abs_omt br( ob.origin_x + ob.width - 1, ob.origin_y + ob.height - 1 );
+    point_abs_om om_tl;
+    point_abs_om om_br;
+    point_om_omt om_local;
+    std::tie( om_tl, om_local ) = project_remain<coords::om>( tl );
+    std::tie( om_br, om_local ) = project_remain<coords::om>( br );
+    for( int ox = om_tl.x(); ox <= om_br.x(); ox++ ) {
+        for( int oy = om_tl.y(); oy <= om_br.y(); oy++ ) {
+            // Generates a missing overmap once; the streamed block then
+            // overwrites every tile the host player has seen.
+            overmap_buffer.get( point_abs_om( ox, oy ) );
+        }
+    }
+    for( const netplay::overmap_block::cell &c : ob.cells ) {
+        const tripoint_abs_omt p( ob.origin_x + c.index % ob.width,
+                                  ob.origin_y + c.index / ob.width, ob.origin_z );
+        overmap_buffer.ter_set( p, oter_str_id( ob.ter_table[c.ter] ).id() );
+        overmap_buffer.set_seen( p, static_cast<om_vision_level>( c.vision ) );
+        if( c.vehicle != 0 ) {
+            overmap_with_local_coords loc = overmap_buffer.get_existing_om_global( p );
+            if( loc ) {
+                bool found = false;
+                for( const auto &v : loc.om->vehicles ) {
+                    if( v.second.p.xy() == loc.local.xy() ) {
+                        found = true;
+                        break;
+                    }
+                }
+                if( !found ) {
+                    int key = 0;
+                    while( loc.om->vehicles.count( key ) != 0 ) {
+                        ++key;
+                    }
+                    loc.om->vehicles[key] = om_vehicle{ loc.local, "vehicle" };
+                }
+            }
+        }
+    }
+    for( const netplay::overmap_block::note &n : ob.notes ) {
+        const tripoint_abs_omt p( ob.origin_x + n.index % ob.width,
+                                  ob.origin_y + n.index / ob.width, ob.origin_z );
+        overmap_buffer.add_note( p, n.text );
+    }
+    mp_inv_log( string_format( "overmap: applied %dx%d seen=%d notes=%d",
+                               ob.width, ob.height, static_cast<int>( ob.cells.size() ),
+                               static_cast<int>( ob.notes.size() ) ) );
+}
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -6159,17 +6229,13 @@ void run_view_loop()
                                     mp_effect_set( d.effects );
                                 for( const std::string &id : after ) {
                                     if( before.find( id ) == before.end() ) {
-                                        mp_log_add( string_format(
-                                                        netplay::fork_text( "Effect gained: %s" ),
-                                                        mp_effect_label( id ) ),
+                                        mp_log_add( "+ " + mp_effect_label( id ),
                                                     static_cast<int>( m_info ) );
                                     }
                                 }
                                 for( const std::string &id : before ) {
                                     if( after.find( id ) == after.end() ) {
-                                        mp_log_add( string_format(
-                                                        netplay::fork_text( "Effect lost: %s" ),
-                                                        mp_effect_label( id ) ),
+                                        mp_log_add( "- " + mp_effect_label( id ),
                                                     static_cast<int>( m_info ) );
                                     }
                                 }
@@ -6181,6 +6247,15 @@ void run_view_loop()
                 // Host-rendered panels are no longer streamed: the client
                 // draws the same panels itself from its character mirror.
                 netplay::client_minimap( mp_mini_map );
+                {
+                    // DDA MP v4.0a-243: apply a fresh seen-overmap block so the
+                    // stock map screen and overmap-based sidebar widgets match
+                    // the host.
+                    netplay::overmap_block mp_om_block;
+                    if( netplay::client_take_overmap( mp_om_block ) ) {
+                        mp_apply_overmap_block( mp_om_block );
+                    }
+                }
                 if( netplay::mp_diag_enabled() ) {
                     // Forensics: did the minimap data actually change?
                     static std::size_t mp_mini_hash = 0;

@@ -385,6 +385,10 @@ struct netplay_state {
     std::mutex minimap_mutex;
     minimap_frame minimap;
     bool have_minimap = false;
+    /* DDA MP v4.0a-243: seen-overmap block for the stock map UI. */
+    std::mutex overmap_mutex;
+    overmap_block overmap;
+    bool have_overmap = false;
     /* DDA MP v4.0a-14: inventory listing text. */
     std::mutex inv_mutex;
     std::string inv_text;
@@ -2737,6 +2741,60 @@ std::string format_event_text( const std::string &payload )
     return mp_fill_args( fmt, args );
 }
 
+/* DDA MP v4.0a-243: seen-overmap block. Only seen tiles are listed, so the
+ * client reproduces the host's own map screen (and any overmap-based sidebar
+ * widget) without a whole-overmap transfer. */
+bool host_send_overmap_to_sid( int sid, const overmap_block &ob )
+{
+    std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    const auto it = state.id2sock.find( sid );
+    if( it == state.id2sock.end() ) {
+        return false;
+    }
+    std::vector<char> p;
+    put_u16( p, static_cast<uint16_t>( std::clamp( ob.width, 0, 121 ) ) );
+    put_u16( p, static_cast<uint16_t>( std::clamp( ob.height, 0, 121 ) ) );
+    put_i32( p, ob.origin_x );
+    put_i32( p, ob.origin_y );
+    put_i32( p, ob.origin_z );
+    put_u16( p, static_cast<uint16_t>( std::min<size_t>( ob.ter_table.size(), 65535 ) ) );
+    for( const std::string &t : ob.ter_table ) {
+        put_str8( p, t );
+    }
+    put_u16( p, static_cast<uint16_t>( std::min<size_t>( ob.cells.size(), 65535 ) ) );
+    for( const overmap_block::cell &c : ob.cells ) {
+        put_u16( p, c.index );
+        put_u16( p, c.ter );
+        p.push_back( static_cast<char>( c.vision ) );
+        p.push_back( static_cast<char>( c.vehicle ) );
+    }
+    put_u16( p, static_cast<uint16_t>( std::min<size_t>( ob.notes.size(), 65535 ) ) );
+    for( const overmap_block::note &n : ob.notes ) {
+        put_u16( p, n.index );
+        put_str8( p, n.text );
+    }
+    if( !send_all( it->second, encode_frame( frame::OVERMAP, p ) ) ) {
+        close_socket( it->second );
+        state.id2sock.erase( it );
+        state.id2name.erase( sid );
+        return false;
+    }
+    if( mp_diag_enabled() ) {
+        static int mp_om_logged = 0;
+        if( mp_om_logged < 3 ) {
+            ++mp_om_logged;
+            if( std::FILE *f = mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "overmap tx sid=%d %dx%d seen=%d notes=%d bytes=%d\n",
+                              sid, ob.width, ob.height, static_cast<int>( ob.cells.size() ),
+                              static_cast<int>( ob.notes.size() ),
+                              static_cast<int>( p.size() ) );
+                std::fclose( f );
+            }
+        }
+    }
+    return true;
+}
+
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
 {
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
@@ -3837,6 +3895,51 @@ static void client_run( socket_t sock )
                     }
                 }
             }
+        } else if( op == frame::OVERMAP ) {
+            reader r;
+            r.data = payload.data();
+            r.size = payload.size();
+            overmap_block ob;
+            ob.width = static_cast<int>( r.get_u16() );
+            ob.height = static_cast<int>( r.get_u16() );
+            ob.origin_x = static_cast<int>( r.get_i32() );
+            ob.origin_y = static_cast<int>( r.get_i32() );
+            ob.origin_z = static_cast<int>( r.get_i32() );
+            if( r.ok && ob.width > 0 && ob.height > 0 &&
+                ob.width <= 121 && ob.height <= 121 ) {
+                const uint16_t nter = r.get_u16();
+                for( uint16_t i = 0; i < nter && r.ok; i++ ) {
+                    ob.ter_table.push_back( r.get_str8() );
+                }
+                const uint16_t ncells = r.get_u16();
+                for( uint16_t i = 0; i < ncells && r.ok; i++ ) {
+                    overmap_block::cell c;
+                    c.index = r.get_u16();
+                    c.ter = r.get_u16();
+                    c.vision = r.get_u8();
+                    c.vehicle = r.get_u8();
+                    if( c.ter < ob.ter_table.size() &&
+                        c.index < static_cast<uint16_t>( ob.width ) *
+                        static_cast<uint16_t>( ob.height ) ) {
+                        ob.cells.push_back( c );
+                    }
+                }
+                const uint16_t nnotes = r.get_u16();
+                for( uint16_t i = 0; i < nnotes && r.ok; i++ ) {
+                    overmap_block::note n;
+                    n.index = r.get_u16();
+                    n.text = r.get_str8();
+                    if( n.index < static_cast<uint16_t>( ob.width ) *
+                        static_cast<uint16_t>( ob.height ) ) {
+                        ob.notes.push_back( std::move( n ) );
+                    }
+                }
+                if( r.ok ) {
+                    std::lock_guard<std::mutex> lk( state.overmap_mutex );
+                    state.overmap = std::move( ob );
+                    state.have_overmap = true;
+                }
+            }
         } else if( op == frame::INVENTORY ) {
             reader r;
             r.data = payload.data();
@@ -4040,6 +4143,18 @@ bool client_minimap( minimap_frame &out )
         return false;
     }
     out = state.minimap;
+    return true;
+}
+
+bool client_take_overmap( overmap_block &out )
+{
+    std::lock_guard<std::mutex> lk( state.overmap_mutex );
+    if( !state.have_overmap ) {
+        return false;
+    }
+    out = std::move( state.overmap );
+    state.overmap = overmap_block();
+    state.have_overmap = false;
     return true;
 }
 
