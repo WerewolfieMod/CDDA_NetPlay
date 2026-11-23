@@ -4806,19 +4806,18 @@ void host_pump_client_actions()
  * stock game::butcher() drives the host avatar and opens selection menus, so
  * the netplay host starts the butchery activity directly: the first corpse on
  * the tile, full butchery, same tool and mood checks as the stock action. */
-static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
+static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos, int pick = 0 )
 {
     static const quality_id qual_butcher( "BUTCHER" );
     static const quality_id qual_cut_fine( "CUT_FINE" );
     map &here = get_map();
-    item *corpse = nullptr;
+    std::vector<item *> corpses;
     for( item &it : here.i_at( pos ) ) {
         if( it.is_corpse() ) {
-            corpse = &it;
-            break;
+            corpses.push_back( &it );
         }
     }
-    if( corpse == nullptr ) {
+    if( corpses.empty() ) {
         if( netplay::mp_diag_enabled() ) {
             if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
                 std::fprintf( f, "butcher: no corpse at %d,%d\n", pos.x(), pos.y() );
@@ -4828,6 +4827,8 @@ static void host_butcher_at( int sid, npc &av, const tripoint_bub_ms &pos )
         av.add_msg_if_player( m_info, _( "There are no corpses here to butcher." ) );
         return;
     }
+    item *corpse = corpses[std::min<int>( std::max( 0, pick ),
+                                          static_cast<int>( corpses.size() ) - 1 )];
     const int factor = av.max_quality( qual_butcher, PICKUP_RANGE );
     const int factor_d = av.max_quality( qual_cut_fine, PICKUP_RANGE );
     if( factor == INT_MIN && factor_d == INT_MIN ) {
@@ -6091,9 +6092,10 @@ void host_pump_intents()
                 g->mp_anchor_map_on( *av, true );
                 const int dx = in.args.empty() ? 0 : in.args[0];
                 const int dy = in.args.size() < 2 ? 0 : in.args[1];
+                const int pick = in.args.size() < 3 ? 0 : in.args[2];
                 const std::size_t msg_before = Messages::generation();
                 host_butcher_at( in.sid, *av,
-                                 av->pos_bub() + tripoint_rel_ms( dx, dy, 0 ) );
+                                 av->pos_bub() + tripoint_rel_ms( dx, dy, 0 ), pick );
                 mp_forward_new_messages( in.sid, msg_before );
                 av_send_status( in.sid );
                 if( !netplay::host_avatar_keys_pending() ) {

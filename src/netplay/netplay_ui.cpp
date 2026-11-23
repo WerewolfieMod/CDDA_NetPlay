@@ -4455,11 +4455,36 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             // (which used to open the HOST's log).
             Messages::display_messages();
             break;
-        case ACTION_BUTCHER:
-            // DDA MP v4.0a-171: the host butchers the corpse on the avatar's
-            // tile (dx/dy are reserved for cursor targeting later).
-            netplay::client_send_intent( "butcher", 0, { 0, 0 } );
+        case ACTION_BUTCHER: {
+            // DDA MP v4.0a-244: the host's butcher menu lists the corpses on
+            // the avatar's tile. Show the same list from the mirror and send
+            // the chosen row; a single corpse goes straight to the host.
+            map &mp_bh = get_map();
+            const tripoint_bub_ms mp_bp = get_avatar().pos_bub();
+            std::vector<std::string> mp_corpses;
+            if( mp_bh.inbounds( mp_bp ) ) {
+                for( const item &it : mp_bh.i_at( mp_bp ) ) {
+                    if( it.is_corpse() ) {
+                        mp_corpses.push_back( it.tname() );
+                    }
+                }
+            }
+            int mp_pick = 0;
+            if( mp_corpses.size() > 1 ) {
+                uilist mp_menu;
+                mp_menu.text = _( "Butcher what?" );
+                for( std::size_t i = 0; i < mp_corpses.size(); i++ ) {
+                    mp_menu.addentry( static_cast<int>( i ), true, -1, mp_corpses[i] );
+                }
+                mp_menu.query();
+                if( mp_menu.ret < 0 ) {
+                    break;
+                }
+                mp_pick = mp_menu.ret;
+            }
+            netplay::client_send_intent( "butcher", 0, { 0, 0, mp_pick } );
             break;
+        }
         case ACTION_SMASH: {
             // The host's own 's' asks "Smash where?"; do the same locally and
             // send the chosen direction (the old path always took the nearest
