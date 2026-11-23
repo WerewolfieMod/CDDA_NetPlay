@@ -5176,6 +5176,94 @@ static void mp_native_apply_creatures( const std::vector<snapshot::creature_fram
 /* DDA MP v4.0a-244: write the host's minimap visibility into the mirror's
  * visibility cache, so local UI (monster list, compass) sees the same tiles
  * the host's player does, not just the streamed 49x32 frame. */
+/* DDA MP v4.0a-245: the client's local `sees` can fail for a distant creature
+ * because the mirror has no daylight/lightmap outside the frame. The host only
+ * streams creatures its own player sees, so rebuild the compass/creature list
+ * from the whole mirror tracker instead of the local LOS test. */
+static void mp_native_fill_mon_visible()
+{
+    avatar &u = get_avatar();
+    monster_visible_info &mv = u.get_mon_visible();
+    for( auto &t : mv.unique_types ) {
+        t.clear();
+    }
+    for( auto &m : mv.unique_mons ) {
+        m.clear();
+    }
+    std::fill( mv.dangerous.begin(), mv.dangerous.end(), false );
+    const tripoint_bub_ms pos = u.pos_bub();
+    auto dir_index = []( const direction d ) {
+        switch( d ) {
+            case direction::ABOVENORTHWEST:
+            case direction::NORTHWEST:
+            case direction::BELOWNORTHWEST:
+                return 7;
+            case direction::ABOVENORTH:
+            case direction::NORTH:
+            case direction::BELOWNORTH:
+                return 0;
+            case direction::ABOVENORTHEAST:
+            case direction::NORTHEAST:
+            case direction::BELOWNORTHEAST:
+                return 1;
+            case direction::ABOVEWEST:
+            case direction::WEST:
+            case direction::BELOWWEST:
+                return 6;
+            case direction::ABOVECENTER:
+            case direction::CENTER:
+            case direction::BELOWCENTER:
+                return 8;
+            case direction::ABOVEEAST:
+            case direction::EAST:
+            case direction::BELOWEAST:
+                return 2;
+            case direction::ABOVESOUTHWEST:
+            case direction::SOUTHWEST:
+            case direction::BELOWSOUTHWEST:
+                return 5;
+            case direction::ABOVESOUTH:
+            case direction::SOUTH:
+            case direction::BELOWSOUTH:
+                return 4;
+            case direction::ABOVESOUTHEAST:
+            case direction::SOUTHEAST:
+            case direction::BELOWSOUTHEAST:
+                return 3;
+            case direction::last:
+            default:
+                return -1;
+        }
+    };
+    for( monster &mon : g->all_monsters() ) {
+        if( mon.is_dead_state() ) {
+            continue;
+        }
+        const int index = dir_index( direction_from( pos.raw().xy(),
+                                   mon.pos_bub().raw().xy() ) );
+        if( index < 0 ) {
+            continue;
+        }
+        auto &vec = mv.unique_mons[index];
+        const auto it = std::find_if( vec.begin(), vec.end(),
+        [&]( const std::pair<const mtype *, int> &elem ) {
+            return elem.first == mon.type;
+        } );
+        if( it == vec.end() ) {
+            vec.emplace_back( mon.type, 1 );
+        } else {
+            it->second++;
+        }
+    }
+    for( npc &guy : g->all_npcs() ) {
+        const int index = dir_index( direction_from( pos.raw().xy(),
+                                   guy.pos_bub().raw().xy() ) );
+        if( index >= 0 ) {
+            mv.unique_types[index].push_back( &guy );
+        }
+    }
+}
+
 static void mp_native_apply_minimap_visibility()
 {
     netplay::minimap_frame mm;
@@ -5404,6 +5492,7 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // frame holds dangling npc/mtype pointers; the compass and the creature
     // panel read exactly this cache.
     g->mon_info_update();
+    mp_native_fill_mon_visible();
     static int mp_light_logs = 0;
     if( mp_light_logs < 3 ) {
         ++mp_light_logs;
@@ -7428,6 +7517,15 @@ void run_view_loop()
                 if( mp_pick_tiles_active ) {
                     map &mp_ph = get_map();
                     const tripoint_bub_ms mp_pav = get_avatar().pos_bub();
+                    if( netplay::mp_diag_enabled() ) {
+                        static int mp_hl_log = 0;
+                        if( mp_hl_log < 3 ) {
+                            ++mp_hl_log;
+                            mp_inv_log( string_format( "picktile: highlight %d tiles at av %d,%d",
+                                                       static_cast<int>( mp_pick_tiles.size() ),
+                                                       mp_pav.x(), mp_pav.y() ) );
+                        }
+                    }
                     for( const point &c : mp_pick_tiles ) {
                         const tripoint_bub_ms mp_hp( mp_pav.x() + c.x, mp_pav.y() + c.y,
                                                      mp_pav.z() );

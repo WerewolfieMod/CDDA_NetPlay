@@ -4054,11 +4054,39 @@ void host_forward_new_messages( int sid, std::size_t before_generation )
     mp_forward_new_messages( sid, before_generation );
 }
 
+/* DDA MP v4.0a-245: what counts as a smash target. map::bash() also smashes
+ * glass items and fields, so a floor tile holding only shards must not be
+ * rejected by the terrain-only is_bashable() test. */
+static bool mp_has_smash_target( map &here, const tripoint_bub_ms &p )
+{
+    static const material_id mp_mat_glass( "glass" );
+    if( here.is_bashable( p ) || here.veh_at( p ) || here.field_at( p ).field_count() > 0 ) {
+        return true;
+    }
+    for( const item &it : here.i_at( p ) ) {
+        if( it.can_revive() || it.made_of( mp_mat_glass ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* DDA MP v4.0a-244: one smash at a chosen tile. Shared by the nearest-tile
  * action (old clients) and the "smash" intent that carries a direction. */
 static void host_smash_at( int sid, npc &av, const tripoint_bub_ms &target )
 {
     map &here = get_map();
+    // Same priority as avatar::smash(): a revivable corpse is pulped instead of
+    // bashing the floor underneath it.
+    for( const item &it : here.i_at( target ) ) {
+        if( it.can_revive() ) {
+            av.assign_activity( pulp_activity_actor( here.get_abs( target ) ) );
+            av_mark_acted( sid );
+            netplay::host_send_hover_to_sid( sid, "" );
+            av_send_session_picture( sid, av.pos_bub(), &av );
+            return;
+        }
+    }
     const std::size_t msg_before = Messages::generation();
     const int move_cost = !av.is_armed() ? 80 :
                           static_cast<int>( av.get_wielded_item()->attack_time( av ) * 0.8 );
@@ -4455,7 +4483,7 @@ void host_pump_client_actions()
                 std::optional<tripoint_bub_ms> target;
                 for( const point &off : smash_offsets ) {
                     const tripoint_bub_ms p( pos + tripoint_rel_ms( off.x, off.y, 0 ) );
-                    if( here.inbounds( p ) && here.is_bashable( p ) ) {
+                    if( here.inbounds( p ) && mp_has_smash_target( here, p ) ) {
                         target = p;
                         break;
                     }
@@ -6072,7 +6100,7 @@ void host_pump_intents()
                 g->mp_anchor_map_on( *av, true );
                 map &here = get_map();
                 const tripoint_bub_ms target = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
-                if( here.inbounds( target ) && here.is_bashable( target ) ) {
+                if( here.inbounds( target ) && mp_has_smash_target( here, target ) ) {
                     host_smash_at( in.sid, *av, target );
                 } else {
                     netplay::host_send_event_to_sid(

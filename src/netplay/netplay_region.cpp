@@ -507,6 +507,7 @@ void host_capture_region_monsters()
     if( reg == nullptr ) {
         return;
     }
+    std::vector<shared_ptr_fast<monster>> mp_captured;
     for( const shared_ptr_fast<monster> &m : get_creature_tracker().get_monsters_list() ) {
         if( !m || m->is_dead_state() ) {
             continue;
@@ -525,6 +526,16 @@ void host_capture_region_monsters()
         sm.az = ap.z();
         sm.json = os.str();
         reg->saved[ap] = std::move( sm );
+        mp_captured.push_back( m );
+    }
+    // DDA MP v4.0a-245: remove them from the tracker before the shift. The
+    // engine's shift would otherwise despawn the ones left behind into the
+    // overmap horde map, while host_restore_region_monsters() re-adds them from
+    // this store - the same monster in both places made horde_map::spawn_entity
+    // raise "there's already a zombie there" on every subsequent shift.
+    creature_tracker &mp_tracker = get_creature_tracker();
+    for( const shared_ptr_fast<monster> &m : mp_captured ) {
+        mp_tracker.remove( *m );
     }
 }
 
