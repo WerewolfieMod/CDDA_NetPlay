@@ -1757,6 +1757,7 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
                 put_str8( p, d.mtype );
                 put_u16( p, static_cast<uint16_t>( std::max( 0, std::min( 65535, d.count ) ) ) );
                 put_u32( p, static_cast<uint32_t>( std::max( 0, std::min( 1000000, d.damage ) ) ) );
+                put_u32( p, static_cast<uint32_t>( std::max( 0, d.seed ) ) );
             }
         }
     }
@@ -3579,6 +3580,7 @@ static void client_run( socket_t sock )
                             d.mtype = ir.get_str8();
                             d.count = static_cast<int>( ir.get_u16() );
                             d.damage = static_cast<int>( ir.get_u32() );
+                            d.seed = static_cast<int>( ir.get_u32() );
                             it.items.push_back( std::move( d ) );
                         }
                         snap.item_tiles.push_back( std::move( it ) );

@@ -616,6 +616,7 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                                 }
                                 d.count = gi.count();
                                 d.damage = gi.damage();
+                                d.seed = gi.seed;
                                 mp_it.items.push_back( std::move( d ) );
                             }
                             if( !mp_it.items.empty() ) {
@@ -874,16 +875,11 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         // 49x32 frame. The client draws them with the tileset vpart override;
         // without this a car outside the frame only appeared after pressing x
         // (which streams a frame centred on it).
-        const auto &mp_viscache = here.get_cache_ref( center.z() ).visibility_cache;
         constexpr int MP_VEH_R = 60;
         for( int dy = -MP_VEH_R; dy <= MP_VEH_R; dy++ ) {
             for( int dx = -MP_VEH_R; dx <= MP_VEH_R; dx++ ) {
                 const tripoint_bub_ms p = center + tripoint_rel_ms( dx, dy, 0 );
                 if( !here.inbounds( p ) ) {
-                    continue;
-                }
-                const lit_level mp_ll = mp_viscache[p.x()][p.y()];
-                if( mp_ll == lit_level::BLANK ) {
                     continue;
                 }
                 const optional_vpart_position ovp = here.veh_at( p );
@@ -905,6 +901,18 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
                 f.sub = vd.is_open ? 1 : vd.is_broken ? 2 : 0;
                 f.rot = static_cast<uint8_t>( angle_to_dir4( veh.face.dir() - 270_degrees ) );
                 out.vehicle_parts.push_back( std::move( f ) );
+            }
+        }
+        if( netplay::mp_diag_enabled() ) {
+            static int mp_veh_log = 0;
+            if( mp_veh_log < 5 ) {
+                ++mp_veh_log;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "vehlist center=%d,%d n=%d\n",
+                                  center.x(), center.y(),
+                                  static_cast<int>( out.vehicle_parts.size() ) );
+                    std::fclose( f );
+                }
             }
         }
     }

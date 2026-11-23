@@ -5487,6 +5487,9 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                         continue;
                     }
                     item itm( itype_id( d.type ), calendar::turn );
+                    if( d.seed != 0 ) {
+                        itm.seed = d.seed;
+                    }
                     if( !d.variant.empty() ) {
                         itm.set_itype_variant( d.variant );
                     }
@@ -5529,6 +5532,15 @@ static void mp_native_apply_snapshot( const snapshot &snap )
         vc.sub = vp.sub;
         vc.rot = vp.rot;
         mp_vparts_cache.push_back( std::move( vc ) );
+    }
+    if( netplay::mp_diag_enabled() ) {
+        static int mp_vlist_log = 0;
+        if( mp_vlist_log < 5 ) {
+            ++mp_vlist_log;
+            mp_inv_log( string_format( "native: vehicle list n=%d (cache=%d)",
+                                       static_cast<int>( snap.vehicle_parts.size() ),
+                                       static_cast<int>( mp_vparts_cache.size() ) ) );
+        }
     }
     static const bool mp_creatures_on = []() {
         const char *v = std::getenv( "DDA_MP_NATIVE_CREATURES" );
@@ -8225,6 +8237,30 @@ void run_view_loop()
                         netplay::client_request_snapshot();
                         mp_inv_log( "test: zoom applied" );
                     }
+                }
+            }
+            // DDA MP test hook: exercise the pickup-tile chooser and its
+            // highlight without stealing the window focus.
+            if( const char *test_pick = std::getenv( "DDA_MP_TEST_CLIENT_PICKUP" );
+                test_pick != nullptr && test_pick[0] != '\0' ) {
+                static bool mp_test_pick_done = false;
+                if( !mp_test_pick_done && mp_native_avatar_ready && mp_have_picture ) {
+                    mp_test_pick_done = true;
+                    netplay::client_send_client_action( ACTION_PICKUP );
+                    mp_inv_log( "test: pickup key" );
+                }
+            }
+            // DDA MP test hook: force the pickup-tile chooser on the client to
+            // verify the tileset highlight rendering without host items.
+            if( const char *test_ptiles = std::getenv( "DDA_MP_TEST_CLIENT_PICKTILES" );
+                test_ptiles != nullptr && test_ptiles[0] != '\0' ) {
+                static bool mp_test_ptiles_done = false;
+                if( !mp_test_ptiles_done && mp_have_picture ) {
+                    mp_test_ptiles_done = true;
+                    mp_pick_tiles = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } };
+                    mp_pick_gen = 1;
+                    mp_pick_tiles_active = true;
+                    mp_inv_log( "test: picktiles forced" );
                 }
             }
             // DDA MP test hook: draw the throw reticle/info without a real

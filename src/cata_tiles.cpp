@@ -4622,7 +4622,11 @@ bool cata_tiles::draw_vpart( const tripoint_bub_ms &p, lit_level ll, int &height
                              const std::array<bool, 5> &invisible, bool roof, const bool memorize_only )
 {
     const auto override = vpart_override.find( p );
-    const bool overridden = override != vpart_override.end();
+    // DDA MP v4.0a-249: the streamed descriptor is the tile's *display* part
+    // (the floor layer). Drawing it again on the roof layer produced a
+    // duplicated/wrong sprite on cars with roofs, so the roof layer ignores
+    // the override.
+    const bool overridden = !roof && override != vpart_override.end();
     map &here = get_map();
     // first memorize the actual vpart
     const optional_vpart_position ovp = here.veh_at( p );

@@ -420,6 +420,7 @@ struct snapshot {
         std::string mtype;   // corpse monster type
         int count = 1;
         int damage = 0;      // raw damage points, like item::damage()
+        int seed = 0;        // item::seed (stable layering roll)
     };
     struct item_tile {
         int index = 0;       // cell index in the frame: y * width + x
