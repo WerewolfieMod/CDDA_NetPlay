@@ -1119,6 +1119,11 @@ static tripoint_bub_ms av_session_center( int sid )
     return get_avatar().pos_bub();
 }
 
+bool is_session_avatar( const npc &who )
+{
+    return who.get_unique_id().rfind( "netplay_avatar:", 0 ) == 0;
+}
+
 bool host_relay_character_message( const Character *who, const std::string &text,
                                    int msg_type, const std::string &msgid,
                                    const std::string &instance )

@@ -4423,6 +4423,14 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             hw.show();
             break;
         }
+        case ACTION_KEYBINDINGS: {
+            // The host's input_context opens this menu itself when its key is
+            // pressed; the client resolves the same key through the default
+            // context, so open the very same menu locally.
+            input_context kb_ctxt = get_default_mode_input_context();
+            kb_ctxt.display_menu();
+            break;
+        }
         case ACTION_MESSAGES:
             // DDA MP v4.0a-170: the journal is mirrored into the game's message
             // list on the client, so show it here instead of messaging the host
@@ -4951,6 +4959,12 @@ static void mp_native_apply_avatar_json()
     std::string json;
     if( !netplay::client_character_json( json ) || json.empty() ) {
         return;
+    }
+    // DDA MP v4.0a-240: the host serializes its session avatar as an npc, so
+    // the payload has no "scenario" member and avatar::load logged an error on
+    // every apply. Fill the cosmetic member in before parsing.
+    if( json[0] == '{' && json.find( "\"scenario\"" ) == std::string::npos ) {
+        json.insert( 1, "\"scenario\":\"evacuee\"," );
     }
     static std::string applied;
     if( json == applied ) {

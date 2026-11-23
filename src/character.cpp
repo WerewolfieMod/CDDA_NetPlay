@@ -592,6 +592,12 @@ Character &Character::operator=( Character && ) noexcept( list_is_noexcept ) = d
 void Character::setID( character_id i, bool force )
 {
     if( id.is_valid() && !force ) {
+        // DDA MP v4.0a-240: the client re-applies its character mirror with the
+        // same id on every status push. That is not an error (the old debugmsg
+        // wrote a line - and flushed the log - on every apply).
+        if( i == id ) {
+            return;
+        }
         debugmsg( "tried to set id of an npc/player, but has already a id: %d", id.get_value() );
     } else if( !i.is_valid() && !force ) {
         debugmsg( "tried to set invalid id of an npc/player: %d", i.get_value() );

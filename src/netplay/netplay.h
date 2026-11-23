@@ -426,6 +426,12 @@ std::vector<int> host_heartbeat_tick( const std::function<bool( int )> &busy );
 /// DDA MP: unblock a session's reader; it then runs the normal close path.
 void host_drop_session( int sid );
 
+/** DDA MP v4.0a-240: true when this npc is a netplay session avatar (a remote
+ * player's body). Such a body is driven by the player's own key presses, so
+ * NPC-only follower behaviour (closing doors behind itself, ally AI) must not
+ * run for it; the stock player walk does none of that. */
+bool is_session_avatar( const npc &who );
+
 /// DDA MP v4.0a-226: close a session on purpose and send the client a reason.
 /// The client shows the reason and returns to the main menu instead of
 /// offering a reconnect. The reader thread still owns the final close.

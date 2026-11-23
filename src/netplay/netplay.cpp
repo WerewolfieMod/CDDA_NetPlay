@@ -1809,10 +1809,51 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     return p;
 }
 
+/* DDA MP v4.0a-240: record what a snapshot really costs. Estimates were only
+ * guesses; the diagnostic log shows the raw payload and the framed size the
+ * socket actually carries, per frame and per second. */
+static void mp_log_snapshot_bytes( const char *who, const std::vector<char> &raw,
+                                   const std::vector<char> &framed, size_t peers )
+{
+    if( !mp_diag_enabled() ) {
+        return;
+    }
+    std::FILE *f = mp_diag_open( "netplay_snapshot.log" );
+    if( f == nullptr ) {
+        return;
+    }
+    static long long mp_snap_bucket = 0;
+    static size_t mp_snap_noted = 0;
+    static size_t mp_snap_sum_raw = 0;
+    static size_t mp_snap_sum_framed = 0;
+    const long long wms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch() ).count();
+    mp_snap_noted++;
+    mp_snap_sum_raw += raw.size();
+    mp_snap_sum_framed += framed.size();
+    const long long bucket = wms / 1000;
+    if( bucket != mp_snap_bucket ) {
+        if( mp_snap_bucket != 0 && mp_snap_noted > 0 ) {
+            std::fprintf( f, "snapshot sec=%lld frames=%zu raw_avg=%zu framed_avg=%zu peers=%zu\n",
+                          mp_snap_bucket, mp_snap_noted,
+                          mp_snap_sum_raw / mp_snap_noted,
+                          mp_snap_sum_framed / mp_snap_noted, peers );
+        }
+        mp_snap_bucket = bucket;
+        mp_snap_noted = 0;
+        mp_snap_sum_raw = 0;
+        mp_snap_sum_framed = 0;
+    }
+    std::fprintf( f, "%s bytes=%zu framed=%zu peers=%zu\n", who, raw.size(), framed.size(), peers );
+    std::fclose( f );
+}
+
 void host_broadcast_snapshot( const snapshot &snap )
 {
-    std::vector<char> f = encode_frame( frame::SNAPSHOT, maybe_compress( encode_snapshot_payload_raw( snap ) ) );
+    const std::vector<char> mp_raw = encode_snapshot_payload_raw( snap );
+    std::vector<char> f = encode_frame( frame::SNAPSHOT, maybe_compress( mp_raw ) );
     std::lock_guard<std::mutex> lk( state.sessions_mutex );
+    mp_log_snapshot_bytes( "broadcast", mp_raw, f, state.id2sock.size() );
     auto it = state.id2sock.begin();
     while( it != state.id2sock.end() ) {
         if( send_all( it->second, f ) ) {
@@ -1900,8 +1941,13 @@ bool host_send_snapshot_to_sid( int sid, const snapshot &snap )
     if( it == state.id2sock.end() ) {
         return false;
     }
-    std::vector<char> f = encode_frame( frame::SNAPSHOT,
-                                        maybe_compress( encode_snapshot_payload_raw( snap ) ) );
+    const std::vector<char> mp_raw = encode_snapshot_payload_raw( snap );
+    std::vector<char> f = encode_frame( frame::SNAPSHOT, maybe_compress( mp_raw ) );
+    {
+        char mp_who[64];
+        std::snprintf( mp_who, sizeof( mp_who ), "direct sid=%d", sid );
+        mp_log_snapshot_bytes( mp_who, mp_raw, f, 1 );
+    }
     if( !send_all( it->second, f ) ) {
         // failed session: drop it; its reader thread will notice too
         close_socket( it->second );

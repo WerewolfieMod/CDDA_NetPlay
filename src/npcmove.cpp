@@ -82,6 +82,7 @@
 #include "monster.h"
 #include "mtype.h"
 #include "npc.h"
+#include "netplay/netplay.h"  // is_session_avatar (player-driven npc bodies)
 #include "npc_arbitration.h"
 #include "npc_attack.h"
 #include "npc_decision_category.h"
@@ -3813,11 +3814,19 @@ void npc::move_to( const tripoint_bub_ms &pt, bool no_bashing, std::set<tripoint
         }
 
         // Close doors behind self (if you can)
-        if( ( rules.has_flag( ally_rule::close_doors ) && is_player_ally() ) && !is_hallucination() ) {
+        // DDA MP v4.0a-240: a netplay avatar is a remote player's body, driven
+        // by key presses exactly like the local player. The ally-only "close
+        // the door behind you" rule made it schedule a close-tile activity on
+        // every step; that activity later failed ("You cannot close the
+        // <tile>") in the client's log, and cancelling it on the next key also
+        // swallowed the step. The stock player walk does neither.
+        if( !netplay::is_session_avatar( *this ) &&
+            ( rules.has_flag( ally_rule::close_doors ) && is_player_ally() ) && !is_hallucination() ) {
             assign_activity( close_tile_activity_actor( old_pos ) );
         }
         // Lock doors as well
-        if( ( rules.has_flag( ally_rule::lock_doors ) && is_player_ally() ) && !is_hallucination() ) {
+        if( !netplay::is_session_avatar( *this ) &&
+            ( rules.has_flag( ally_rule::lock_doors ) && is_player_ally() ) && !is_hallucination() ) {
             doors::lock_door( here, *this, old_pos );
         }
 
