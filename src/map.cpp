@@ -1737,9 +1737,16 @@ void map::board_vehicle( const tripoint_bub_ms &pos, Character *p )
     }
     if( vp->part().has_flag( vp_flag::passenger_flag ) ) {
         Character *psg = vp->vehicle().get_passenger( vp->part_index() );
-        debugmsg( "map::board_vehicle: %s failed to board passenger (%s) is already there",
-                  p ? p->get_name() : "<null_boarder>",
-                  psg ? psg->get_name() : "<null_passenger>" );
+        // DDA MP v4.0a-258: do not pop a modal on the host when a seat still
+        // carries a stale/self passenger flag (the netplay avatar was saved in
+        // the seat and is boarding it again after a move). Free the seat
+        // silently and let the board proceed; only log a genuine conflict.
+        if( psg != p ) {
+            dbg( D_WARNING ) << string_format(
+                "map::board_vehicle: %s failed to board passenger (%s) is already there",
+                p ? p->get_name() : "<null_boarder>",
+                psg ? psg->get_name() : "<null_passenger>" );
+        }
         unboard_vehicle( pos );
     }
     vp->part().set_flag( vp_flag::passenger_flag );

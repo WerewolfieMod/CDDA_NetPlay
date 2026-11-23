@@ -4541,18 +4541,13 @@ void host_pump_client_actions()
                 break;
             }
             case ACTION_CONTROL_VEHICLE: {
-                // DDA MP v4.0a-132: board, drive and leave a vehicle with the
-                // session avatar. The engine's board/unboard and vehicle
-                // pldrive all take a Character, so the same calls the host
-                // player uses work for the npc avatar.
+                // DDA MP v4.0a-258: mirror game::control_vehicle. The old code
+                // unboarded the avatar whenever it was in a vehicle, so ^ on a
+                // bicycle seat just stepped off and no control/menu appeared.
+                // Search this tile and the adjacent ones for working controls,
+                // move to that part and take control.
                 map &here = get_map();
                 const tripoint_bub_ms pos = av->pos_bub();
-                const optional_vpart_position vp = here.veh_at( pos );
-                if( !vp ) {
-                    netplay::host_send_event_to_sid(
-                        sid, netplay::fork_text( "You can't drive here." ), static_cast<int>( m_info ) );
-                    break;
-                }
                 if( av->controlling_vehicle ) {
                     av->controlling_vehicle = false;
                     netplay::host_send_event_to_sid(
@@ -4561,33 +4556,37 @@ void host_pump_client_actions()
                     changed = true;
                     break;
                 }
-                if( av->in_vehicle ) {
-                    here.unboard_vehicle( pos, false );
-                    static const point leave_offsets[] = {
-                        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
-                        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
-                    };
-                    for( const point &off : leave_offsets ) {
-                        const tripoint_bub_ms p( pos + tripoint_rel_ms( off.x, off.y, 0 ) );
-                        if( here.inbounds( p ) && !here.veh_at( p ) && here.passable( p ) ) {
-                            av->setpos( here, p, false );
+                auto has_controls = [&]( const tripoint_bub_ms & p ) {
+                    const optional_vpart_position vp = here.veh_at( p );
+                    return vp && vp->vehicle().avail_part_with_feature( vp->mount_pos(),
+                            "CONTROLS" ) >= 0;
+                };
+                std::optional<tripoint_bub_ms> controls_pos;
+                if( has_controls( pos ) ) {
+                    controls_pos = pos;
+                } else {
+                    for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
+                        if( p != pos && here.inbounds( p ) && has_controls( p ) ) {
+                            controls_pos = p;
                             break;
                         }
                     }
-                    netplay::host_send_event_to_sid(
-                        sid, netplay::fork_text( "You get out of the vehicle." ), static_cast<int>( m_info ) );
-                    changed = true;
-                    break;
                 }
-                const int controls = vp->vehicle().avail_part_with_feature(
-                                         vp->mount_pos(), "CONTROLS" );
-                if( controls < 0 ) {
+                if( !controls_pos ) {
                     netplay::host_send_event_to_sid(
-                        sid, netplay::fork_text( "This vehicle has no working controls." ),
+                        sid, netplay::fork_text( "No vehicle controls found." ),
                         static_cast<int>( m_info ) );
                     break;
                 }
-                here.board_vehicle( pos, av );
+                const optional_vpart_position vp = here.veh_at( *controls_pos );
+                if( !vp ) {
+                    break;
+                }
+                if( av->in_vehicle && av->pos_bub() != *controls_pos ) {
+                    here.unboard_vehicle( av->pos_bub(), false );
+                }
+                av->setpos( here, *controls_pos, false );
+                here.board_vehicle( *controls_pos, av );
                 av->controlling_vehicle = true;
                 netplay::host_send_event_fmt_to_sid(
                     sid, "You take control of the %s.", { vp->vehicle().name },
