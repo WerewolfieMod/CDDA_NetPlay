@@ -1205,6 +1205,11 @@ static std::vector<std::string> mp_client_aim_lines;
 static std::string mp_char_json_cache;
 static netplay::minimap_frame mp_aim_minimap;
 static std::vector<netplay::aim_target> mp_aim_targets;
+/* DDA MP v4.0a-238: extra tileset sprites the host renderer would draw over a
+ * tile but the native client renderer cannot infer from the mirror map:
+ * container/item layers (e.g. the dish rack contents), the "more items" badge
+ * and the zombie revival indicator. Filled per snapshot, queued per frame. */
+static std::vector<std::pair<tripoint_bub_ms, std::string>> mp_async_overlays;
 static std::string mp_throw_name;
 static int mp_throw_range = 1;
 static std::string mp_aim_text;
@@ -5095,6 +5100,7 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     you.prepare_map_memory_region(
         here.get_abs( center + tripoint_rel_ms( -snap.width / 2, -snap.height / 2, 0 ) ),
         here.get_abs( center + tripoint_rel_ms( snap.width / 2, snap.height / 2, 0 ) ) );
+    mp_async_overlays.clear();
     for( int y = 0; y < snap.height; y++ ) {
         for( int x = 0; x < snap.width; x++ ) {
             const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
@@ -5161,6 +5167,20 @@ static void mp_native_apply_snapshot( const snapshot &snap )
                     itm.set_itype_variant( t.item_variant );
                 }
                 here.add_item_or_charges( p, itm, false );
+            }
+            // DDA MP v4.0a-238: sprites the host renderer paints over this tile
+            // that the mirror map cannot reproduce. async_anim keeps one sprite
+            // per tile, so the badge / revival indicator wins over a layer.
+            for( const netplay::tile_item_layer &l : t.item_layers ) {
+                if( !l.sprite.empty() ) {
+                    mp_async_overlays.emplace_back( p, l.sprite );
+                    break;
+                }
+            }
+            if( t.flags & 128 ) {
+                mp_async_overlays.emplace_back( p, "zombie_revival_indicator" );
+            } else if( t.flags & 2 ) {
+                mp_async_overlays.emplace_back( p, "highlight_item" );
             }
         }
     }
@@ -5408,6 +5428,70 @@ static void mp_draw_native_sidebar_bg()
                             point( right ? TERMX - full_w : 0, 0 ) );
     werase( bg );
     wnoutrefresh( bg );
+}
+
+/* DDA MP v4.0a-238: host messages carry <color_...> tags (they were printed
+ * raw on the client) and must wrap inside the sidebar column. Parse the tags
+ * into coloured runs and word-wrap them with the ImGui font metrics. */
+static void mp_draw_tagged_text( ImDrawList *dl, float x, float &y, float max_w,
+                                 float line_h, const std::string &text,
+                                 const ImU32 default_col )
+{
+    std::vector<std::pair<std::string, ImU32>> runs;
+    ImU32 cur = default_col;
+    size_t pos = 0;
+    while( pos < text.size() ) {
+        const size_t lt = text.find( '<', pos );
+        if( lt == std::string::npos ) {
+            runs.emplace_back( text.substr( pos ), cur );
+            break;
+        }
+        if( lt > pos ) {
+            runs.emplace_back( text.substr( pos, lt - pos ), cur );
+        }
+        const size_t gt = text.find( '>', lt );
+        if( gt == std::string::npos ) {
+            runs.emplace_back( text.substr( lt ), cur );
+            break;
+        }
+        const std::string tag = text.substr( lt + 1, gt - lt - 1 );
+        if( tag == "/color" ) {
+            cur = default_col;
+        } else if( tag.rfind( "color_", 0 ) == 0 ) {
+            const nc_color nc = color_from_string( tag.substr( 6 ) );
+            if( nc != c_unset ) {
+                cur = cataimgui::ImU32_from_color( nc );
+            }
+        }
+        pos = gt + 1;
+    }
+    float px = x;
+    for( const auto &run : runs ) {
+        const std::string &s = run.first;
+        if( s.empty() ) {
+            continue;
+        }
+        size_t i = 0;
+        while( i < s.size() ) {
+            size_t j = i;
+            while( j < s.size() && s[j] != ' ' ) {
+                ++j;
+            }
+            while( j < s.size() && s[j] == ' ' ) {
+                ++j;
+            }
+            const std::string word = s.substr( i, j - i );
+            const float w = ImGui::CalcTextSize( word.c_str() ).x;
+            if( px > x && px + w > x + max_w ) {
+                y += line_h;
+                px = x;
+            }
+            dl->AddText( ImVec2( px, y ), run.second, word.c_str() );
+            px += w;
+            i = j;
+        }
+    }
+    y += line_h;
 }
 
 void run_view_loop()
@@ -5697,6 +5781,9 @@ void run_view_loop()
                 const int first = std::max( 0, static_cast<int>( mp_log.size() ) - mp_shown_lines );
                 for( int i = first; i < static_cast<int>( mp_log.size() ); i++ ) {
                     const mp_log_line &ml = mp_log[static_cast<size_t>( i )];
+                    if( ly + ch > mp_mini_top ) {
+                        break;
+                    }
                     // Same ageing as the host's message log (game turns):
                     // fresh -> slightly old -> dark gray.
                     const int mp_age = mp_cur_turn - ml.turn;
@@ -5708,9 +5795,8 @@ void run_view_loop()
                     } else {
                         ml_col = c_dark_gray;
                     }
-                    dl->AddText( ImVec2( x0, ly ),
-                                 cataimgui::ImU32_from_color( ml_col ), ml.text.c_str() );
-                    ly += ch;
+                    mp_draw_tagged_text( dl, x0, ly, std::max( 40.0f, io.DisplaySize.x - x0 - cw ),
+                                         ch, ml.text, cataimgui::ImU32_from_color( ml_col ) );
                 }
             }
             // DDA MP v4.0a-12: overmap minimap (host-coloured tiles).
@@ -6901,13 +6987,31 @@ void run_view_loop()
                 if( mp_pick_tiles_active ) {
                     map &mp_ph = get_map();
                     const tripoint_bub_ms mp_pav = get_avatar().pos_bub();
+                    ImDrawList *mp_hdl = ImGui::GetForegroundDrawList();
+                    const ImU32 mp_hcol = IM_COL32( 255, 235, 80, 230 );
+                    const float mp_hth = std::max( 1.5f, std::min( mp_canvas_tw,
+                                                    mp_canvas_th ) * 0.08f );
                     for( const point &c : mp_pick_tiles ) {
                         const tripoint_bub_ms mp_hp( mp_pav.x() + c.x, mp_pav.y() + c.y,
                                                      mp_pav.z() );
                         if( mp_ph.inbounds( mp_hp ) ) {
                             g->draw_highlight( mp_hp );
+                            // The tileset's own highlight sprite is subtle; add
+                            // an outline so the chooser always shows its tiles.
+                            if( mp_canvas_tw > 0.0f && mp_canvas_th > 0.0f ) {
+                                const ImVec2 mp_a( mp_canvas_cx + c.x * mp_canvas_tw,
+                                                   mp_canvas_cy + c.y * mp_canvas_th );
+                                mp_hdl->AddRect( mp_a, ImVec2( mp_a.x + mp_canvas_tw,
+                                                               mp_a.y + mp_canvas_th ),
+                                                 mp_hcol, 1.0f, 0, mp_hth );
+                            }
                         }
                     }
+                }
+                // Item layers (container content over furniture), the pile
+                // badge and the revival indicator the host renderer draws.
+                for( const std::pair<tripoint_bub_ms, std::string> &ov : mp_async_overlays ) {
+                    tilecontext->init_draw_async_anim( ov.first, ov.second );
                 }
                 mp_queue_native_cursor( snap );
             } else {

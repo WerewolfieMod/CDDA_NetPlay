@@ -585,6 +585,15 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
                             // itype_variant().id into the tile lookup).
                             t.item_variant = itm.has_itype_variant()
                                              ? itm.itype_variant().id : "";
+                            // DDA MP v4.0a-238: the revival "!" is a host fact
+                            // (corpse flags/damage), not derivable from the
+                            // streamed type; send it as a tile flag.
+                            for( const item &it2 : here.i_at( p ) ) {
+                                if( it2.can_revive() ) {
+                                    t.flags |= 128;
+                                    break;
+                                }
+                            }
                         }
                         // DDA MP v3.9.1: stream the layer draws resolved + the
                         // skip-top fact for the seen-item case.
