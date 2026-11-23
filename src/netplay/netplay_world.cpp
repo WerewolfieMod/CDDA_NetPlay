@@ -884,12 +884,12 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.turn = to_turn<int>( calendar::turn );
     out.weather = get_weather().weather_id.str();
     // DDA MP v4.2: raw creature state for the native renderer. Only what the
-    // session avatar can see (or everything for a watcher), and only within
-    // the streamed frame + a small margin.
+    // session avatar can see (or everything for a watcher), and within the
+    // visible range (the client sidebar list and compass show creatures well
+    // beyond the streamed tile frame, exactly like the host).
     auto mp_in_frame = [&]( const tripoint_bub_ms & p ) {
         const tripoint_rel_ms rel = p - center;
-        return std::abs( rel.x() ) <= FRAMEW / 2 + 2 &&
-               std::abs( rel.y() ) <= FRAMEH / 2 + 2;
+        return std::abs( rel.x() ) <= 60 && std::abs( rel.y() ) <= 60;
     };
     for( monster &mon : g->all_monsters() ) {
         if( mon.is_dead_state() || !here.inbounds( mon.pos_bub() ) ||
@@ -4054,6 +4054,48 @@ void host_forward_new_messages( int sid, std::size_t before_generation )
     mp_forward_new_messages( sid, before_generation );
 }
 
+/* DDA MP v4.0a-244: one smash at a chosen tile. Shared by the nearest-tile
+ * action (old clients) and the "smash" intent that carries a direction. */
+static void host_smash_at( int sid, npc &av, const tripoint_bub_ms &target )
+{
+    map &here = get_map();
+    const std::size_t msg_before = Messages::generation();
+    const int move_cost = !av.is_armed() ? 80 :
+                          static_cast<int>( av.get_wielded_item()->attack_time( av ) * 0.8 );
+    const bash_params br = here.bash( target, av.smash_ability(), false, false, false );
+    // DDA MP test hook: a plain global add_msg() inside a client action must be
+    // forwarded to that client and removed from the host's log.
+    if( const char *test_global = std::getenv( "DDA_MP_TEST_GLOBAL_MSG" );
+        test_global != nullptr && test_global[0] != '\0' ) {
+        add_msg( "GLOBALCLIENTMSG" );
+    }
+    av.mod_moves( -move_cost );
+    auto pool_it = av_move_pool.find( sid );
+    if( pool_it == av_move_pool.end() ) {
+        pool_it = av_move_pool.insert( { sid, av.get_speed() } ).first;
+    }
+    pool_it->second = std::max( 0, av.get_moves() );
+    av_mark_acted( sid );
+    if( br.did_bash && br.success ) {
+        netplay::host_send_event_fmt_to_sid(
+            sid, "You smash the %s.", { mp_ter_arg( here, target ) },
+            static_cast<int>( m_good ) );
+    } else if( br.did_bash ) {
+        netplay::host_send_event_fmt_to_sid(
+            sid, "You hit %s", { mp_ter_arg( here, target ) },
+            static_cast<int>( m_info ) );
+    }
+    if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&
+        !netplay::long_wait_active() ) {
+        av_waiting_for_turn[sid] = true;
+        netplay::host_send_hover_to_sid( sid, netplay::fork_text( "Waiting for other players..." ) );
+    } else {
+        netplay::host_send_hover_to_sid( sid, "" );
+    }
+    mp_forward_new_messages( sid, msg_before );
+    av_send_session_picture( sid, av.pos_bub(), &av );
+}
+
 void host_pump_client_actions()
 {
     if( !host_is_running() ) {
@@ -4423,42 +4465,7 @@ void host_pump_client_actions()
                         sid, netplay::fork_text( "There's nothing to smash here." ), static_cast<int>( m_info ) );
                     break;
                 }
-                const std::size_t msg_before = Messages::generation();
-                const int move_cost = !av->is_armed() ? 80 :
-                                      static_cast<int>( av->get_wielded_item()->attack_time( *av ) * 0.8 );
-                const bash_params br = here.bash( *target, av->smash_ability(), false, false, false );
-                // DDA MP test hook: a plain global add_msg() inside a client
-                // action must be forwarded to that client and removed from the
-                // host's log.
-                if( const char *test_global = std::getenv( "DDA_MP_TEST_GLOBAL_MSG" );
-                    test_global != nullptr && test_global[0] != '\0' ) {
-                    add_msg( "GLOBALCLIENTMSG" );
-                }
-                av->mod_moves( -move_cost );
-                auto pool_it = av_move_pool.find( sid );
-                if( pool_it == av_move_pool.end() ) {
-                    pool_it = av_move_pool.insert( { sid, av->get_speed() } ).first;
-                }
-                pool_it->second = std::max( 0, av->get_moves() );
-                av_mark_acted( sid );
-                if( br.did_bash && br.success ) {
-                    netplay::host_send_event_fmt_to_sid(
-                        sid, "You smash the %s.", { mp_ter_arg( here, *target ) },
-                        static_cast<int>( m_good ) );
-                } else if( br.did_bash ) {
-                    netplay::host_send_event_fmt_to_sid(
-                        sid, "You hit %s", { mp_ter_arg( here, *target ) },
-                        static_cast<int>( m_info ) );
-                }
-                if( pool_it->second <= 0 && !netplay::host_session_afk( sid ) &&
-                    !netplay::long_wait_active() ) {
-                    av_waiting_for_turn[sid] = true;
-                    netplay::host_send_hover_to_sid( sid, netplay::fork_text( "Waiting for other players..." ) );
-                } else {
-                    netplay::host_send_hover_to_sid( sid, "" );
-                }
-                mp_forward_new_messages( sid, msg_before );
-                av_send_session_picture( sid, av->pos_bub(), npc_ptr.get() );
+                host_smash_at( sid, *av, *target );
                 changed = true;
                 break;
             }
@@ -6050,6 +6057,34 @@ void host_pump_intents()
             continue;
         }
         // DDA MP v4.0a-171: butcher the corpse under (or next to) the avatar.
+        if( in.action == "smash" && in.args.size() >= 2 ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                const int dx = in.args[0];
+                const int dy = in.args[1];
+                if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
+                    netplay::host_send_event_to_sid(
+                        in.sid, _( "You can't smash there." ),
+                        static_cast<int>( m_info ) );
+                    continue;
+                }
+                g->mp_anchor_map_on( *av, true );
+                map &here = get_map();
+                const tripoint_bub_ms target = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+                if( here.inbounds( target ) && here.is_bashable( target ) ) {
+                    host_smash_at( in.sid, *av, target );
+                } else {
+                    netplay::host_send_event_to_sid(
+                        in.sid, netplay::fork_text( "There's nothing to smash there." ),
+                        static_cast<int>( m_info ) );
+                }
+                av_send_status( in.sid );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
         if( in.action == "butcher" ) {
             npc *av = av_session_npc( in.sid );
             if( av != nullptr ) {
@@ -6186,8 +6221,15 @@ void host_pump_intents()
                         const tripoint_rel_ms diff = best.pos_bub() - av->pos_bub();
                         const bool adjacent = std::abs( diff.x() ) <= 1 &&
                                               std::abs( diff.y() ) <= 1 && diff.z() == 0;
+                        // DDA MP v4.0a-244: the engine's own attack lines are
+                        // written for the host's player and are not relayed for
+                        // an NPC attacker; send the first-person result here.
+                        const int hp_before = best.is_dead_state() ? 0 : best.get_hp();
+                        const std::size_t atk_msg_before = Messages::generation();
+                        bool did_attack = false;
                         if( adjacent ) {
                             av->melee_attack( best, true );
+                            did_attack = true;
                             monster *mon = dynamic_cast<monster *>( &best );
                             if( mon != nullptr && mon->is_hallucination() &&
                                 !mon->is_dead_state() ) {
@@ -6202,6 +6244,30 @@ void host_pump_intents()
                                 static_cast<int>( m_info ) );
                         } else {
                             av->reach_attack( best.pos_bub() );
+                            did_attack = true;
+                        }
+                        if( did_attack ) {
+                            const std::size_t atk_new = Messages::generation() - atk_msg_before;
+                            if( atk_new > 0 ) {
+                                Messages::remove_last( std::min( atk_new, Messages::size() ) );
+                            }
+                            const bool dead = best.is_dead_state();
+                            const int hp_after = dead ? 0 : best.get_hp();
+                            if( dead ) {
+                                netplay::host_send_event_fmt_to_sid(
+                                    in.sid, "The %s dies!", { mp_creature_arg( &best ) },
+                                    static_cast<int>( m_good ) );
+                            } else if( hp_after < hp_before ) {
+                                netplay::host_send_event_fmt_to_sid(
+                                    in.sid, "You hit %1$s for %2$d damage.",
+                                    { mp_creature_arg( &best ),
+                                      std::to_string( hp_before - hp_after ) },
+                                    static_cast<int>( m_good ) );
+                            } else {
+                                netplay::host_send_event_to_sid(
+                                    in.sid, netplay::fork_text( "You miss." ),
+                                    static_cast<int>( m_info ) );
+                            }
                         }
                     }
                     if( !av->is_dead() ) {

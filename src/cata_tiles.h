@@ -1095,7 +1095,8 @@ class cata_tiles
         void void_item_override();
 
         void init_draw_vpart_override( const tripoint_bub_ms &p, const vpart_id &id, int part_mod,
-                                       const units::angle &veh_dir, bool hilite, const point_rel_ms &mount );
+                                       const units::angle &veh_dir, bool hilite, const point_rel_ms &mount,
+                                       const std::string &variant = std::string() );
         void void_vpart_override();
 
         void init_draw_monster_override( const tripoint_bub_ms &p, const mtype_id &id, int count,
@@ -1353,7 +1354,7 @@ class cata_tiles
         std::map<tripoint_bub_ms, std::tuple<itype_id, mtype_id, bool>> item_override;
         // int, angle, bool represents part_mod, veh_dir, and highlight respectively
         // point represents the mount direction
-        std::map<tripoint_bub_ms, std::tuple<vpart_id, int, units::angle, bool, point_rel_ms>>
+        std::map<tripoint_bub_ms, std::tuple<vpart_id, int, units::angle, bool, point_rel_ms, std::string>>
                 vpart_override;
         // int represents spawn count
         std::map<tripoint_bub_ms, std::tuple<mtype_id, int, bool, Creature::Attitude>> monster_override;

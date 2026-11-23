@@ -30,6 +30,7 @@
 #include "level_cache.h"
 #include "line.h"
 #include "map.h"
+#include "netplay/netplay.h"  // client mirror maps legitimately have holes
 #include "map_iterator.h"
 #include "mapdata.h"
 #include "math_defines.h"
@@ -246,8 +247,10 @@ bool map::build_transparency_cache( const int zlev )
             }
             const submap *cur_submap = get_submap_at_grid( tripoint_rel_sm{smx, smy, zlev} );
             if( cur_submap == nullptr ) {
-                debugmsg( "Tried to build transparency cache at (%d,%d,%d) but the submap is not loaded", smx, smy,
-                          zlev );
+                if( !netplay::client_is_connected() ) {
+                    debugmsg( "Tried to build transparency cache at (%d,%d,%d) but the submap is not loaded", smx, smy,
+                              zlev );
+                }
                 continue;
             }
             for( int sx = 0; sx < SEEX; ++sx ) {
@@ -689,7 +692,9 @@ void map::generate_lightmap( const int zlev )
         for( int smy = 0; smy < my_MAPSIZE; ++smy ) {
             const submap *cur_submap = get_submap_at_grid( tripoint_rel_sm{ smx, smy, zlev } );
             if( cur_submap == nullptr ) {
-                debugmsg( "Tried to generate lightmap at (%d,%d,%d) but the submap is not loaded", smx, smy, zlev );
+                if( !netplay::client_is_connected() ) {
+                    debugmsg( "Tried to generate lightmap at (%d,%d,%d) but the submap is not loaded", smx, smy, zlev );
+                }
                 continue;
             }
 

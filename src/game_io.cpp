@@ -756,27 +756,68 @@ bool game::save()
             }
         }
     };
+    auto mp_save_step = [mp_save_diag]( const char *what ) {
+        if( mp_save_diag ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "save step %s\n", what );
+                std::fclose( f );
+            }
+        }
+    };
     std::chrono::seconds time_since_load =
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - time_of_last_load );
     std::chrono::seconds total_time_played = time_played_at_last_load + time_since_load;
     events().send<event_type::game_save>( time_since_load, total_time_played );
     try {
-        if( !save_player_data() ||
-            !save_achievements() ||
-            !save_factions_missions_npcs() ||
-            !save_external_options_record() ||
-            !save_dimension_data() ||
-            !save_maps() ||
-            !get_auto_pickup().save_character() ||
-            !get_auto_notes_settings().save( true ) ||
-            !get_safemode().save_character() ||
-            !zone_manager::get_manager().save_zones() ||
-            !write_to_file( PATH_INFO::world_base_save_path() / "uistate.json", [&](
+        bool ok = true;
+        mp_save_step( "player" );
+        ok = save_player_data();
+        if( ok ) {
+            mp_save_step( "achievements" );
+            ok = save_achievements();
+        }
+        if( ok ) {
+            mp_save_step( "npcs" );
+            ok = save_factions_missions_npcs();
+        }
+        if( ok ) {
+            mp_save_step( "options" );
+            ok = save_external_options_record();
+        }
+        if( ok ) {
+            mp_save_step( "dimensions" );
+            ok = save_dimension_data();
+        }
+        if( ok ) {
+            mp_save_step( "maps" );
+            ok = save_maps();
+        }
+        if( ok ) {
+            mp_save_step( "autopickup" );
+            ok = get_auto_pickup().save_character();
+        }
+        if( ok ) {
+            mp_save_step( "autonotes" );
+            ok = get_auto_notes_settings().save( true );
+        }
+        if( ok ) {
+            mp_save_step( "safemode" );
+            ok = get_safemode().save_character();
+        }
+        if( ok ) {
+            mp_save_step( "zones" );
+            ok = zone_manager::get_manager().save_zones();
+        }
+        if( ok ) {
+            mp_save_step( "uistate" );
+            ok = write_to_file( PATH_INFO::world_base_save_path() / "uistate.json", [&](
         std::ostream & fout ) {
         JsonOut jsout( fout );
             uistate.serialize( jsout );
-        }, _( "uistate data" ) ) ) {
+        }, _( "uistate data" ) );
+        }
+        if( !ok ) {
             debugmsg( "game not saved" );
             mp_save_end( false );
             return false;
@@ -802,6 +843,15 @@ bool game::save()
         popup( _( "Failed to save game data" ) );
         mp_save_end( false );
         return false;
+    } catch( const std::exception &e ) {
+        if( mp_save_diag ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "save exception %s\n", e.what() );
+                std::fclose( f );
+            }
+        }
+        mp_save_end( false );
+        throw;
     }
 }
 

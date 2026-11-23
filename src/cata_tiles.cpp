@@ -4679,7 +4679,8 @@ bool cata_tiles::draw_vpart( const tripoint_bub_ms &p, lit_level ll, int &height
             const bool ret = memorize_only
                              ? false
                              : draw_from_id_string( vpname, TILE_CATEGORY::VEHICLE_PART, empty_string, p, subtile,
-                                                    rotation, lit_level::LIT, false, height_3d_temp );
+                                                    rotation, lit_level::LIT, false, height_3d_temp, 0,
+                                                    std::get<5>( override->second ) );
             if( ret && draw_highlight ) {
                 draw_item_highlight( p, height_3d_temp );
             }
@@ -5460,9 +5461,10 @@ void cata_tiles::init_draw_item_override( const tripoint_bub_ms &p, const itype_
     item_override.emplace( p, std::make_tuple( id, mid, hilite ) );
 }
 void cata_tiles::init_draw_vpart_override( const tripoint_bub_ms &p, const vpart_id &id,
-        const int part_mod, const units::angle &veh_dir, const bool hilite, const point_rel_ms &mount )
+        const int part_mod, const units::angle &veh_dir, const bool hilite, const point_rel_ms &mount,
+        const std::string &variant )
 {
-    vpart_override.emplace( p, std::make_tuple( id, part_mod, veh_dir, hilite, mount ) );
+    vpart_override.emplace( p, std::make_tuple( id, part_mod, veh_dir, hilite, mount, variant ) );
 }
 void cata_tiles::init_draw_monster_override( const tripoint_bub_ms &p, const mtype_id &id,
         const int count,

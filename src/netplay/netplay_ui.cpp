@@ -1188,6 +1188,18 @@ static float mp_canvas_tw = 0.0f;
 static float mp_canvas_th = 0.0f;
 /// Width of the sidebar overlay, used by the legacy replay layout.
 static float mp_sb_overlay_w = 0.0f;
+
+/* DDA MP v4.0a-244: vehicle parts of the latest streamed frame. The native
+ * renderer draws vehicles from the map's vehicle objects, which the mirror
+ * does not have; queue the tileset's own vpart override instead. */
+struct mp_cached_vpart {
+    tripoint_abs_ms pos = tripoint_abs_ms::zero;
+    std::string id;
+    std::string variant;
+    int sub = 0;   // 1 = open, 2 = broken, 0 = closed
+    int rot = 0;   // 0..3, the host's angle_to_dir4
+};
+static std::vector<mp_cached_vpart> mp_vparts_cache;
 /* DDA MP v4.0a-41: aiming view-model. The client has no game map, so the
  * snapshot supplies the only facts the stock target_ui needs for a throw:
  * terrain blocking (smooth-light barrier bit) and creature ids. */
@@ -4448,6 +4460,22 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             // tile (dx/dy are reserved for cursor targeting later).
             netplay::client_send_intent( "butcher", 0, { 0, 0 } );
             break;
+        case ACTION_SMASH: {
+            // The host's own 's' asks "Smash where?"; do the same locally and
+            // send the chosen direction (the old path always took the nearest
+            // bashable tile, which is not the host behaviour).
+            const std::optional<tripoint_bub_ms> sp =
+                choose_adjacent( _( "Smash where?" ), false );
+            if( sp ) {
+                const tripoint_rel_ms rel = *sp - get_avatar().pos_bub();
+                if( std::abs( rel.x() ) <= 1 && std::abs( rel.y() ) <= 1 &&
+                    ( rel.x() != 0 || rel.y() != 0 ) ) {
+                    netplay::client_send_intent( "smash", 0, { rel.x(), rel.y() } );
+                    mp_inv_log( string_format( "action: smash %d,%d", rel.x(), rel.y() ) );
+                }
+            }
+            break;
+        }
         case ACTION_CONSTRUCT:
             // DDA MP v4.0a-171: pick the construction and the direction on the
             // client; the host validates and starts it.
@@ -5055,27 +5083,96 @@ static void mp_native_apply_avatar_json()
 static void mp_native_apply_creatures( const std::vector<snapshot::creature_frame> &creatures )
 {
     creature_tracker &tracker = get_creature_tracker();
-    tracker.clear();
-    tracker.clear_npcs();
+    // DDA MP v4.0a-244: reuse the already-mirrored monster when its state did
+    // not change. Rebuilding every monster on every snapshot reset its
+    // animation/facing state, so a standing zombie's sprite alternated
+    // between two frames.
+    // Monsters have no per-instance numeric id; use their world position and
+    // type as the stable key (a standing monster keeps its animation state).
+    using mp_mon_key = std::tuple<int, int, int, std::string>;
+    static std::map<mp_mon_key, std::pair<std::string, shared_ptr_fast<monster>>> mp_mon_cache;
+    static std::map<int, std::pair<std::string, shared_ptr_fast<npc>>> mp_npc_cache;
+    std::map<mp_mon_key, std::pair<std::string, shared_ptr_fast<monster>>> next_mons;
+    std::map<int, std::pair<std::string, shared_ptr_fast<npc>>> next_npcs;
     for( const snapshot::creature_frame &cf : creatures ) {
         try {
             JsonValue jv = json_loader::from_string( cf.json );
             const tripoint_abs_ms ap( cf.ax, cf.ay, cf.az );
             if( cf.kind == 0 ) {
-                auto mon = std::make_shared<monster>();
-                mon->deserialize( jv.get_object() );
-                mon->setpos( ap, false );
-                tracker.add( mon );
+                auto fresh = std::make_shared<monster>();
+                fresh->deserialize( jv.get_object() );
+                const mp_mon_key key{ cf.ax, cf.ay, cf.az, fresh->type->id.str() };
+                auto it = mp_mon_cache.find( key );
+                if( it != mp_mon_cache.end() ) {
+                    // Keep the same object (and its animation state) and load
+                    // the fresh state into it; recreating it every snapshot
+                    // made a standing monster's sprite flicker.
+                    it->second.second->deserialize( jv.get_object() );
+                    it->second.second->setpos( ap, false );
+                    it->second.first = cf.json;
+                    next_mons[key] = it->second;
+                } else {
+                    fresh->setpos( ap, false );
+                    next_mons[key] = { cf.json, fresh };
+                }
             } else {
-                auto guy = std::make_shared<npc>();
-                guy->deserialize( jv );
-                guy->setpos( ap, false );
-                tracker.mp_add_npc( guy );
+                auto fresh = std::make_shared<npc>();
+                fresh->deserialize( jv );
+                const int id = fresh->getID().get_value();
+                auto it = mp_npc_cache.find( id );
+                if( it != mp_npc_cache.end() ) {
+                    it->second.second->deserialize( jv );
+                    it->second.second->setpos( ap, false );
+                    it->second.first = cf.json;
+                    next_npcs[id] = it->second;
+                } else {
+                    fresh->setpos( ap, false );
+                    next_npcs[id] = { cf.json, fresh };
+                }
             }
         } catch( const std::exception &e ) {
             mp_inv_log( std::string( "native: creature " ) + e.what() );
         } catch( ... ) {
             mp_inv_log( "native: creature unknown error" );
+        }
+    }
+    mp_mon_cache = std::move( next_mons );
+    mp_npc_cache = std::move( next_npcs );
+    tracker.clear();
+    tracker.clear_npcs();
+    for( auto &entry : mp_mon_cache ) {
+        tracker.add( entry.second.second );
+    }
+    for( auto &entry : mp_npc_cache ) {
+        tracker.mp_add_npc( entry.second.second );
+    }
+}
+
+/* DDA MP v4.0a-244: write the host's minimap visibility into the mirror's
+ * visibility cache, so local UI (monster list, compass) sees the same tiles
+ * the host's player does, not just the streamed 49x32 frame. */
+static void mp_native_apply_minimap_visibility()
+{
+    netplay::minimap_frame mm;
+    if( !netplay::client_minimap( mm ) || mm.width <= 0 || mm.height <= 0 ||
+        mm.center_x < 0 || mm.center_y < 0 ) {
+        return;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms center = get_avatar().pos_bub();
+    auto &vc = here.access_cache( center.z() ).visibility_cache;
+    for( int dy = 0; dy < mm.height; dy++ ) {
+        for( int dx = 0; dx < mm.width; dx++ ) {
+            const size_t i = static_cast<size_t>( dy ) * mm.width + dx;
+            if( i >= mm.seen.size() || mm.seen[i] == 0 ) {
+                continue;
+            }
+            const tripoint_bub_ms p( center.x() + dx - mm.center_x,
+                                     center.y() + dy - mm.center_y, center.z() );
+            if( !here.inbounds( p ) ) {
+                continue;
+            }
+            vc[p.x()][p.y()] = mm.seen[i] == 1 ? lit_level::LOW : lit_level::LIT;
         }
     }
 }
@@ -5134,6 +5231,7 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     for( const snapshot::item_tile &it : snap.item_tiles ) {
         mp_items_by_tile[it.index] = &it;
     }
+    mp_vparts_cache.clear();
     for( int y = 0; y < snap.height; y++ ) {
         for( int x = 0; x < snap.width; x++ ) {
             const tile_cell &t = snap.tiles[static_cast<size_t>( y ) * snap.width + x];
@@ -5142,7 +5240,26 @@ static void mp_native_apply_snapshot( const snapshot &snap )
             if( !here.inbounds( p ) ) {
                 continue;
             }
-            if( !t.ter.empty() && ter_str_id( t.ter ).is_valid() ) {
+            if( !t.vpart.empty() ) {
+                std::string vp = t.vpart;
+                std::string variant;
+                const std::size_t sep = vp.find( '#' );
+                if( sep != std::string::npos ) {
+                    variant = vp.substr( sep + 1 );
+                    vp.resize( sep );
+                }
+                if( vp.rfind( "vp_", 0 ) == 0 ) {
+                    vp.erase( 0, 3 );
+                }
+                mp_cached_vpart vc;
+                vc.pos = here.get_abs( p );
+                vc.id = std::move( vp );
+                vc.variant = std::move( variant );
+                vc.sub = t.vpart_sub == static_cast<uint8_t>( open_ ) ? 1 :
+                         t.vpart_sub == static_cast<uint8_t>( broken ) ? 2 : 0;
+                vc.rot = t.vpart_rot;
+                mp_vparts_cache.push_back( std::move( vc ) );
+            }            if( !t.ter.empty() && ter_str_id( t.ter ).is_valid() ) {
                 here.ter_set( p, ter_id( t.ter ) );
             }
             if( !t.furn.empty() && t.furn.rfind( "vp_", 0 ) != 0 &&
@@ -5241,8 +5358,22 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     if( mp_creatures_on ) {
         mp_native_apply_creatures( snap.creatures );
     }
+    if( netplay::mp_diag_enabled() ) {
+        static int mp_cache_log = 0;
+        if( mp_cache_log < 3 ) {
+            ++mp_cache_log;
+            mp_inv_log( string_format( "native: frame cache creatures=%d vparts=%d",
+                                       static_cast<int>( snap.creatures.size() ),
+                                       static_cast<int>( mp_vparts_cache.size() ) ) );
+        }
+    }
     here.build_map_cache_for( center.z(), /*skip_lightmap=*/false, get_avatar() );
     here.update_visibility_cache( center.z() );
+    // DDA MP v4.0a-244: the host already told us which map tiles its player
+    // can see (the 121x121 minimap block). Without this the client's own
+    // visibility cache only covered the streamed frame, so the sidebar
+    // creature list and compass ignored monsters until they came very close.
+    mp_native_apply_minimap_visibility();
     // DDA MP v4.0a-127: refresh the avatar's visible-creature cache. The
     // creature mirror is rebuilt on every snapshot, so a cache from an older
     // frame holds dangling npc/mtype pointers; the compass and the creature
@@ -5401,6 +5532,35 @@ static void mp_queue_native_cursor( const snapshot &snap )
 }
 #else
 static void mp_queue_native_cursor( const snapshot & )
+{
+}
+#endif
+
+#if defined(TILES)
+/* DDA MP v4.0a-244: queue the streamed vehicle parts for the next tileset
+ * draw. draw_vpart() renders them with the tileset's own part sprites. */
+static void mp_queue_native_vparts()
+{
+    if( mp_vparts_cache.empty() ) {
+        return;
+    }
+    map &here = get_map();
+    for( const mp_cached_vpart &v : mp_vparts_cache ) {
+        const tripoint_bub_ms p = here.get_bub( v.pos );
+        if( !here.inbounds( p ) ) {
+            continue;
+        }
+        // draw_vpart computes angle_to_dir4(veh_dir - 270); feed the angle
+        // that yields the host's dir4 value for this part.
+        const int deg = v.rot == 0 ? 270 : v.rot == 1 ? 540 :
+                        v.rot == 2 ? 450 : 360;
+        tilecontext->init_draw_vpart_override( p, vpart_id( v.id ), v.sub,
+                                              units::from_degrees( deg ), false,
+                                              point_rel_ms::zero, v.variant );
+    }
+}
+#else
+static void mp_queue_native_vparts()
 {
 }
 #endif
@@ -7256,6 +7416,10 @@ void run_view_loop()
                 // DDA MP v4.0a-239: the item lists are applied to the mirror
                 // map, so the game's own renderer draws items, layers, the pile
                 // badge and the revival indicator itself.
+                // DDA MP v4.0a-244: draw the streamed vehicle parts through the
+                // tileset's own vpart override (the client mirror map has no
+                // vehicle objects, so the native renderer had no cars at all).
+                mp_queue_native_vparts();
                 mp_queue_native_cursor( snap );
             } else {
                 bool have_target = false;

@@ -11402,8 +11402,10 @@ size_t map::get_nonant( const tripoint_rel_sm &gridp ) const
     if( gridp.x() < 0 || gridp.x() >= my_MAPSIZE ||
         gridp.y() < 0 || gridp.y() >= my_MAPSIZE ||
         gridp.z() < -OVERMAP_DEPTH || gridp.z() > OVERMAP_HEIGHT ) {
-        debugmsg( "Tried to access invalid map position at grid (%d,%d,%d)", gridp.x(), gridp.y(),
-                  gridp.z() );
+        if( !netplay::client_is_connected() ) {
+            debugmsg( "Tried to access invalid map position at grid (%d,%d,%d)", gridp.x(), gridp.y(),
+                      gridp.z() );
+        }
         return 0;
     }
 
@@ -12315,8 +12317,10 @@ int map::calc_max_populated_zlev()
             for( int sy = 0; sy < my_MAPSIZE; sy++ ) {
                 const submap *sm = get_submap_at_grid( tripoint_rel_sm{ sx, sy, sz } );
                 if( sm == nullptr ) {
-                    debugmsg( "Tried to calc max populated zlev at (%d,%d,%d) but the submap is not loaded", sx, sy,
-                              sz );
+                    if( !netplay::client_is_connected() ) {
+                        debugmsg( "Tried to calc max populated zlev at (%d,%d,%d) but the submap is not loaded", sx, sy,
+                                  sz );
+                    }
                     continue;
                 }
                 if( !sm->is_uniform() ) {
