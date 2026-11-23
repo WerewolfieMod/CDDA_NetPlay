@@ -402,6 +402,9 @@ struct snapshot {
     bool has_time = false;
     int turn = 0;
     std::string weather;
+    /// FacingDirection of the session avatar (the frame's viewer), streamed
+    /// because Character::store/load does not carry `facing`.
+    uint8_t avatar_facing = 2;
     /// DDA MP v4.2: raw creature state for the native renderer. kind 0 =
     /// monster, 1 = npc; the JSON is the game's own serialization, position is
     /// absolute so the client can place it without a shared map address.
@@ -410,6 +413,9 @@ struct snapshot {
         int ax = 0;
         int ay = 0;
         int az = 0;
+        /// FacingDirection (NONE=0, LEFT=1, RIGHT=2). Character::store does not
+        /// save it, so without this the mirror always looked right.
+        uint8_t facing = 2;
         std::string json;
     };
     std::vector<creature_frame> creatures;

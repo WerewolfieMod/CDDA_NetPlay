@@ -1223,6 +1223,16 @@ struct mp_cached_vpart {
     int rot = 0;   // 0..3, the host's angle_to_dir4
 };
 static std::vector<mp_cached_vpart> mp_vparts_cache;
+/* DDA MP v4.0a-252: origin of the snapshot the cache was built from, so a
+ * one-off empty vehicle section does not make a whole car blink out. */
+static int mp_vparts_ox = 0;
+static int mp_vparts_oy = 0;
+static int mp_vparts_oz = 0;
+static int mp_vparts_vdx = 0;
+static int mp_vparts_vdy = 0;
+static bool mp_vparts_have_origin = false;
+static bool mp_vparts_last_nonempty = false;
+static bool mp_vparts_held = false;
 /* DDA MP v4.0a-41: aiming view-model. The client has no game map, so the
  * snapshot supplies the only facts the stock target_ui needs for a throw:
  * terrain blocking (smooth-light barrier bit) and creature ids. */
@@ -5175,6 +5185,7 @@ static void mp_native_apply_creatures( const std::vector<snapshot::creature_fram
             if( cf.kind == 0 ) {
                 auto fresh = std::make_shared<monster>();
                 fresh->deserialize( jv.get_object() );
+                fresh->facing = static_cast<FacingDirection>( cf.facing );
                 const mp_mon_key key{ cf.ax, cf.ay, cf.az, fresh->type->id.str() };
                 auto it = mp_mon_cache.find( key );
                 if( it != mp_mon_cache.end() ) {
@@ -5183,6 +5194,7 @@ static void mp_native_apply_creatures( const std::vector<snapshot::creature_fram
                     // made a standing monster's sprite flicker.
                     it->second.second->deserialize( jv.get_object() );
                     it->second.second->setpos( ap, false );
+                    it->second.second->facing = static_cast<FacingDirection>( cf.facing );
                     it->second.first = cf.json;
                     next_mons[key] = it->second;
                 } else {
@@ -5192,11 +5204,13 @@ static void mp_native_apply_creatures( const std::vector<snapshot::creature_fram
             } else {
                 auto fresh = std::make_shared<npc>();
                 fresh->deserialize( jv );
+                fresh->facing = static_cast<FacingDirection>( cf.facing );
                 const int id = fresh->getID().get_value();
                 auto it = mp_npc_cache.find( id );
                 if( it != mp_npc_cache.end() ) {
                     it->second.second->deserialize( jv );
                     it->second.second->setpos( ap, false );
+                    it->second.second->facing = static_cast<FacingDirection>( cf.facing );
                     it->second.first = cf.json;
                     next_npcs[id] = it->second;
                 } else {
@@ -5352,6 +5366,17 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     mp_native_ensure_bubble( tripoint_abs_ms( center_abs.x(), center_abs.y(), mp_av_z ) );
     map &here = get_map();
     get_avatar().setpos( avatar_abs, false );
+    // DDA MP v4.0a-252: the avatar JSON (Character::store) has no `facing`, so
+    // the mirror used to keep its default RIGHT even while walking left.
+    get_avatar().facing = static_cast<FacingDirection>( snap.avatar_facing );
+    if( netplay::mp_diag_enabled() ) {
+        static int mp_facing_log = 0;
+        if( mp_facing_log < 10 ) {
+            ++mp_facing_log;
+            mp_inv_log( string_format( "native: avatar facing=%d",
+                                       static_cast<int>( snap.avatar_facing ) ) );
+        }
+    }
     if( netplay::mp_diag_enabled() ) {
         static int mp_apply_no = 0;
         static bool mp_have_last = false;
@@ -5395,6 +5420,13 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     for( const snapshot::item_tile &it : snap.item_tiles ) {
         mp_items_by_tile[it.index] = &it;
     }
+    const std::vector<mp_cached_vpart> mp_vparts_prev = mp_vparts_cache;
+    const bool mp_vparts_prev_same_view = mp_vparts_have_origin && snap.has_origin &&
+                                          mp_vparts_ox == snap.origin_x &&
+                                          mp_vparts_oy == snap.origin_y &&
+                                          mp_vparts_oz == snap.origin_z &&
+                                          mp_vparts_vdx == snap.view_dx &&
+                                          mp_vparts_vdy == snap.view_dy;
     mp_vparts_cache.clear();
     for( int y = 0; y < snap.height; y++ ) {
         for( int x = 0; x < snap.width; x++ ) {
@@ -5559,6 +5591,34 @@ static void mp_native_apply_snapshot( const snapshot &snap )
         vc.sub = vp.sub;
         vc.rot = vp.rot;
         mp_vparts_cache.push_back( std::move( vc ) );
+    }
+    // DDA MP v4.0a-252: hold the previous parts for one snapshot when the
+    // streamed section suddenly has none (a one-off visibility-cache refresh
+    // used to blink a whole car out and back). A second empty snapshot in a
+    // row is taken as authoritative.
+    if( !mp_vparts_cache.empty() ) {
+        mp_vparts_last_nonempty = true;
+        mp_vparts_held = false;
+        if( snap.has_origin ) {
+            mp_vparts_ox = snap.origin_x;
+            mp_vparts_oy = snap.origin_y;
+            mp_vparts_oz = snap.origin_z;
+            mp_vparts_vdx = snap.view_dx;
+            mp_vparts_vdy = snap.view_dy;
+            mp_vparts_have_origin = true;
+        }
+    } else if( !mp_vparts_prev.empty() && mp_vparts_prev_same_view &&
+               mp_vparts_last_nonempty && !mp_vparts_held ) {
+        mp_vparts_cache = mp_vparts_prev;
+        mp_vparts_held = true;
+        if( netplay::mp_diag_enabled() ) {
+            mp_inv_log( string_format( "native: vehicle cache held n=%d origin=%d,%d",
+                                       static_cast<int>( mp_vparts_cache.size() ),
+                                       snap.origin_x, snap.origin_y ) );
+        }
+    } else {
+        mp_vparts_last_nonempty = false;
+        mp_vparts_held = false;
     }
     if( netplay::mp_diag_enabled() ) {
         static int mp_vlist_log = 0;

@@ -17,6 +17,7 @@
 #include "monstergenerator.h"
 #include "mtype.h"
 #include "netplay/netplay_msgcap.h"
+#include "path_info.h"
 #include "translation_manager.h"
 #include "translations.h"
 
@@ -37,6 +38,7 @@
 #include <unordered_map>
 #ifdef _WIN32
 #include <windows.h> // WideCharToMultiByte (crash diagnostics)
+#include <dbghelp.h> // MiniDumpWriteDump (crash diagnostics)
 #endif
 
 #include "zstd/zstd.h"
@@ -756,6 +758,95 @@ static void mp_diag_write( const std::string &s )
     }
 }
 
+/* DDA MP v4.0a-252: always-on crash black box. The old hooks only wrote when
+ * DDA_MP_DIAG was set, so a normal launcher start left no trace at all. These
+ * write a text signature/stack and a minidump into the userdir config, where
+ * the next autosave crash can be symbolicated offline. */
+#ifdef _WIN32
+static char mp_crash_log_path[MAX_PATH] = {};
+static char mp_crash_dump_path[MAX_PATH] = {};
+
+static void mp_crash_init_paths()
+{
+    if( mp_crash_log_path[0] != '\0' ) {
+        return;
+    }
+    const std::string &cfg = PATH_INFO::config_dir();
+    std::snprintf( mp_crash_log_path, sizeof( mp_crash_log_path ), "%snetplay_crash.log",
+                   cfg.c_str() );
+    std::snprintf( mp_crash_dump_path, sizeof( mp_crash_dump_path ), "%snetplay_crash.dmp",
+                   cfg.c_str() );
+}
+
+static void mp_crash_write( const char *s )
+{
+    mp_crash_init_paths();
+    if( std::FILE *f = std::fopen( mp_crash_log_path, "a" ) ) {
+        std::fputs( s, f );
+        std::fputs( "\n", f );
+        std::fclose( f );
+    }
+    mp_diag_write( s );
+}
+
+static void mp_crash_stack( const char *tag )
+{
+    void *frames[64] = {};
+    const unsigned short n = CaptureStackBackTrace( 0, 64, frames, nullptr );
+    const HMODULE exe = GetModuleHandleA( nullptr );
+    char line[512];
+    std::snprintf( line, sizeof( line ), "%s STACK n=%u", tag,
+                   static_cast<unsigned>( n ) );
+    mp_crash_write( line );
+    for( unsigned short i = 0; i < n; i++ ) {
+        HMODULE mod = nullptr;
+        GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCSTR>( frames[i] ), &mod );
+        const uintptr_t addr = reinterpret_cast<uintptr_t>( frames[i] );
+        const uintptr_t base = reinterpret_cast<uintptr_t>( mod );
+        const ptrdiff_t off = static_cast<ptrdiff_t>( addr - base );
+        if( mod == exe ) {
+            std::snprintf( line, sizeof( line ), "  [exe+0x%zx]", static_cast<size_t>( off ) );
+        } else if( mod != nullptr ) {
+            char name[MAX_PATH] = {};
+            GetModuleFileNameA( mod, name, MAX_PATH );
+            const char *slash = std::strrchr( name, '\\' );
+            std::snprintf( line, sizeof( line ), "  [%s+0x%zx]", slash ? slash + 1 : name,
+                           static_cast<size_t>( off ) );
+        } else {
+            std::snprintf( line, sizeof( line ), "  [%p]", frames[i] );
+        }
+        mp_crash_write( line );
+    }
+}
+
+static LONG WINAPI mp_crash_filter( EXCEPTION_POINTERS *ep )
+{
+    char line[256];
+    std::snprintf( line, sizeof( line ), "UNHANDLED EXCEPTION code=0x%08lx addr=%p",
+                   static_cast<unsigned long>( ep->ExceptionRecord->ExceptionCode ),
+                   ep->ExceptionRecord->ExceptionAddress );
+    mp_crash_write( line );
+    mp_crash_stack( "EXCEPTION" );
+    mp_crash_init_paths();
+    if( mp_crash_dump_path[0] != '\0' ) {
+        HANDLE h = CreateFileA( mp_crash_dump_path, GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr );
+        if( h != INVALID_HANDLE_VALUE ) {
+            MINIDUMP_EXCEPTION_INFORMATION mei{};
+            mei.ThreadId = GetCurrentThreadId();
+            mei.ExceptionPointers = ep;
+            mei.ClientPointers = FALSE;
+            MiniDumpWriteDump( GetCurrentProcess(), GetCurrentProcessId(), h,
+                               MiniDumpNormal, &mei, nullptr, nullptr );
+            CloseHandle( h );
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 // DDA MP: capture stderr (cata_assert prints the failing file:line there).
 static void mp_diag_redirect_stderr()
 {
@@ -796,59 +887,34 @@ static void mp_diag_invalid_parameter( const wchar_t *expression,
     } catch( ... ) {
         msg += " <fmt failed>";
     }
-    mp_diag_write( msg );
+    mp_crash_write( msg.c_str() );
     // returning lets the CRT invoke _invoke_watson (fail-fast) as usual
 }
 #endif
 
 static void mp_diag_terminate()
 {
-    mp_diag_write( "TERMINATE (uncaught exception)" );
+    mp_crash_write( "TERMINATE (uncaught exception)" );
     try {
         if( std::current_exception() != nullptr ) {
             std::rethrow_exception( std::current_exception() );
         } else {
-            mp_diag_write( "  no active exception" );
+            mp_crash_write( "  no active exception" );
         }
     } catch( const std::exception &e ) {
-        mp_diag_write( std::string( "  std::exception: " ) + e.what() );
+        const std::string m = std::string( "  std::exception: " ) + e.what();
+        mp_crash_write( m.c_str() );
     } catch( ... ) {
-        mp_diag_write( "  non-std exception" );
+        mp_crash_write( "  non-std exception" );
     }
+    mp_crash_stack( "TERMINATE" );
     std::abort();
 }
 
 static void mp_diag_sigabrt( int /*sig*/ )
 {
-    mp_diag_write( "ABORT() invoked" );
-    // Log module-relative addresses for offline symbolization (symmap).
-    void *frames[32] = {};
-    const unsigned short n = CaptureStackBackTrace( 0, 32, frames, nullptr );
-    const HMODULE exe = GetModuleHandleA( nullptr );
-    std::string out = "ABORT STACK:";
-    char tmp[80];
-    for( unsigned short i = 0; i < n; i++ ) {
-        HMODULE mod = nullptr;
-        GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            static_cast<LPCSTR>( frames[i] ), &mod );
-        const uintptr_t addr = reinterpret_cast<uintptr_t>( frames[i] );
-        const uintptr_t base = reinterpret_cast<uintptr_t>( mod );
-        ptrdiff_t off = static_cast<ptrdiff_t>( addr - base );
-        if( mod == exe ) {
-            std::snprintf( tmp, sizeof( tmp ), " [exe+0x%zx]", static_cast<size_t>( off ) );
-        } else if( mod != nullptr ) {
-            char name[MAX_PATH] = {};
-            GetModuleFileNameA( mod, name, MAX_PATH );
-            const char *slash = std::strrchr( name, '\\' );
-            std::snprintf( tmp, sizeof( tmp ), " [%s+0x%zx]",
-                           slash ? slash + 1 : name, static_cast<size_t>( off ) );
-        } else {
-            std::snprintf( tmp, sizeof( tmp ), " [%p]", frames[i] );
-        }
-        out += tmp;
-    }
-    mp_diag_write( out );
+    mp_crash_write( "ABORT() invoked" );
+    mp_crash_stack( "ABORT" );
 }
 
 bool init()
@@ -861,6 +927,8 @@ bool init()
         try {
             mp_diag_redirect_stderr();
 #ifdef _WIN32
+            mp_crash_init_paths();
+            SetUnhandledExceptionFilter( mp_crash_filter );
             _set_invalid_parameter_handler( mp_diag_invalid_parameter );
 #endif
             std::set_terminate( mp_diag_terminate );
@@ -1731,12 +1799,14 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     p.push_back( static_cast<char>( snap.has_time ? 1 : 0 ) );
     put_i32( p, snap.turn );
     put_str( p, snap.weather );
+    p.push_back( static_cast<char>( snap.avatar_facing ) );
     put_u16( p, static_cast<uint16_t>( snap.creatures.size() ) );
     for( const snapshot::creature_frame &cf : snap.creatures ) {
         p.push_back( static_cast<char>( cf.kind ) );
         put_i32( p, cf.ax );
         put_i32( p, cf.ay );
         put_i32( p, cf.az );
+        p.push_back( static_cast<char>( cf.facing ) );
         put_str( p, cf.json );
     }
     for( const cell &c : snap.cells ) {
@@ -3530,6 +3600,7 @@ static void client_run( socket_t sock )
             snap.has_time = r.get_u8() != 0;
             snap.turn = r.get_i32();
             snap.weather = r.get_str();
+            snap.avatar_facing = r.get_u8();
             const uint16_t mp_ncre = r.get_u16();
             for( uint16_t i = 0; i < mp_ncre && r.ok; i++ ) {
                 snapshot::creature_frame cf;
@@ -3537,6 +3608,7 @@ static void client_run( socket_t sock )
                 cf.ax = r.get_i32();
                 cf.ay = r.get_i32();
                 cf.az = r.get_i32();
+                cf.facing = static_cast<uint8_t>( r.get_u8() );
                 cf.json = r.get_str();
                 snap.creatures.push_back( std::move( cf ) );
             }

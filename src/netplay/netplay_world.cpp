@@ -977,6 +977,9 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.has_time = true;
     out.turn = to_turn<int>( calendar::turn );
     out.weather = get_weather().weather_id.str();
+    // DDA MP v4.0a-252: Character::store does not save `facing`, so the mirror
+    // sprite kept looking right while its owner walked left. Stream it.
+    out.avatar_facing = static_cast<uint8_t>( viewer != nullptr ? viewer->facing : u.facing );
     // DDA MP v4.2: raw creature state for the native renderer. Only what the
     // session avatar can see (or everything for a watcher), and within the
     // visible range (the client sidebar list and compass show creatures well
@@ -997,7 +1000,8 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         JsonOut js( os );
         mon.serialize( js );
         const tripoint_abs_ms ap = mon.pos_abs();
-        out.creatures.push_back( { 0, ap.x(), ap.y(), ap.z(), os.str() } );
+        out.creatures.push_back( { 0, ap.x(), ap.y(), ap.z(),
+                                   static_cast<uint8_t>( mon.facing ), os.str() } );
     }
     for( npc &guy : g->all_npcs() ) {
         if( &guy == viewer || !here.inbounds( guy.pos_bub() ) ||
@@ -1011,7 +1015,8 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         JsonOut js( os );
         guy.serialize( js );
         const tripoint_abs_ms ap = guy.pos_abs();
-        out.creatures.push_back( { 1, ap.x(), ap.y(), ap.z(), os.str() } );
+        out.creatures.push_back( { 1, ap.x(), ap.y(), ap.z(),
+                                   static_cast<uint8_t>( guy.facing ), os.str() } );
     }
     // DDA MP v4.2: the host player's own avatar is not in the NPC list or the
     // creature tracker, so ship it separately as kind 2 for the client's
@@ -1022,7 +1027,8 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         JsonOut js( os );
         u.serialize( js );
         const tripoint_abs_ms ap = u.pos_abs();
-        out.creatures.push_back( { 2, ap.x(), ap.y(), ap.z(), os.str() } );
+        out.creatures.push_back( { 2, ap.x(), ap.y(), ap.z(),
+                                   static_cast<uint8_t>( u.facing ), os.str() } );
     }
 }
 

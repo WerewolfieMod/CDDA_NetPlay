@@ -569,29 +569,42 @@ void game::load_packs( const std::string &msg, const std::vector<mod_id> &packs 
 }
 
 //Saves all factions and missions and npcs.
+static void mp_save_trace( const char *what );
 bool game::save_factions_missions_npcs()
 {
+    mp_save_trace( "master save start" );
     cata_path masterfile = PATH_INFO::world_base_save_path() / SAVE_MASTER;
-    return write_to_file( masterfile, [&]( std::ostream & fout ) {
+    const bool ok = write_to_file( masterfile, [&]( std::ostream & fout ) {
         serialize_master( fout );
     }, _( "factions data" ) );
+    mp_save_trace( "master save end" );
+    return ok;
 }
 //Saves per-dimension data like Weather and overmapbuffer state
 bool game::save_dimension_data()
 {
+    mp_save_trace( "dimension save start" );
     cata_path data_file = PATH_INFO::current_dimension_save_path() / SAVE_DIMENSION_DATA;
-    return write_to_file( data_file, [&]( std::ostream & fout ) {
+    const bool ok = write_to_file( data_file, [&]( std::ostream & fout ) {
         serialize_dimension_data( fout );
     }, _( "dimension data" ) );
+    mp_save_trace( "dimension save end" );
+    return ok;
 }
 bool game::save_maps()
 {
     map &here = get_map();
 
     try {
+        mp_save_trace( "maps: map save start" );
         here.save();
+        mp_save_trace( "maps: map save end" );
+        mp_save_trace( "maps: overmap save start" );
         overmap_buffer.save(); // can throw
+        mp_save_trace( "maps: overmap save end" );
+        mp_save_trace( "maps: mapbuffer save start" );
         MAPBUFFER.save(); // can throw
+        mp_save_trace( "maps: mapbuffer save end" );
         return true;
     } catch( const std::exception &err ) {
         popup( _( "Failed to save the maps: %s" ), err.what() );
@@ -603,6 +616,7 @@ bool game::save_player_data()
 {
     const cata_path playerfile = PATH_INFO::player_base_save_path();
 
+    mp_save_trace( "player: serialize start" );
     bool saved_data;
     if( world_generator->active_world->has_compression_enabled() ) {
         std::stringstream save;
@@ -623,18 +637,25 @@ bool game::save_player_data()
             serialize_json( fout );
         }, _( "player data" ) );
     }
+    mp_save_trace( "player: serialize end" );
+    mp_save_trace( "player: map memory start" );
     const bool saved_map_memory = u.save_map_memory();
+    mp_save_trace( "player: map memory end" );
+    mp_save_trace( "player: memorial start" );
     const bool saved_log = write_to_file( playerfile + SAVE_EXTENSION_LOG, [&](
     std::ostream & fout ) {
         memorial().save( fout );
     }, _( "player memorial" ) );
+    mp_save_trace( "player: memorial end" );
 #if defined(__ANDROID__)
     const bool saved_shortcuts = write_to_file( playerfile + SAVE_EXTENSION_SHORTCUTS, [&](
     std::ostream & fout ) {
         save_shortcuts( fout );
     }, _( "quick shortcuts" ) );
 #endif
+    mp_save_trace( "player: diary start" );
     const bool saved_diary = u.get_avatar_diary()->store();
+    mp_save_trace( "player: diary end" );
     return saved_data && saved_map_memory && saved_log && saved_diary
 #if defined(__ANDROID__)
            && saved_shortcuts
@@ -732,6 +753,21 @@ bool game::save_external_options_record()
     return saved_externals;
 }
 
+/* DDA MP v4.0a-252: always-on autosave breadcrumbs. The previous save trace
+ * was gated behind DDA_MP_DIAG, which a normally launched game never sets, so
+ * an autosave crash left no trace at all. This file lives in the userdir
+ * config and is appended once per step (tiny, no perf impact). */
+static void mp_save_trace( const char *what )
+{
+    if( std::FILE *f = std::fopen( ( PATH_INFO::config_dir() + "netplay_save.log" ).c_str(),
+                                   "a" ) ) {
+        std::fprintf( f, "%lld %s turn=%d\n",
+                      static_cast<long long>( std::time( nullptr ) ), what,
+                      to_turn<int>( calendar::turn ) );
+        std::fclose( f );
+    }
+}
+
 bool game::save()
 {
     if( save_is_dirty ) {
@@ -740,6 +776,7 @@ bool game::save()
     }
     // DDA MP v4.0a-242: leave a breadcrumb pair around the save. A host that
     // dies while saving then shows "save start" with no "save end".
+    mp_save_trace( "start" );
     const bool mp_save_diag = netplay::mp_diag_enabled();
     if( mp_save_diag ) {
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
@@ -748,6 +785,7 @@ bool game::save()
         }
     }
     auto mp_save_end = [mp_save_diag]( bool ok ) {
+        mp_save_trace( ok ? "end ok" : "end failed" );
         if( mp_save_diag ) {
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 std::fprintf( f, "save end ok=%d turn=%d\n", ok ? 1 : 0,
@@ -757,6 +795,7 @@ bool game::save()
         }
     };
     auto mp_save_step = [mp_save_diag]( const char *what ) {
+        mp_save_trace( what );
         if( mp_save_diag ) {
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 std::fprintf( f, "save step %s\n", what );
