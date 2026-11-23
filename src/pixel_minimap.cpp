@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bitset>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <optional>
 
@@ -25,6 +26,7 @@
 #include "mdarray.h"
 #include "monster.h"
 #include "mtype.h"
+#include "netplay/netplay.h"
 #include "pixel_minimap_projectors.h"
 #include "sdl_utils.h"
 #include "type_id.h"
@@ -36,6 +38,19 @@ namespace
 {
 
 const point total_tiles_count = { MAX_VIEW_DISTANCE * 2 + 1, MAX_VIEW_DISTANCE * 2 + 1 };
+
+/* DDA MP v4.0a-242: the host streams its pixel-minimap block as one of 16
+ * base colours per cell. This is the same table the host used to encode them
+ * (netplay_world.cpp, mp_base_color_index), so decoded cells look identical. */
+nc_color mp_minimap_base_color( uint32_t index )
+{
+    static const nc_color base16[] = {
+        c_black, c_red, c_green, c_brown, c_blue, c_magenta, c_cyan,
+        c_light_gray, c_dark_gray, c_light_red, c_light_green, c_yellow,
+        c_light_blue, c_pink, c_light_cyan, c_white
+    };
+    return base16[std::min<uint32_t>( index, 15 )];
+}
 
 // Enemy-beacon flicker sweeps brightness between these two percentages.
 constexpr int beacon_flicker_dim = 25;
@@ -163,6 +178,26 @@ void pixel_minimap::build_batches( const tripoint_bub_ms &center )
     const bool nv_goggle = get_player_character().get_vision_modes()[NV_GOGGLES];
     creature_tracker &creatures = get_creature_tracker();
 
+    // DDA MP v4.0a-242: a netplay client only holds the current frame's tiles
+    // in its mirror map, so the panel minimap was blank outside it. The host
+    // streams exactly the block this minimap draws (terrain colours plus
+    // what its own player can see); prefer those cells when connected.
+    static netplay::minimap_frame mp_minimap;
+    const bool mp_minimap_on = netplay::client_is_connected() &&
+                               netplay::client_minimap( mp_minimap );
+    if( mp_minimap_on ) {
+        static bool mp_mm_used_logged = false;
+        if( !mp_mm_used_logged && netplay::mp_diag_enabled() ) {
+            mp_mm_used_logged = true;
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "minimap panel: streamed block %dx%d center=%d,%d\n",
+                              mp_minimap.width, mp_minimap.height,
+                              mp_minimap.center_x, mp_minimap.center_y );
+                std::fclose( f );
+            }
+        }
+    }
+
     // Full blink period in milliseconds; default is 2000.
     const int indicator_length = settings.beacon_blink_interval * beacon_blink_ms_per_step;
 
@@ -194,17 +229,41 @@ void pixel_minimap::build_batches( const tripoint_bub_ms &center )
     for( int y = 0; y < total_tiles_count.y; y++ ) {
         for( int x = 0; x < total_tiles_count.x; x++ ) {
             const tripoint_bub_ms p = start + tripoint_bub_ms( x, y, center.z() );
-            if( !m.inbounds( p ) ) {
-                // p might be out-of-bounds when peeking at submap boundary. Example: center=(64,59,-5), start=(4,-1) -> p=(4,-1,-5)
-                continue;
+            lit_level lighting = lit_level::BLANK;
+            SDL_Color color{};
+            bool mp_have_cell = false;
+            if( mp_minimap_on ) {
+                const int mmx = mp_minimap.center_x + p.x() - center.x();
+                const int mmy = mp_minimap.center_y + p.y() - center.y();
+                if( mmx >= 0 && mmy >= 0 && mmx < mp_minimap.width &&
+                    mmy < mp_minimap.height ) {
+                    const size_t mi = static_cast<size_t>( mmy ) * mp_minimap.width + mmx;
+                    if( mi < mp_minimap.color.size() && mi < mp_minimap.seen.size() ) {
+                        const uint8_t mm_seen = mp_minimap.seen[mi];
+                        if( mm_seen == 0 ) {
+                            // The host's minimap also skips cells its player
+                            // cannot see right now.
+                            continue;
+                        }
+                        lighting = mm_seen == 1 ? lit_level::LOW : lit_level::LIT;
+                        color = curses_color_to_SDL(
+                                    mp_minimap_base_color( mp_minimap.color[mi] ) );
+                        mp_have_cell = true;
+                    }
+                }
             }
-            const lit_level lighting = access_cache.visibility_cache[p.x()][p.y()];
-            if( lighting == lit_level::BLANK || lighting == lit_level::DARK ) {
-                // TODO: Map memory?
-                continue;
+            if( !mp_have_cell ) {
+                if( !m.inbounds( p ) ) {
+                    // p might be out-of-bounds when peeking at submap boundary. Example: center=(64,59,-5), start=(4,-1) -> p=(4,-1,-5)
+                    continue;
+                }
+                lighting = access_cache.visibility_cache[p.x()][p.y()];
+                if( lighting == lit_level::BLANK || lighting == lit_level::DARK ) {
+                    // TODO: Map memory?
+                    continue;
+                }
+                color = get_map_color_at( p );
             }
-
-            SDL_Color color = get_map_color_at( p );
 
             if( nv_goggle ) {
                 if( lighting == lit_level::LOW ) {

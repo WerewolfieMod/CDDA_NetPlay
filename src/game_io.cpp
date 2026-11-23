@@ -66,6 +66,7 @@
 #include "mapbuffer.h"
 #include "memorial_logger.h"
 #include "messages.h"
+#include "netplay/netplay.h"  // save diagnostics for the netplay host
 #include "mod_manager.h"
 #include "options.h"
 #include "output.h"
@@ -737,6 +738,24 @@ bool game::save()
         popup( _( "The game is in an unsupported state after using debug tools and cannot be saved." ) );
         return false;
     }
+    // DDA MP v4.0a-242: leave a breadcrumb pair around the save. A host that
+    // dies while saving then shows "save start" with no "save end".
+    const bool mp_save_diag = netplay::mp_diag_enabled();
+    if( mp_save_diag ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "save start turn=%d\n", to_turn<int>( calendar::turn ) );
+            std::fclose( f );
+        }
+    }
+    auto mp_save_end = [mp_save_diag]( bool ok ) {
+        if( mp_save_diag ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "save end ok=%d turn=%d\n", ok ? 1 : 0,
+                              to_turn<int>( calendar::turn ) );
+                std::fclose( f );
+            }
+        }
+    };
     std::chrono::seconds time_since_load =
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - time_of_last_load );
@@ -759,6 +778,7 @@ bool game::save()
             uistate.serialize( jsout );
         }, _( "uistate data" ) ) ) {
             debugmsg( "game not saved" );
+            mp_save_end( false );
             return false;
         } else {
             world_generator->last_world_name = world_generator->active_world->world_name;
@@ -775,10 +795,12 @@ bool game::save()
             // is called.
             EM_ASM( window.game_unsaved = false; );
 #endif
+            mp_save_end( true );
             return true;
         }
     } catch( std::ios::failure & ) {
         popup( _( "Failed to save game data" ) );
+        mp_save_end( false );
         return false;
     }
 }

@@ -50,6 +50,9 @@ struct bubble_region {
     std::vector<shared_ptr_fast<monster>> monsters;
     /// Monsters that left this region's map during a shift (serialized state).
     std::map<tripoint_abs_ms, mp_saved_monster> saved;
+    /// DDA MP v4.0a-242: the freshly loaded region map has not materialised
+    /// its static/overmap spawns yet; do it once it becomes the active context.
+    bool needs_spawn = false;
 };
 
 /// (Re)compute session -> region clustering and create/destroy split regions.

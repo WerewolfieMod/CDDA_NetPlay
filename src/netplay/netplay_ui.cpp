@@ -54,6 +54,7 @@
 #include "construction.h"        // client-side construction list (data only)
 #include "construction_group.h"  // construction group names
 #include "diary.h"        // session-local diary for remote characters
+#include "effect.h"      // effect ids/names for the client's effect-change lines
 #include "overmapbuffer.h" // weather/overmap context for map::load
 #include "overmap_ui.h"    // client-side sky/time window
 
@@ -5581,6 +5582,52 @@ static void mp_draw_tagged_text( ImDrawList *dl, float x, float &y, float max_w,
     y += line_h;
 }
 
+/* DDA MP v4.0a-242: the sheet carries effect ids. Name them for the client log
+ * instead of the old generic "Condition changed" - e.g. stepping into blood
+ * adds "bloody_feet" and the host has no message for it. */
+static std::set<std::string> mp_effect_set( const std::string &s )
+{
+    std::set<std::string> out;
+    std::size_t start = 0;
+    while( start <= s.size() ) {
+        const std::size_t semi = s.find( ';', start );
+        const std::string id = s.substr( start, semi == std::string::npos
+                                         ? std::string::npos : semi - start );
+        if( !id.empty() ) {
+            out.insert( id );
+        }
+        if( semi == std::string::npos ) {
+            break;
+        }
+        start = semi + 1;
+    }
+    return out;
+}
+
+static std::string mp_effect_label( const std::string &id )
+{
+    for( const effect &e : get_avatar().get_effects() ) {
+        if( e.get_id().str() == id ) {
+            const std::string name = e.disp_name();
+            if( !name.empty() ) {
+                return name;
+            }
+        }
+    }
+    // No live instance (the mirror may lag one status): build a temporary
+    // effect from the type so the client still shows the translated name.
+    const efftype_id eid( id );
+    if( eid.is_valid() ) {
+        const effect tmp( &eid.obj() );
+        const std::string name = tmp.disp_name();
+        if( !name.empty() ) {
+            return name;
+        }
+    }
+    // The id is still far more useful than the old generic line.
+    return id;
+}
+
 void run_view_loop()
 {
 #if defined(TILES)
@@ -6104,8 +6151,28 @@ void run_view_loop()
                                             static_cast<int>( m_bad ) );
                             }
                             if( d.effects != mp_prev.effects ) {
-                                mp_log_add( netplay::fork_text( "Condition changed" ),
-                                            static_cast<int>( m_info ) );
+                                // DDA MP v4.0a-242: show which effect appeared
+                                // or ended instead of a vague line.
+                                const std::set<std::string> before =
+                                    mp_effect_set( mp_prev.effects );
+                                const std::set<std::string> after =
+                                    mp_effect_set( d.effects );
+                                for( const std::string &id : after ) {
+                                    if( before.find( id ) == before.end() ) {
+                                        mp_log_add( string_format(
+                                                        netplay::fork_text( "Effect gained: %s" ),
+                                                        mp_effect_label( id ) ),
+                                                    static_cast<int>( m_info ) );
+                                    }
+                                }
+                                for( const std::string &id : before ) {
+                                    if( after.find( id ) == after.end() ) {
+                                        mp_log_add( string_format(
+                                                        netplay::fork_text( "Effect lost: %s" ),
+                                                        mp_effect_label( id ) ),
+                                                    static_cast<int>( m_info ) );
+                                    }
+                                }
                             }
                         }
                         mp_prev = d;

@@ -10552,6 +10552,11 @@ void game::mp_anchor_map_on( Character &anchor, bool light )
             // client could walk without a host turn.
             load_npcs( &here );
         }
+        // DDA MP v4.0a-242: the shift just loaded fresh submaps around a split
+        // region's avatar; materialise their static spawns and overmap groups.
+        // Without this the client could walk into a city centre and meet no
+        // zombies at all (the host's own full shift path does this below).
+        here.spawn_monsters( false );
         return;
     }
 

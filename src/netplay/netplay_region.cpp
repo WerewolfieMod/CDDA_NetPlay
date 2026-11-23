@@ -171,6 +171,14 @@ void activate_region( int r )
         swap_bubble_context ctx( *here, *viewer );
         attach_monsters( *target );
         g->load_npcs( here );
+        // DDA MP v4.0a-242: a newly created region loaded its submaps but
+        // their static spawns and nearby overmap groups were never turned
+        // into creatures (the host's own load_map does that right after
+        // loading). Materialise them once, in this region's context.
+        if( target->needs_spawn ) {
+            target->needs_spawn = false;
+            here->spawn_monsters( false );
+        }
     }
     mp_active_region = r;
 }
@@ -338,6 +346,7 @@ void host_region_sync()
             reg.id = mp_next_region_id++;
             reg.owned = std::make_unique<map>();
             reg.center = pos;
+            reg.needs_spawn = true;
             {
                 // map::load() wants the top-left submap of the bubble; putting
                 // the avatar exactly there would leave its frame half outside
