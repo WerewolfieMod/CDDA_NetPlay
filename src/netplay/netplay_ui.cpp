@@ -1185,6 +1185,8 @@ static float mp_canvas_cx = 0.0f;
 static float mp_canvas_cy = 0.0f;
 static float mp_canvas_tw = 0.0f;
 static float mp_canvas_th = 0.0f;
+/// Width of the sidebar overlay, used by the legacy replay layout.
+static float mp_sb_overlay_w = 0.0f;
 /* DDA MP v4.0a-41: aiming view-model. The client has no game map, so the
  * snapshot supplies the only facts the stock target_ui needs for a throw:
  * terrain blocking (smooth-light barrier bit) and creature ids. */
@@ -4409,12 +4411,14 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             break;
 
         case ACTION_ZOOM_IN:
+            // DDA MP v4.0a-241: do not mark the game's main UI adaptor for a
+            // resize: it would recreate the standard terrain window around the
+            // streamed frame and paint over the client's own geometry. The
+            // per-frame zoom block re-places the client window itself.
             g->zoom_in();
-            g->mark_main_ui_adaptor_resize();
             break;
         case ACTION_ZOOM_OUT:
             g->zoom_out();
-            g->mark_main_ui_adaptor_resize();
             break;
 
         case ACTION_HELP: {
@@ -5296,49 +5300,67 @@ static int mp_ntw_y = -1;
 /// window is marked dirty; curses_drawwindow() then calls cata_tiles::draw()
 /// with g->ter_view_p during the regular present, exactly like single player
 /// (no separate canvas pass, no extra display-buffer scope, one present).
-static void mp_native_setup_terrain_window( const snapshot &snap, int dest_x, int dest_y,
+static void mp_native_setup_terrain_window( int snap_w, int snap_h, int dest_x, int dest_y,
         int tw, int th, int font_w, int font_h )
 {
-    if( font_w <= 0 || font_h <= 0 ) {
+    (void)snap_w;
+    (void)snap_h;
+    (void)dest_x;
+    (void)dest_y;
+    if( font_w <= 0 || font_h <= 0 || tw <= 0 || th <= 0 ) {
         return;
     }
-    const int term_w = std::max( 1, ( snap.width * tw + font_w - 1 ) / font_w );
-    const int term_h = std::max( 1, ( snap.height * th + font_h - 1 ) / font_h );
-    const int cell_x = std::max( 0, dest_x ) / font_w;
-    const int cell_y = std::max( 0, dest_y ) / font_h;
-    if( !mp_native_terrain_win || term_w != mp_ntw_w || term_h != mp_ntw_h ||
+    // DDA MP v4.0a-241: the terrain window covers the screen area left of the
+    // native sidebar at the tileset's CURRENT pixel size, and the avatar sits
+    // at its centre. The streamed frame only fills the mirror map behind it,
+    // so the frame dimensions must not control the window: doing that made a
+    // zoom change resize the window around the frame instead of the avatar and
+    // pushed the character off centre.
+    int sb_cols = mp_native_sidebar_width();
+    if( sb_cols <= 0 || TERMX <= sb_cols + 16 ) {
+        sb_cols = 0;
+    }
+    const int area_cols = std::max( 1, TERMX - sb_cols );
+    const int area_rows = std::max( 1, TERMY );
+    const int tiles_w = std::max( 1, area_cols * font_w / tw );
+    const int tiles_h = std::max( 1, area_rows * font_h / th );
+    // The curses window is measured in normal-font cells (that is what the
+    // present copies); the tile renderer is told the area in pixels through
+    // TERRAIN_WINDOW_TERM_* and puts the avatar POSX/POSY tiles inside it.
+    const int cell_x = 0;
+    const int cell_y = 0;
+    if( !mp_native_terrain_win || area_cols != mp_ntw_w || area_rows != mp_ntw_h ||
         cell_x != mp_ntw_x || cell_y != mp_ntw_y ) {
-        mp_native_terrain_win = catacurses::newwin( term_h, term_w, point( cell_x, cell_y ) );
+        mp_native_terrain_win = catacurses::newwin( area_rows, area_cols, point( cell_x, cell_y ) );
         g->w_terrain = mp_native_terrain_win;
-        mp_ntw_w = term_w;
-        mp_ntw_h = term_h;
+        mp_ntw_w = area_cols;
+        mp_ntw_h = area_rows;
         mp_ntw_x = cell_x;
         mp_ntw_y = cell_y;
     }
-    TERRAIN_WINDOW_WIDTH = snap.width;
-    TERRAIN_WINDOW_HEIGHT = snap.height;
-    TERRAIN_WINDOW_TERM_WIDTH = term_w;
-    TERRAIN_WINDOW_TERM_HEIGHT = term_h;
-    POSX = snap.width / 2;
-    POSY = snap.height / 2;
-    g->ter_view_p = get_map().get_bub(
-                        tripoint_abs_ms( snap.origin_x, snap.origin_y, snap.origin_z ) );
+    TERRAIN_WINDOW_WIDTH = tiles_w;
+    TERRAIN_WINDOW_HEIGHT = tiles_h;
+    TERRAIN_WINDOW_TERM_WIDTH = area_cols;
+    TERRAIN_WINDOW_TERM_HEIGHT = area_rows;
+    POSX = tiles_w / 2;
+    POSY = tiles_h / 2;
+    // ter_view_p is owned by the per-frame camera block (look cursor vs the
+    // streamed origin); a zoom re-centre must not reset it.
     if( netplay::mp_diag_enabled() ) {
-        static int mp_last_setup_x = 0;
-        static int mp_last_setup_y = 0;
+        static int mp_last_setup_w = 0;
+        static int mp_last_setup_h = 0;
         static bool mp_setup_have_last = false;
-        if( !mp_setup_have_last || snap.origin_x != mp_last_setup_x ||
-            snap.origin_y != mp_last_setup_y ) {
+        if( !mp_setup_have_last || tiles_w != mp_last_setup_w ||
+            tiles_h != mp_last_setup_h ) {
             mp_setup_have_last = true;
-            mp_last_setup_x = snap.origin_x;
-            mp_last_setup_y = snap.origin_y;
+            mp_last_setup_w = tiles_w;
+            mp_last_setup_h = tiles_h;
             const map &hm = get_map();
             mp_inv_log( string_format(
-                            "render origin=%d,%d av=%d,%d tv=%d,%d off=%d,%d sub=%d,%d",
-                            snap.origin_x, snap.origin_y,
+                            "render geom tiles=%dx%d area=%dx%d tw=%d th=%d av=%d,%d tv=%d,%d sub=%d,%d",
+                            tiles_w, tiles_h, area_cols, area_rows, tw, th,
                             get_avatar().pos_bub().x(), get_avatar().pos_bub().y(),
                             g->ter_view_p.x(), g->ter_view_p.y(),
-                            get_avatar().view_offset.x(), get_avatar().view_offset.y(),
                             hm.get_abs_sub().x(), hm.get_abs_sub().y() ) );
         }
     }
@@ -5387,6 +5409,39 @@ static int mp_native_sidebar_width()
         width = std::max( width, p.get_width() );
     }
     return width;
+}
+
+/* DDA MP v4.0a-241: where the streamed frame lands on screen. Shared by the
+ * snapshot branch and the per-frame zoom re-centre, so the two always agree. */
+static void mp_native_compute_canvas( int snap_w, int snap_h, int tw, int th,
+                                      int font_w, int font_h, int &dest_x, int &dest_y )
+{
+    const int canvas_w = snap_w * tw;
+    const int canvas_h = snap_h * th;
+    if( mp_native_render_enabled() ) {
+        // DDA MP v4.0a-241: the terrain window is centred on the avatar, not
+        // on the streamed frame. The avatar cell (the frame centre) lands in
+        // the middle of the map area, so overlays are placed from there.
+        const int sb_cells = mp_native_sidebar_width();
+        const int area_w = std::max( 0, TERMX * font_w - sb_cells * font_w );
+        dest_x = ( area_w - canvas_w ) / 2;
+        dest_y = ( TERMY * font_h - canvas_h ) / 2;
+        mp_canvas_cx = area_w / 2.0f;
+        mp_canvas_cy = TERMY * font_h / 2.0f;
+    } else {
+        // Replay layout: centre on the ascii window's interior and shift left
+        // by half the streamed sidebar width.
+        const int win_x = std::max( 0, ( TERMX - ( snap_w + 2 ) ) / 2 );
+        const int win_y = std::max( 0, ( TERMY - ( snap_h + 2 ) ) / 2 );
+        const int center_px_x = ( win_x + snap_w / 2 + 1 ) * font_w;
+        const int center_px_y = ( win_y + snap_h / 2 + 1 ) * font_h;
+        dest_x = center_px_x - canvas_w / 2 - static_cast<int>( mp_sb_overlay_w / 2.0f );
+        dest_y = center_px_y - canvas_h / 2;
+        mp_canvas_cx = static_cast<float>( center_px_x ) - mp_sb_overlay_w / 2.0f;
+        mp_canvas_cy = static_cast<float>( center_px_y );
+    }
+    mp_canvas_tw = static_cast<float>( tw );
+    mp_canvas_th = static_cast<float>( th );
 }
 
 static void mp_draw_native_sidebar()
@@ -5642,7 +5697,6 @@ void run_view_loop()
         // instead of an empty list.
         Messages::add_msg( game_message_params( static_cast<game_message_type>( type ) ), txt );
     };
-    static float mp_sb_overlay_w = 0.0f;
     static minimap_frame mp_mini_map;
     static bool mp_inv_open = false;
     static int mp_inv_scroll = 0;
@@ -5971,10 +6025,36 @@ void run_view_loop()
                         mp_cols -= sb_cols;
                     }
                 }
-                if( mp_cols != mp_last_cols || mp_rows != mp_last_rows ) {
-                    mp_last_cols = mp_cols;
-                    mp_last_rows = mp_rows;
-                    netplay::client_send_view( mp_cols, mp_rows );
+                // DDA MP v4.0a-241: the host streams a frame measured in map
+                // tiles, but the same terminal shows fewer tiles when zoomed in
+                // and more when zoomed out. Ask for the count that actually
+                // fits the pixel area, like the host's own terrain window.
+                int mp_view_cols = mp_cols;
+                int mp_view_rows = mp_rows;
+#if defined(TILES)
+                if( mp_native_render_enabled() ) {
+                    if( font_px_w <= 0 || font_px_h <= 0 ) {
+                        netplay::tiles_backend_font_size( font_px_w, font_px_h );
+                    }
+                    int mp_tw = font_px_w;
+                    int mp_th = font_px_h;
+                    if( tilecontext != nullptr ) {
+                        mp_tw = tilecontext->get_tile_width();
+                        mp_th = tilecontext->get_tile_height();
+                    }
+                    if( mp_tw > 0 && mp_th > 0 && font_px_w > 0 && font_px_h > 0 ) {
+                        mp_view_cols = std::max( 1, mp_cols * font_px_w / mp_tw );
+                        mp_view_rows = std::max( 1, mp_rows * font_px_h / mp_th );
+                    }
+                }
+#endif
+                if( mp_view_cols != mp_last_cols || mp_view_rows != mp_last_rows ) {
+                    mp_last_cols = mp_view_cols;
+                    mp_last_rows = mp_view_rows;
+                    netplay::client_send_view( mp_view_cols, mp_view_rows );
+                    // The frame size just changed (zoom or window resize): ask
+                    // for a fresh picture so the new geometry has data at once.
+                    netplay::client_request_snapshot();
                 }
             }
             // DDA MP v4.0a-88: long wait no longer sends WAIT orders; the client
@@ -6465,47 +6545,23 @@ void run_view_loop()
                         if( tiles_backend != nullptr ) {
                             netplay::tiles_backend_tile_size( tiles_backend, tw, th );
                         }
+                        // DDA MP v4.0a-241: the native path draws with the game
+                        // tileset itself, whose pixel size follows the zoom.
+                        if( mp_native_render_enabled() && tilecontext != nullptr ) {
+                            tw = tilecontext->get_tile_width();
+                            th = tilecontext->get_tile_height();
+                        }
                         if( tiles_backend != nullptr && tw > 0 && th > 0
                             && font_px_w > 0 && font_px_h > 0 ) {
                             // Center the sprite canvas on the window's interior
                             // (the same place the ascii grid and the host avatar
                             // sit). The pivot cell is the host avatar's cell.
-                            const int win_x = std::max( 0, ( TERMX - ( cur_w + 2 ) ) / 2 );
-                            const int win_y = std::max( 0, ( TERMY - ( cur_h + 2 ) ) / 2 );
-                            const int center_px_x = ( win_x + cur_w / 2 + 1 ) * font_px_w;
-                            const int center_px_y = ( win_y + cur_h / 2 + 1 ) * font_px_h;
-                            const int canvas_w = snap.width * tw;
-                            const int canvas_h = snap.height * th;
-                            // DDA MP v4.0a-117: the map occupies the area left
-                            // of the native sidebar; center it there instead of
-                            // centering over the whole screen.
                             int dest_x = 0;
                             int dest_y = 0;
-                            if( mp_native_render_enabled() ) {
-                                const int sb_cells = mp_native_sidebar_width();
-                                const int area_w = std::max( 0, TERMX * font_px_w -
-                                                             sb_cells * font_px_w );
-                                dest_x = std::max( 0, ( area_w - canvas_w ) / 2 );
-                                dest_y = std::max( 0, ( TERMY * font_px_h - canvas_h ) / 2 );
-                                mp_canvas_cx = static_cast<float>( dest_x ) + canvas_w / 2.0f;
-                                mp_canvas_cy = static_cast<float>( dest_y ) + canvas_h / 2.0f;
-                            } else {
-                                // Center the sprite canvas on the window's
-                                // interior and shift it left by half the
-                                // sidebar width for the streamed layout.
-                                const int win_x = std::max( 0, ( TERMX - ( cur_w + 2 ) ) / 2 );
-                                const int win_y = std::max( 0, ( TERMY - ( cur_h + 2 ) ) / 2 );
-                                const int center_px_x = ( win_x + cur_w / 2 + 1 ) * font_px_w;
-                                const int center_px_y = ( win_y + cur_h / 2 + 1 ) * font_px_h;
-                                dest_x = center_px_x - canvas_w / 2 -
-                                         static_cast<int>( mp_sb_overlay_w / 2.0f );
-                                dest_y = center_px_y - canvas_h / 2;
-                                mp_canvas_cx = static_cast<float>( center_px_x ) -
-                                               mp_sb_overlay_w / 2.0f;
-                                mp_canvas_cy = static_cast<float>( center_px_y );
-                            }
-                            mp_canvas_tw = static_cast<float>( tw );
-                            mp_canvas_th = static_cast<float>( th );
+                            mp_native_compute_canvas( snap.width, snap.height, tw, th,
+                                                      font_px_w, font_px_h, dest_x, dest_y );
+                            const int canvas_w = snap.width * tw;
+                            const int canvas_h = snap.height * th;
                             constexpr int PIVOT = 32; // inside the 48-tile bubble
                             // DDA MP v4.0a-4: feed the streamed absolute origin
                             // so sprite variant seeds are world-stable.
@@ -6518,7 +6574,8 @@ void run_view_loop()
                                 // is drawn by curses_drawwindow ->
                                 // cata_tiles::draw during the regular present.
                                 mp_native_apply_snapshot( snap );
-                                mp_native_setup_terrain_window( snap, dest_x, dest_y, tw, th,
+                                mp_native_setup_terrain_window( snap.width, snap.height,
+                                                                dest_x, dest_y, tw, th,
                                                                 font_px_w, font_px_h );
                                 mp_canvas_ok = true;
                             } else if( netplay::tiles_backend_begin( tiles_backend, dest_x, dest_y,
@@ -6955,6 +7012,31 @@ void run_view_loop()
             // panel stays on top of the map.
 #if defined(TILES)
             if( mp_have_picture && mp_native_render_enabled() && g->w_terrain ) {
+                // DDA MP v4.0a-241: zoom changes the game tileset's pixel size
+                // outside the snapshot stream. Re-place the terrain window and
+                // the canvas centre at the new tile size right away, otherwise
+                // the avatar drifts off-centre until the next snapshot arrives
+                // (which may never come while both players stand still).
+                if( tilecontext != nullptr && font_px_w > 0 && font_px_h > 0 ) {
+                    const int mp_tw = tilecontext->get_tile_width();
+                    const int mp_th = tilecontext->get_tile_height();
+                    if( mp_tw > 0 && mp_th > 0 &&
+                        ( mp_tw != static_cast<int>( mp_canvas_tw ) ||
+                          mp_th != static_cast<int>( mp_canvas_th ) ) ) {
+                        const int mp_sw = cur_w > 0 ? cur_w : 49;
+                        const int mp_sh = cur_h > 0 ? cur_h : 32;
+                        int mp_dx = 0;
+                        int mp_dy = 0;
+                        mp_native_compute_canvas( mp_sw, mp_sh, mp_tw, mp_th,
+                                                  font_px_w, font_px_h, mp_dx, mp_dy );
+                        mp_native_setup_terrain_window( mp_sw, mp_sh, mp_dx, mp_dy,
+                                                        mp_tw, mp_th, font_px_w, font_px_h );
+                        if( netplay::mp_diag_enabled() ) {
+                            mp_tlog( string_format( "zoom geom tw=%d th=%d cell=%d,%d",
+                                                    mp_tw, mp_th, mp_dx, mp_dy ) );
+                        }
+                    }
+                }
                 // DDA MP v4.0a-233: the look camera is fully local. The host
                 // streams only the on-screen frame, but the client keeps its
                 // own map memory (filled from the streamed mem_* fields as it
@@ -7562,6 +7644,29 @@ void run_view_loop()
                     if( sent ) {
                         mp_test_action_once = true;
                         mp_inv_log( "test: client action " + action_name );
+                    }
+                }
+            }
+            // DDA MP test hook: exercise the zoom re-centre without a window
+            // focus. The avatar must stay at the centre of the map area.
+            if( const char *test_zoom = std::getenv( "DDA_MP_TEST_CLIENT_ZOOM" );
+                test_zoom != nullptr && test_zoom[0] != '\0' ) {
+                static bool mp_test_zoom_done = false;
+                static auto mp_test_zoom_first_picture = std::chrono::steady_clock::time_point();
+                if( !mp_test_zoom_done && mp_have_picture ) {
+                    if( mp_test_zoom_first_picture.time_since_epoch().count() == 0 ) {
+                        mp_test_zoom_first_picture = std::chrono::steady_clock::now();
+                    }
+                    if( std::chrono::steady_clock::now() - mp_test_zoom_first_picture >
+                        std::chrono::seconds( 8 ) ) {
+                        mp_test_zoom_done = true;
+                        if( std::string( test_zoom ) == "out" ) {
+                            g->zoom_out();
+                        } else {
+                            g->zoom_in();
+                        }
+                        netplay::client_request_snapshot();
+                        mp_inv_log( "test: zoom applied" );
                     }
                 }
             }
