@@ -4817,13 +4817,25 @@ void host_pump_client_actions()
                                             av->in_vehicle ? 1 : 0,
                                             av->controlling_vehicle ? 1 : 0 ) );
                 if( av->controlling_vehicle ) {
+                    bool mp_engine_off = false;
                     if( const optional_vpart_position vp = here.veh_at( pos ) ) {
-                        vp->vehicle().stop_engines( here );
+                        vehicle &veh = vp->vehicle();
+                        if( veh.engine_on &&
+                            veh.has_engine_type_not( itype_id( "muscle" ), true ) ) {
+                            netplay::host_send_event_to_sid(
+                                sid, _( "You turn the engine off and let go of the controls." ),
+                                static_cast<int>( m_info ) );
+                            mp_engine_off = true;
+                        }
+                        veh.disable_smart_controller_if_needed();
+                        veh.stop_engines( here );
+                    }
+                    if( !mp_engine_off ) {
+                        netplay::host_send_event_to_sid(
+                            sid, _( "You let go of the controls." ),
+                            static_cast<int>( m_info ) );
                     }
                     av->controlling_vehicle = false;
-                    netplay::host_send_event_to_sid(
-                        sid, _( "You stop controlling the vehicle." ),
-                        static_cast<int>( m_info ) );
                     changed = true;
                     break;
                 }
@@ -4892,6 +4904,17 @@ void host_pump_client_actions()
                 netplay::host_send_event_fmt_to_sid(
                     sid, "You take control of the %s.", { vp->vehicle().name },
                     static_cast<int>( m_info ) );
+                // DDA MP v4.0a-267: mirror the tail of game::control_vehicle:
+                // the driver sees the vehicle live instead of through memory,
+                // and no autopilot/follow mode may fight the stick.
+                for( const tripoint_abs_ms &mp_target : vp->vehicle().get_points() ) {
+                    av_mem_for( *av ).clear_tile_decoration( mp_target, "vp_" );
+                    here.memory_cache_dec_set_dirty( here.get_bub( mp_target ), true );
+                }
+                vp->vehicle().is_following = false;
+                vp->vehicle().is_patrolling = false;
+                vp->vehicle().autopilot_on = false;
+                vp->vehicle().is_autodriving = false;
                 changed = true;
                 break;
             }

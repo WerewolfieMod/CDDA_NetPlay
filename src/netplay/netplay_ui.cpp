@@ -5481,8 +5481,9 @@ static void mp_native_apply_snapshot( const snapshot &snap )
             mp_last_x = snap.origin_x;
             mp_last_y = snap.origin_y;
             ++mp_apply_no;
-            mp_inv_log( string_format( "snapapply #%d origin=%d,%d av=%d,%d",
+            mp_inv_log( string_format( "snapapply #%d origin=%d,%d view=%d,%d av=%d,%d",
                                        mp_apply_no, snap.origin_x, snap.origin_y,
+                                       snap.view_dx, snap.view_dy,
                                        get_avatar().pos_abs().x(),
                                        get_avatar().pos_abs().y() ) );
         }
