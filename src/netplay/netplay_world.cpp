@@ -1722,12 +1722,35 @@ bool av_registry_path( cata_path &out )
     return true;
 }
 
+/* DDA MP v4.0a-270: a client profile (and an avatar saved by an older build)
+ * carries no NPC class/template. npc::deserialize then leaves `myclass` at
+ * NC_NONE and falls back to `idz = myclass.str()`, which raises "Tried to get
+ * invalid npc: NC_NONE" on the first portrait/snippet lookup. Repair both on
+ * every load, create and resume. */
+static void av_fix_identity( npc &n )
+{
+    if( n.myclass.is_null() || n.myclass == npc_class_id( "NC_NONE" ) ) {
+        n.myclass = npc_class_id( "NC_SHOPKEEP" );
+    }
+    if( !n.idz.is_valid() ) {
+        // A null template is valid for an avatar: portrait/snippet lookups
+        // skip it instead of dereferencing an invalid id.
+        n.idz = string_id<npc_template>::NULL_ID();
+    }
+}
+
 shared_ptr_fast<npc> av_find_npc( int npc_id )
 {
     if( npc_id <= 0 ) {
         return nullptr;
     }
-    return overmap_buffer.find_npc( character_id( npc_id ) );
+    shared_ptr_fast<npc> found = overmap_buffer.find_npc( character_id( npc_id ) );
+    if( found && found->get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ) {
+        // DDA MP v4.0a-275: repair avatars restored from saves written before
+        // the NC_NONE fix, before any list/status/dialogue path touches them.
+        av_fix_identity( *found );
+    }
+    return found;
 }
 
 bool av_npc_alive( const shared_ptr_fast<npc> &p )
@@ -1872,22 +1895,8 @@ static void av_fix_vehicle_state( npc &n )
     }
 }
 
-/* DDA MP v4.0a-270: a client profile (and an avatar saved by an older build)
- * carries no NPC class/template. npc::deserialize then leaves `myclass` at
- * NC_NONE and falls back to `idz = myclass.str()`, which raises "Tried to get
- * invalid npc: NC_NONE" on the first portrait/snippet lookup. Repair both on
- * every create and resume. */
-static void av_fix_identity( npc &n )
-{
-    if( n.myclass.is_null() || n.myclass == npc_class_id( "NC_NONE" ) ) {
-        n.myclass = npc_class_id( "NC_SHOPKEEP" );
-    }
-    if( !n.idz.is_valid() ) {
-        // A null template is valid for an avatar: portrait/snippet lookups
-        // skip it instead of dereferencing an invalid id.
-        n.idz = string_id<npc_template>::NULL_ID();
-    }
-}
+/* DDA MP v4.0a-270: identity repair lives next to av_find_npc; every loaded
+ * avatar passes through it before list/status/dialogue. */
 
 static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
 {
