@@ -2941,8 +2941,13 @@ void host_pump_avatar_keys()
             if( const optional_vpart_position vp = here.veh_at( npc_ptr->pos_bub() ) ) {
                 const tripoint_abs_ms vp_before = vp->vehicle().pos_abs();
                 const int vel_before = vp->vehicle().velocity;
+                const std::size_t mp_drive_msg_before = Messages::generation();
                 vp->vehicle().pldrive( here, *npc_ptr, dir_it->second.x(),
                                        dir_it->second.y(), 0 );
+                // DDA MP v4.0a-274: pldrive can report steering/engine
+                // failures through the global log; relay those lines to the
+                // driver instead of leaving them only on the host screen.
+                host_forward_new_messages( sk.sid, mp_drive_msg_before );
                 mp_ctrl_log( string_format(
                                  "drive sid=%d dir=%d,%d veh=%d,%d->%d,%d vel=%d->%d av=%d,%d in=%d",
                                  sk.sid, dir_it->second.x(), dir_it->second.y(),

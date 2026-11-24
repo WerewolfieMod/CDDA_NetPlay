@@ -6720,6 +6720,9 @@ void vehicle::gain_moves( map &here )
         // driver. Cruise control used to run only when the host avatar drove,
         // so pldrive set cruise_velocity but the vehicle never accelerated.
         for( npc &guy : g->all_npcs() ) {
+            if( guy.get_unique_id().rfind( "netplay_avatar:", 0 ) != 0 ) {
+                continue;
+            }
             if( !guy.controlling_vehicle || !guy.in_vehicle ) {
                 continue;
             }
