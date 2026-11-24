@@ -8695,6 +8695,72 @@ void run_view_loop()
                     }
                 }
             }
+            // DDA MP test hook: one fresh cart at a fixed cruise target. Used
+            // to verify the camera offset and driving at different speeds.
+            if( const char *test_speed = std::getenv( "DDA_MP_TEST_CLIENT_VEHICLE_SPEED" );
+                test_speed != nullptr && test_speed[0] != '\0' ) {
+                const int mp_sp_target = std::atoi( test_speed );
+                const int mp_sp_ups = std::max( 1, std::min( 10, mp_sp_target / 400 ) );
+                static bool mp_sp_started = false;
+                static auto mp_sp_t0 = std::chrono::steady_clock::now();
+                static int mp_sp_phase = 0;
+                if( !mp_sp_started && mp_have_picture && mp_native_avatar_ready ) {
+                    mp_sp_started = true;
+                    mp_sp_t0 = std::chrono::steady_clock::now();
+                    mp_inv_log( string_format( "test: speed scenario target=%d ups=%d",
+                                               mp_sp_target, mp_sp_ups ) );
+                }
+                if( mp_sp_started ) {
+                    const long long mp_sp_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - mp_sp_t0 ).count();
+                    if( mp_sp_phase == 0 && mp_sp_ms > 1500 ) {
+                        mp_sp_phase = 1;
+                        netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                        mp_inv_log( "test: speed control" );
+                    } else if( mp_sp_phase >= 1 && mp_sp_phase <= mp_sp_ups ) {
+                        const long long at = 2000 + ( mp_sp_phase - 1 ) * 400;
+                        if( mp_sp_ms > at ) {
+                            key_event mp_sp_ke;
+                            mp_sp_ke.code = 3; // UP / accelerate
+                            client_send_keys( { mp_sp_ke } );
+                            mp_inv_log( string_format( "test: speed up %d", mp_sp_phase ) );
+                            ++mp_sp_phase;
+                        }
+                    } else {
+                        const long long mp_sp_base = 2000 + mp_sp_ups * 400;
+                        if( mp_sp_phase == mp_sp_ups + 1 && mp_sp_ms > mp_sp_base + 800 ) {
+                            ++mp_sp_phase;
+                            netplay::client_send_intent( "autoattack", 0, {} );
+                            mp_inv_log( "test: speed pass 1" );
+                        } else if( mp_sp_phase == mp_sp_ups + 2 &&
+                                   mp_sp_ms > mp_sp_base + 1800 ) {
+                            ++mp_sp_phase;
+                            netplay::client_send_intent( "autoattack", 0, {} );
+                            mp_inv_log( "test: speed pass 2" );
+                        } else if( mp_sp_phase == mp_sp_ups + 3 &&
+                                   mp_sp_ms > mp_sp_base + 2800 ) {
+                            ++mp_sp_phase;
+                            netplay::client_send_intent( "vehicle_handbrake", 0, {} );
+                            mp_inv_log( "test: speed handbrake" );
+                        } else if( mp_sp_phase == mp_sp_ups + 4 &&
+                                   mp_sp_ms > mp_sp_base + 3800 ) {
+                            ++mp_sp_phase;
+                            netplay::client_send_intent( "autoattack", 0, {} );
+                            mp_inv_log( "test: speed decay 1" );
+                        } else if( mp_sp_phase == mp_sp_ups + 5 &&
+                                   mp_sp_ms > mp_sp_base + 4800 ) {
+                            ++mp_sp_phase;
+                            netplay::client_send_intent( "autoattack", 0, {} );
+                            mp_inv_log( "test: speed decay 2" );
+                        } else if( mp_sp_phase == mp_sp_ups + 6 &&
+                                   mp_sp_ms > mp_sp_base + 5800 ) {
+                            ++mp_sp_phase;
+                            mp_inv_log( "test: speed done" );
+                        }
+                    }
+                }
+            }
             // DDA MP test hook: force the pickup-tile chooser on the client to
             // verify the tileset highlight rendering without host items.
             if( const char *test_ptiles = std::getenv( "DDA_MP_TEST_CLIENT_PICKTILES" );
