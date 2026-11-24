@@ -1886,11 +1886,19 @@ static void av_bind_session( int sid, int npc_id )
 static void av_fix_vehicle_state( npc &n )
 {
     map &here = get_map();
-    if( here.veh_at( n.pos_bub() ) ) {
+    const optional_vpart_position vp = here.veh_at( n.pos_bub() );
+    if( !vp ) {
+        if( n.in_vehicle || n.controlling_vehicle ) {
+            n.in_vehicle = false;
+            n.controlling_vehicle = false;
+        }
         return;
     }
-    if( n.in_vehicle || n.controlling_vehicle ) {
-        n.in_vehicle = false;
+    // DDA MP v4.0a-276: a restored profile can claim control while the avatar
+    // sits on a passenger/cargo part. The stock pldrive refuses that; our
+    // direct call would not, so drop control unless this part has CONTROLS.
+    if( n.controlling_vehicle &&
+        vp->vehicle().avail_part_with_feature( vp->mount_pos(), "CONTROLS" ) < 0 ) {
         n.controlling_vehicle = false;
     }
 }
