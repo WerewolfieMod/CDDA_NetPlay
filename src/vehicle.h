@@ -1124,6 +1124,12 @@ class vehicle
         // Attempt to start the vehicle's active engines
         void start_engines( map &here, Character *driver = nullptr, bool take_control = false,
                             bool autodrive = false );
+        /// DDA MP v4.0a-261: start all active engines immediately for `who`,
+        /// no start-engines activity. The stock activity looks the vehicle up
+        /// from get_player_character() (the host avatar), which cannot find a
+        /// remote session avatar's vehicle. Returns true if at least one
+        /// engine started.
+        bool start_engines_direct( map &here, Character &who );
 
         // Engine backfire, making a loud noise
         void backfire( map *here, const vehicle_part &vp ) const;

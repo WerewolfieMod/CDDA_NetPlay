@@ -4223,34 +4223,31 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
                     break;
                 }
             }
-            if( !mp_vehicle_near ) {
+            if( !mp_vehicle_near || !get_avatar().controlling_vehicle ) {
+                // First ^ takes control like the host; the menu is the
+                // second ^ while driving, mirroring game::control_vehicle.
                 netplay::client_send_client_action( act );
                 break;
             }
             uilist vm;
-            vm.title = _( "Vehicle" );
-            vm.addentry( 0, true, 'c', get_avatar().controlling_vehicle ?
-                         _( "Stop controlling" ) : _( "Control the vehicle" ) );
-            vm.addentry( 1, true, 's', _( "Vehicle status" ) );
-            vm.addentry( 2, true, 'p', _( "Vehicle parts" ) );
-            vm.addentry( 3, true, 'f', _( "Refuel vehicle" ) );
-            vm.addentry( 4, true, 'e', _( "Examine vehicle" ) );
+            vm.title = _( "Select an action" );
+            vm.addentry( 0, true, 'c', _( "Stop driving" ) );
+            vm.addentry( 1, true, 'e', _( "Examine vehicle" ) );
+            vm.addentry( 2, true, 'p', netplay::fork_text( "Vehicle parts" ) );
+            vm.addentry( 3, true, 'f', netplay::fork_text( "Refuel vehicle" ) );
             vm.query();
             switch( vm.ret ) {
                 case 0:
                     netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
                     break;
                 case 1:
-                    netplay::client_send_intent( "vehicle_info", 0, {} );
+                    netplay::client_send_client_action( ACTION_EXAMINE );
                     break;
                 case 2:
                     netplay::client_send_intent( "vehicle_parts", 0, {} );
                     break;
                 case 3:
                     netplay::client_send_intent( "vehicle_refuel", 0, {} );
-                    break;
-                case 4:
-                    netplay::client_send_client_action( ACTION_EXAMINE );
                     break;
                 default:
                     break;

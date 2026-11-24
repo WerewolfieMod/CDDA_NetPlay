@@ -864,6 +864,43 @@ void vehicle::start_engines( map &here, Character *driver, const bool take_contr
     refresh( );
 }
 
+bool vehicle::start_engines_direct( map &here, Character &who )
+{
+    bool has_engine = std::any_of( engines.begin(), engines.end(), [&]( int idx ) {
+        return parts[ idx ].enabled && !parts[ idx ].is_broken();
+    } );
+    if( !has_engine ) {
+        for( const int p : engines ) {
+            vehicle_part &vp = parts[p];
+            vp.enabled = !vp.is_broken();
+        }
+    }
+    int attempted = 0;
+    int started = 0;
+    for( const int p : engines ) {
+        vehicle_part &vp = parts[p];
+        if( !is_engine_on( vp ) ) {
+            continue;
+        }
+        ++attempted;
+        if( start_engine( here, vp ) ) {
+            ++started;
+        }
+    }
+    engine_on = started;
+    if( attempted == 0 ) {
+        who.add_msg_if_player( m_info, _( "The %s doesn't have an engine!" ), name );
+        return false;
+    }
+    if( started == 0 ) {
+        who.add_msg_if_player( m_bad, _( "The %s's engine fails to start." ), name );
+        return false;
+    }
+    who.add_msg_if_player( _( "The %s's engine starts up." ), name );
+    sfx::do_vehicle_engine_sfx();
+    return true;
+}
+
 void vehicle::enable_patrol( map &here )
 {
     is_patrolling = true;
