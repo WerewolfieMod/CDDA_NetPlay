@@ -1499,9 +1499,18 @@ static bool mp_session_heartbeat_busy( int sid )
     return netplay::is_helping_anyone( av );
 }
 
+static void av_prune_dead_sessions();
+
 void host_game_tick()
 {
-    if( !host_is_running() || host_session_count() == 0 ) {
+    if( !host_is_running() ) {
+        return;
+    }
+    if( host_session_count() == 0 ) {
+        // DDA MP v4.0a-272: even with the last client gone, release any avatar
+        // that was driving. Otherwise its cruise target keeps accelerating
+        // the car while the host keeps turning.
+        av_prune_dead_sessions();
         return;
     }
     // DDA MP v4.0a-223: a client that went silent gets a PING; one unanswered
@@ -2302,16 +2311,32 @@ static std::map<int, int> av_move_pool;
  * world turn вЂ” do not retry (and re-hint) it every pump cycle. */
 static std::map<int, bool> av_waiting_for_turn;
 
-static bool av_all_acted()
+/* DDA MP v4.0a-272: drop bindings whose session is gone. Called from the
+ * round gate and from host_game_tick even when the last session vanished, so
+ * an unattended driving avatar is released and its car stops accelerating. */
+static void av_prune_dead_sessions()
 {
-    // Drop avatars whose session is gone: a client that disconnected between
-    // turns must not block the parity gate for the remaining players.
     // NOTE (v4.0a-226): trade/mission/vehicle per-sid maps are not cleared
     // here; they are bounded by the session count and only grow until the
     // host restarts. Accepted for host + 1 client.
     const std::vector<int> sessions = netplay::host_session_ids();
     for( auto it = av_sid_to_npc.begin(); it != av_sid_to_npc.end(); ) {
         if( std::find( sessions.begin(), sessions.end(), it->first ) == sessions.end() ) {
+            if( npc *lost = av_session_npc( it->first ) ) {
+                if( lost->controlling_vehicle ) {
+                    region_scope scope( it->first );
+                    map &lost_here = get_map();
+                    const tripoint_bub_ms lost_pos = lost->pos_bub();
+                    if( lost_here.inbounds( lost_pos ) ) {
+                        if( const optional_vpart_position vp = lost_here.veh_at( lost_pos ) ) {
+                            vp->vehicle().cruise_velocity = 0;
+                        }
+                    }
+                    lost->controlling_vehicle = false;
+                    mp_ctrl_log( string_format( "disconnect release sid=%d av=%d,%d",
+                                                it->first, lost_pos.x(), lost_pos.y() ) );
+                }
+            }
             av_acted_since_tick.erase( it->first );
             av_waiting_for_turn.erase( it->first );
             av_move_pool.erase( it->first );
@@ -2322,6 +2347,11 @@ static bool av_all_acted()
             ++it;
         }
     }
+}
+
+static bool av_all_acted()
+{
+    av_prune_dead_sessions();
     for( const auto &entry : av_sid_to_npc ) {
         // DDA MP v4.0a-88: an AFK (long wait) session must not block the
         // others; it does not take part in the turn round at all.
