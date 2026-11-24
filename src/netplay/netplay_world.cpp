@@ -84,6 +84,7 @@
 #include "vehicle.h"
 #include "veh_interact.h"
 #include "veh_type.h"
+#include "veh_utils.h"
 #include "weather.h"
 #include "overmapbuffer.h"
 #include "worldfactory.h"
@@ -6346,6 +6347,235 @@ static void mp_session_handbrake( int sid, npc &av )
                                 veh.cruise_velocity ) );
 }
 
+namespace {
+/* Scope the host "player" to one session avatar while a vehicle menu entry is
+ * built or executed. get_player_character() is used by build_interact_menu's
+ * conditions and by most callbacks; get_avatar() is deliberately not changed,
+ * so entries that need the real avatar (arcade, fold) stay marked unavailable. */
+struct mp_player_character_scope {
+    Character *previous = nullptr;
+    explicit mp_player_character_scope( Character &who )
+        : previous( get_player_character_override() ) {
+        set_player_character_override( &who );
+    }
+    ~mp_player_character_scope() {
+        set_player_character_override( previous );
+    }
+    mp_player_character_scope( const mp_player_character_scope & ) = delete;
+    mp_player_character_scope &operator=( const mp_player_character_scope & ) = delete;
+};
+} // namespace
+
+/* DDA MP v4.0a-282: actions whose callbacks only change the vehicle (or act on
+ * the scoped session character without opening a host-side modal). Everything
+ * else is streamed disabled so the client sees the full host menu and knows
+ * why it cannot use that row yet. */
+static bool mp_vehicle_menu_safe( const veh_menu_item &it )
+{
+    if( !it._hotkey_action.has_value() ) {
+        return false;
+    }
+    static const std::set<std::string> safe_actions = {
+        "TOGGLE_TRACKING", "HOTWIRE", "TOGGLE_ALARM",
+        "RELEASE_CONTROLS", "TOGGLE_ENGINE", "PULL_HANDBRAKE",
+        "SOUND_HORN", "DISCONNECT_CABLES", "LOCK_DOOR", "UNLOCK_DOOR",
+        "TOGGLE_DOORS", "TOGGLE_CAMERA", "TOGGLE_REACTOR",
+        "TOGGLE_HEADLIGHT", "TOGGLE_WIDE_HEADLIGHT",
+        "TOGGLE_HALF_OVERHEAD_LIGHT", "TOGGLE_OVERHEAD_LIGHT",
+        "TOGGLE_AISLE_LIGHT", "TOGGLE_DOME_LIGHT", "TOGGLE_ATOMIC_LIGHT",
+        "TOGGLE_STEREO", "TOGGLE_CHIMES", "TOGGLE_FRIDGE",
+        "TOGGLE_FREEZER", "TOGGLE_SPACE_HEATER", "TOGGLE_HEATED_TANK",
+        "TOGGLE_COOLER", "TOGGLE_RECHARGER", "TOGGLE_PLOW",
+        "TOGGLE_REAPER", "TOGGLE_PLANTER", "TOGGLE_SCOOP",
+        "TOGGLE_WATER_PURIFIER", "TOGGLE_SMART_ENGINE_CONTROLLER",
+        "TOGGLE_AUTOCLAVE", "TOGGLE_MWS",
+        "EXAMINE_VEHICLE_EFFECTS", "USE_NL_BOILER",
+    };
+    return safe_actions.count( it._hotkey_action.value() ) > 0;
+}
+
+struct mp_vehicle_menu_data {
+    bool ok = false;
+    bool locked = false;
+    uint32_t generation = 0;
+    std::vector<veh_menu_item> items;
+};
+
+static uint32_t mp_vehicle_menu_hash( const std::vector<veh_menu_item> &items )
+{
+    uint32_t h = 2166136261u;
+    const auto add = [&h]( const std::string & s ) {
+        for( const unsigned char c : s ) {
+            h ^= c;
+            h *= 16777619u;
+        }
+        h ^= 0x1f;
+        h *= 16777619u;
+    };
+    for( const veh_menu_item &it : items ) {
+        add( it._text );
+        add( it._desc );
+        add( it._hotkey_action.value_or( "" ) );
+        add( it._hotkey_char.has_value() ? std::string( 1, it._hotkey_char.value() ) :
+             std::string() );
+        add( it._enabled ? "1" : "0" );
+        add( it._check_locked ? "1" : "0" );
+        add( it._check_theft ? "1" : "0" );
+    }
+    return h;
+}
+
+static bool mp_build_vehicle_menu( npc &av, mp_vehicle_menu_data &out )
+{
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    if( !vp ) {
+        return false;
+    }
+    veh_menu menu( vp->vehicle(), _( "Select an action" ) );
+    try {
+        mp_player_character_scope scope( av );
+        vp->vehicle().build_interact_menu( menu, &here, av.pos_bub(), false );
+    } catch( ... ) {
+        return false;
+    }
+    out.items = menu.get_items();
+    out.locked = vp->vehicle().is_locked;
+    out.generation = mp_vehicle_menu_hash( out.items );
+    out.ok = true;
+    return true;
+}
+
+static void mp_send_vehicle_menu( int sid, npc &av )
+{
+    mp_vehicle_menu_data built;
+    if( !mp_build_vehicle_menu( av, built ) ) {
+        netplay::host_send_event_to_sid( sid, netplay::fork_text( "You are not in a vehicle." ),
+                                         static_cast<int>( m_info ) );
+        return;
+    }
+    std::ostringstream os;
+    JsonOut js( os );
+    js.start_object();
+    js.member( "generation", static_cast<int>( built.generation ) );
+    js.member( "entries" );
+    js.start_array();
+    for( const veh_menu_item &it : built.items ) {
+        const bool safe = mp_vehicle_menu_safe( it );
+        const bool locked = it._check_locked && built.locked;
+        std::string client_action;
+        if( it._hotkey_action.has_value() ) {
+            if( it._hotkey_action.value() == "EXAMINE_VEHICLE" ) {
+                client_action = "parts";
+            } else if( it._hotkey_action.value() == "GET_ITEMS" ) {
+                client_action = "items";
+            }
+        }
+        const bool client_handled = !client_action.empty();
+        const bool enabled = it._enabled && ( safe || client_handled ) && !locked;
+        std::string desc = it._desc;
+        if( !safe && !client_handled ) {
+            if( !desc.empty() ) {
+                desc += '\n';
+            }
+            desc += netplay::fork_text(
+                        "Netplay: this action opens a host-side screen and is not available on the client yet." );
+        }
+        if( locked ) {
+            if( !desc.empty() ) {
+                desc += '\n';
+            }
+            desc += _( "Vehicle is locked." );
+        }
+        js.start_object();
+        js.member( "text", it._text );
+        js.member( "desc", desc );
+        js.member( "enabled", enabled );
+        if( client_handled ) {
+            js.member( "client_action", client_action );
+        }
+        js.end_object();
+    }
+    js.end_array();
+    js.end_object();
+    netplay::host_send_event_to_sid( sid, os.str(), EVENT_VEHICLE_MENU );
+}
+
+static void mp_execute_vehicle_menu( int sid, int generation, int index )
+{
+    npc *av = av_session_npc( sid );
+    if( av == nullptr ) {
+        return;
+    }
+    map &here = get_map();
+    g->mp_anchor_map_on( *av, true );
+    mp_vehicle_menu_data built;
+    if( !mp_build_vehicle_menu( *av, built ) ) {
+        netplay::host_send_event_to_sid( sid, netplay::fork_text( "You are not in a vehicle." ),
+                                         static_cast<int>( m_info ) );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return;
+    }
+    if( static_cast<uint32_t>( generation ) != built.generation ||
+        index < 0 || index >= static_cast<int>( built.items.size() ) ) {
+        // The menu changed while the client was looking at it; show the fresh
+        // one instead of running a possibly different row.
+        mp_send_vehicle_menu( sid, *av );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return;
+    }
+    const veh_menu_item &chosen = built.items[index];
+    const bool safe = mp_vehicle_menu_safe( chosen );
+    const bool locked = chosen._check_locked && built.locked;
+    if( !safe || !chosen._enabled || locked || !chosen._on_submit ) {
+        netplay::host_send_event_to_sid(
+            sid, netplay::fork_text( "That vehicle action is not available on the client." ),
+            static_cast<int>( m_info ) );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return;
+    }
+    const std::size_t msg_before = Messages::generation();
+    const int moves_before = av->get_moves();
+    try {
+        mp_player_character_scope scope( *av );
+        chosen._on_submit();
+    } catch( const std::exception &e ) {
+        mp_ctrl_log( string_format( "vehicle menu action failed: %s", e.what() ) );
+    } catch( ... ) {
+        mp_ctrl_log( "vehicle menu action failed" );
+    }
+    netplay::host_forward_new_messages( sid, msg_before );
+    if( !g->swapping_dimensions ) {
+        if( const optional_vpart_position vp = here.veh_at( av->pos_bub() ) ) {
+            vp->vehicle().refresh();
+        }
+        here.invalidate_visibility_cache();
+        here.invalidate_map_cache( here.get_abs_sub().z() );
+    }
+    const int moves_after = av->get_moves();
+    if( moves_after < moves_before ) {
+        av_move_pool[sid] = std::max( 0, moves_after );
+        av->set_moves( av_move_pool[sid] );
+        if( av_move_pool[sid] <= 0 ) {
+            av_mark_acted( sid );
+        }
+    }
+    av_send_status( sid );
+    av_send_session_picture( sid, av->pos_bub(), av );
+    if( chosen._keep_menu_open && av->controlling_vehicle ) {
+        mp_send_vehicle_menu( sid, *av );
+    }
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+}
+
 /* DDA MP v4.0a-201: refuel a vehicle from the session avatar's inventory.
  * Mirrors veh_interact::do_refill: pick the first refillable part with a
  * compatible item and let the engine's vehicle activity do the transfer. */
@@ -7256,6 +7486,28 @@ void host_pump_intents()
                     g->mp_anchor_map_on( get_avatar() );
                 }
             }
+            continue;
+        }
+        // DDA MP v4.0a-282: host-built vehicle interact menu.
+        if( in.action == "vehicle_menu" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                if( !av->controlling_vehicle ) {
+                    netplay::host_send_event_to_sid(
+                        in.sid, netplay::fork_text( "You are not driving." ),
+                        static_cast<int>( m_info ) );
+                } else {
+                    mp_send_vehicle_menu( in.sid, *av );
+                }
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        if( in.action == "vehicle_menu_select" && in.args.size() >= 2 ) {
+            mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
             continue;
         }
         // DDA MP v4.0a-204: damaged vehicle parts list and repair.

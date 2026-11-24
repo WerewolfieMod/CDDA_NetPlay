@@ -11822,6 +11822,8 @@ void avatar_moves( const tripoint_abs_ms &old_abs_pos, const avatar &u, const ma
 }
 } // namespace cata_event_dispatch
 
+static Character *mp_player_character_override = nullptr;
+
 achievements_tracker &get_achievements()
 {
     return g->achievements();
@@ -11834,7 +11836,23 @@ Character &get_player_character()
     // is_enemy(), faction checks) recurse when that npc is treated as "the
     // player" as well as the creature being tested. Region-bound simulation
     // uses get_player_view()/reality_bubble(); only those follow the context.
+    // DDA MP v4.0a-282: a tightly scoped override lets a host-side vehicle
+    // menu entry (built/executed for one remote session avatar) act on that
+    // avatar. The override is cleared before returning to the game loop.
+    if( mp_player_character_override != nullptr ) {
+        return *mp_player_character_override;
+    }
     return g->u;
+}
+
+Character *get_player_character_override()
+{
+    return mp_player_character_override;
+}
+
+void set_player_character_override( Character *who )
+{
+    mp_player_character_override = who;
 }
 
 viewer &get_player_view()

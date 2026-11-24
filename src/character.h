@@ -4439,6 +4439,10 @@ class Character : public Creature, public visitable
 };
 
 Character &get_player_character();
+/// DDA MP: while a host-side vehicle menu callback runs for a session avatar,
+/// get_player_character() must describe that avatar, not the host player.
+Character *get_player_character_override();
+void set_player_character_override( Character *who );
 
 template<>
 struct enum_traits<character_stat> {

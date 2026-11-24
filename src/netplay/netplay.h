@@ -648,6 +648,11 @@ constexpr int EVENT_VEHICLE_PARTS = 210;
 /// DDA MP v4.0a-207: read-only zone list. Payload:
 /// "<name>\x1e<zone type id>\x1e<x>\x1e<y>\x1e<z>\x1f...".
 constexpr int EVENT_ZONES = 211;
+/// DDA MP v4.0a-282: the host-built vehicle interact menu. Payload: JSON
+/// {"generation":N,"entries":[{"text","desc","enabled","safe"},...]}.
+/// The client shows it and sends vehicle_menu_select with the generation and
+/// row index; the host rebuilds the same menu and runs that entry's callback.
+constexpr int EVENT_VEHICLE_MENU = 212;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

@@ -4025,6 +4025,72 @@ static void mp_run_vehicle_info( const std::string &payload )
     mp_inv_log( "ui: vehicle info closed" );
 }
 
+/* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
+ * labels/descriptions/flags of its own build_interact_menu() and runs the
+ * selected row for this session avatar. Entries that need a host-side modal
+ * (examine vehicle, engine control, smart controller, turrets, tools, water,
+ * workbench, ...) arrive disabled with an explanation. */
+static constexpr int MP_VEHICLE_MENU_REFUEL = 1000001;
+static constexpr int MP_VEHICLE_MENU_ITEMS = 1000002;
+
+static void mp_run_vehicle_menu( const std::string &payload )
+{
+    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
+        dismiss != nullptr && dismiss[0] != '\0' ) {
+        mp_inv_log( "vehicle menu received (test dismissed)" );
+        return;
+    }
+    int generation = 0;
+    uilist menu;
+    menu.title = _( "Select an action" );
+    menu.desc_enabled = true;
+    menu.hilight_disabled = true;
+    std::vector<std::string> client_actions;
+    try {
+        JsonValue jv = json_loader::from_string( payload );
+        JsonObject jo = jv.get_object();
+        generation = jo.get_int( "generation" );
+        int idx = 0;
+        for( JsonObject e : jo.get_array( "entries" ) ) {
+            menu.addentry( uilist_entry( idx, e.get_bool( "enabled" ), MENU_AUTOASSIGN,
+                                         e.get_string( "text" ), e.get_string( "desc" ) ) );
+            client_actions.push_back( e.has_string( "client_action" ) ?
+                                      e.get_string( "client_action" ) : std::string() );
+            ++idx;
+        }
+    } catch( ... ) {
+        mp_inv_log( "vehicle menu: bad payload" );
+        return;
+    }
+    // Host-only modal entries stay visible but disabled; these two are the
+    // client-side equivalents we already bridge.
+    menu.addentry( MP_VEHICLE_MENU_REFUEL, true, MENU_AUTOASSIGN,
+                   netplay::fork_text( "Refuel vehicle" ) );
+    menu.addentry( MP_VEHICLE_MENU_ITEMS, true, MENU_AUTOASSIGN,
+                   netplay::fork_text( "Get items" ) );
+    mp_inv_log( string_format( "vehicle menu open gen=%d rows=%d",
+                               generation, static_cast<int>( menu.entries.size() ) ) );
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    mp_inv_log( string_format( "vehicle menu close ret=%d", menu.ret ) );
+    if( menu.ret >= 0 && menu.ret < static_cast<int>( client_actions.size() ) ) {
+        const std::string &ca = client_actions[menu.ret];
+        if( ca == "parts" ) {
+            netplay::client_send_intent( "vehicle_parts", 0, {} );
+        } else if( ca == "items" ) {
+            netplay::client_send_client_action( ACTION_PICKUP );
+        } else {
+            netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
+        }
+    } else if( menu.ret == MP_VEHICLE_MENU_REFUEL ) {
+        netplay::client_send_intent( "vehicle_refuel", 0, {} );
+    } else if( menu.ret == MP_VEHICLE_MENU_ITEMS ) {
+        netplay::client_send_client_action( ACTION_PICKUP );
+    }
+}
+
 /* DDA MP v4.0a-207: read-only zone list streamed from the host. */
 static void mp_run_zones( const std::string &payload )
 {
@@ -4189,62 +4255,11 @@ static void mp_client_vehicle_control( int act )
         netplay::client_send_client_action( act );
         return;
     }
-    uilist vm;
-    vm.title = _( "Select an action" );
-    netplay::vehicle_sidebar_view mp_vsb;
-    const bool mp_vsb_ok = netplay::client_vehicle_sidebar( mp_vsb );
-    vm.addentry( 0, true, 'e', _( "Examine vehicle" ) );
-    vm.addentry( 1, true, 't', mp_vsb_ok && mp_vsb.tracking_on ?
-                 _( "Forget vehicle position" ) : _( "Remember vehicle position" ) );
-    vm.addentry( 2, true, 'c', _( "Stop driving" ) );
-    vm.addentry( 3, true, 'l', _( "Let go of controls" ) );
-    vm.addentry( 4, true, 'b', _( "Pull handbrake" ) );
-    if( mp_vsb_ok && mp_vsb.has_horn ) {
-        vm.addentry( 5, true, 'o', _( "Honk horn" ) );
-    }
-    vm.addentry( 6, true, 'p', netplay::fork_text( "Vehicle parts" ) );
-    vm.addentry( 7, true, 'f', netplay::fork_text( "Refuel vehicle" ) );
-    // Test hook: prove the second ^ reaches the host-style menu (and does not
-    // fall through to "take control") without blocking the headless client on
-    // a modal.
-    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
-        dismiss != nullptr && dismiss[0] != '\0' ) {
-        mp_inv_log( "vehicle menu open (test dismissed)" );
-        return;
-    }
-    vm.query();
-    switch( vm.ret ) {
-        case 0:
-            // The host's "Examine vehicle" opens the vehicle screen. The
-            // mirror has no vehicle object, so the closest stock-equivalent is
-            // the streamed parts/condition window (the old ACTION_EXAMINE went
-            // to nearby furniture instead).
-            netplay::client_send_intent( "vehicle_parts", 0, {} );
-            break;
-        case 1:
-            netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
-            break;
-        case 2:
-            netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
-            break;
-        case 3:
-            netplay::client_send_intent( "vehicle_release", 0, {} );
-            break;
-        case 4:
-            netplay::client_send_intent( "vehicle_handbrake", 0, {} );
-            break;
-        case 5:
-            netplay::client_send_intent( "vehicle_horn", 0, {} );
-            break;
-        case 6:
-            netplay::client_send_intent( "vehicle_parts", 0, {} );
-            break;
-        case 7:
-            netplay::client_send_intent( "vehicle_refuel", 0, {} );
-            break;
-        default:
-            break;
-    }
+    // DDA MP v4.0a-282: the host builds its own vehicle::build_interact_menu()
+    // for this session avatar and streams the rows; selecting one runs that
+    // exact callback on the host.
+    netplay::client_send_intent( "vehicle_menu", 0, {} );
+    mp_inv_log( "action: vehicle_menu request" );
 }
 
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
@@ -7094,6 +7109,10 @@ void run_view_loop()
                     }
                     if( mp_ev_type == netplay::EVENT_VEHICLE_PARTS ) {
                         mp_run_vehicle_parts( mp_ev_text );
+                        continue;
+                    }
+                    if( mp_ev_type == netplay::EVENT_VEHICLE_MENU ) {
+                        mp_run_vehicle_menu( mp_ev_text );
                         continue;
                     }
                     if( mp_ev_type == netplay::EVENT_ZONES ) {

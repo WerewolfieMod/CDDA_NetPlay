@@ -2418,6 +2418,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         menu.add( _( "Examine vehicle effects" ) )
         .skip_theft_check()
         .skip_locked_check()
+        .hotkey( "EXAMINE_VEHICLE_EFFECTS" )
         .on_submit( [this] { display_effects(); } );
     }
 
@@ -2785,6 +2786,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
     if( vp_nl_boiler ) {
         const size_t dw_idx = vp_nl_boiler->part_index();
         menu.add( _( "Activate the boiler" ) )
+        .hotkey( "USE_NL_BOILER" )
         .on_submit( [this, dw_idx, here] { use_nl_boiler( *here, dw_idx ); } );
     }
 
