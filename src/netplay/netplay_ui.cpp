@@ -4035,17 +4035,13 @@ static constexpr int MP_VEHICLE_MENU_ITEMS = 1000002;
 
 static void mp_run_vehicle_menu( const std::string &payload )
 {
-    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
-        dismiss != nullptr && dismiss[0] != '\0' ) {
-        mp_inv_log( "vehicle menu received (test dismissed)" );
-        return;
-    }
     int generation = 0;
     uilist menu;
     menu.title = _( "Select an action" );
     menu.desc_enabled = true;
     menu.hilight_disabled = true;
     std::vector<std::string> client_actions;
+    std::vector<std::string> actions;
     try {
         JsonValue jv = json_loader::from_string( payload );
         JsonObject jo = jv.get_object();
@@ -4056,10 +4052,60 @@ static void mp_run_vehicle_menu( const std::string &payload )
                                          e.get_string( "text" ), e.get_string( "desc" ) ) );
             client_actions.push_back( e.has_string( "client_action" ) ?
                                       e.get_string( "client_action" ) : std::string() );
+            actions.push_back( e.has_string( "action" ) ? e.get_string( "action" ) : std::string() );
             ++idx;
         }
     } catch( ... ) {
         mp_inv_log( "vehicle menu: bad payload" );
+        return;
+    }
+    // Test hook: list the received rows and pick the requested actions from
+    // DDA_MP_TEST_VEHICLE_MENU (comma separated hotkey-action ids). Used to
+    // exercise the full host menu bridge without a human at the UI.
+    if( const char *test_menu = std::getenv( "DDA_MP_TEST_VEHICLE_MENU" );
+        test_menu != nullptr && test_menu[0] != '\0' ) {
+        static int mp_test_pick = 0;
+        std::vector<std::string> targets;
+        std::stringstream ss( test_menu );
+        std::string target;
+        while( std::getline( ss, target, ',' ) ) {
+            if( !target.empty() ) {
+                targets.push_back( target );
+            }
+        }
+        for( int i = 0; i < static_cast<int>( actions.size() ); ++i ) {
+            mp_inv_log( string_format( "vehicle menu row %d enabled=%d action=%s text=%s",
+                                       i, menu.entries[i].enabled ? 1 : 0,
+                                       actions[i].c_str(),
+                                       menu.entries[i].txt.c_str() ) );
+        }
+        if( mp_test_pick >= static_cast<int>( targets.size() ) ) {
+            mp_inv_log( "vehicle menu test done" );
+            return;
+        }
+        const std::string &wanted = targets[mp_test_pick];
+        for( int i = 0; i < static_cast<int>( actions.size() ); ++i ) {
+            if( actions[i] != wanted || !menu.entries[i].enabled ) {
+                continue;
+            }
+            ++mp_test_pick;
+            mp_inv_log( string_format( "vehicle menu test select action=%s idx=%d gen=%d",
+                                       wanted.c_str(), i, generation ) );
+            if( client_actions[i] == "parts" ) {
+                netplay::client_send_intent( "vehicle_parts", 0, {} );
+            } else if( client_actions[i] == "items" ) {
+                netplay::client_send_client_action( ACTION_PICKUP );
+            } else {
+                netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
+            }
+            return;
+        }
+        mp_inv_log( string_format( "vehicle menu test target not found: %s", wanted.c_str() ) );
+        return;
+    }
+    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
+        dismiss != nullptr && dismiss[0] != '\0' ) {
+        mp_inv_log( "vehicle menu received (test dismissed)" );
         return;
     }
     // Host-only modal entries stay visible but disabled; these two are the
@@ -8780,6 +8826,36 @@ void run_view_loop()
                             ++mp_sp_phase;
                             mp_inv_log( "test: speed done" );
                         }
+                    }
+                }
+            }
+            // DDA MP test hook: exercise the host-built vehicle interact menu
+            // end to end (take control, request menu; mp_run_vehicle_menu's
+            // DDA_MP_TEST_VEHICLE_MENU picks rows).
+            if( const char *test_int = std::getenv( "DDA_MP_TEST_VEHICLE_INTERACT" );
+                test_int != nullptr && test_int[0] != '\0' ) {
+                static bool mp_int_started = false;
+                static auto mp_int_t0 = std::chrono::steady_clock::now();
+                static int mp_int_phase = 0;
+                if( !mp_int_started && mp_have_picture && mp_native_avatar_ready ) {
+                    mp_int_started = true;
+                    mp_int_t0 = std::chrono::steady_clock::now();
+                    mp_inv_log( "test: vehicle interact hook start" );
+                }
+                if( mp_int_started ) {
+                    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - mp_int_t0 ).count();
+                    if( mp_int_phase == 0 && ms > 1500 ) {
+                        mp_int_phase = 1;
+                        netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                        mp_inv_log( "test: vehicle interact control" );
+                    } else if( mp_int_phase == 1 && ms > 3000 ) {
+                        mp_int_phase = 2;
+                        netplay::client_send_intent( "vehicle_menu", 0, {} );
+                        mp_inv_log( "test: vehicle interact menu request" );
+                    } else if( mp_int_phase == 2 && ms > 12000 ) {
+                        mp_int_phase = 3;
+                        mp_inv_log( "test: vehicle interact done" );
                     }
                 }
             }

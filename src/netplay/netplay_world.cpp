@@ -6491,6 +6491,7 @@ static void mp_send_vehicle_menu( int sid, npc &av )
         js.member( "text", it._text );
         js.member( "desc", desc );
         js.member( "enabled", enabled );
+        js.member( "action", it._hotkey_action.value_or( "" ) );
         if( client_handled ) {
             js.member( "client_action", client_action );
         }
@@ -6542,6 +6543,10 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
     }
     const std::size_t msg_before = Messages::generation();
     const int moves_before = av->get_moves();
+    const std::string mp_menu_action = chosen._hotkey_action.value_or( "" );
+    mp_ctrl_log( string_format( "menu sid=%d gen=%u index=%d action=%s safe=%d enabled=%d",
+                                sid, built.generation, index, mp_menu_action.c_str(),
+                                safe ? 1 : 0, chosen._enabled ? 1 : 0 ) );
     try {
         mp_player_character_scope scope( *av );
         chosen._on_submit();
@@ -6566,6 +6571,13 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
             av_mark_acted( sid );
         }
     }
+    int mp_veh_vel = 0;
+    if( const optional_vpart_position vp = here.veh_at( av->pos_bub() ) ) {
+        mp_veh_vel = vp->vehicle().velocity;
+    }
+    mp_ctrl_log( string_format( "menu done sid=%d action=%s vel=%d moves=%d->%d keep=%d",
+                                sid, mp_menu_action.c_str(), mp_veh_vel, moves_before,
+                                moves_after, chosen._keep_menu_open ? 1 : 0 ) );
     av_send_status( sid );
     av_send_session_picture( sid, av->pos_bub(), av );
     if( chosen._keep_menu_open && av->controlling_vehicle ) {
