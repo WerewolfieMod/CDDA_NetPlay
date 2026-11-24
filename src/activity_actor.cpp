@@ -12427,7 +12427,10 @@ void start_engines_activity_actor::finish( player_activity &act, Character &who 
     vehicle *veh = g->remoteveh();
     map &here = get_map();
     if( !veh ) {
-        const tripoint_bub_ms pos = get_player_character().pos_bub() + engine_position;
+        // DDA MP v4.0a-260: the activity may run for a session avatar (npc), not
+        // the host player; the engine_position is relative to the character
+        // that started it, so use `who`, not get_player_character().
+        const tripoint_bub_ms pos = who.pos_bub() + engine_position;
         veh = veh_pointer_or_null( here.veh_at( pos ) );
         if( !veh ) {
             return;

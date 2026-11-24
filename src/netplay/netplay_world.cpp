@@ -4648,14 +4648,24 @@ void host_pump_client_actions()
                 }
                 av->setpos( here, *controls_pos, false );
                 here.board_vehicle( *controls_pos, av );
-                av->controlling_vehicle = true;
+                if( vp->vehicle().engine_on ) {
+                    av->controlling_vehicle = true;
+                } else {
+                    // DDA MP v4.0a-260: the stock control_vehicle starts the
+                    // engine instead of just flipping controlling_vehicle.
+                    // The activity runs on the session npc; its finish now
+                    // locates the vehicle from that character.
+                    vp->vehicle().start_engines( here, av, true );
+                }
                 mp_ctrl_log( string_format(
-                                 "ctrl sid=%d take pos=%d,%d veh=%d,%d in=%d drv=%d",
+                                 "ctrl sid=%d take pos=%d,%d veh=%d,%d in=%d drv=%d engine=%d",
                                  sid, av->pos_bub().x(), av->pos_bub().y(),
                                  vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
-                                 av->in_vehicle ? 1 : 0, av->controlling_vehicle ? 1 : 0 ) );
+                                 av->in_vehicle ? 1 : 0, av->controlling_vehicle ? 1 : 0,
+                                 vp->vehicle().engine_on ? 1 : 0 ) );
                 netplay::host_send_event_fmt_to_sid(
-                    sid, "You take control of the %s.", { vp->vehicle().name },
+                    sid, vp->vehicle().engine_on ? "You take control of the %s." :
+                    "You start the %s's engine.", { vp->vehicle().name },
                     static_cast<int>( m_info ) );
                 changed = true;
                 break;

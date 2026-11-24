@@ -4208,6 +4208,55 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         return;
     }
     switch( static_cast<action_id>( act ) ) {
+        case ACTION_CONTROL_VEHICLE: {
+            // DDA MP v4.0a-260: the stock vehicle action menu, shown on the
+            // client. If no streamed part is at/next to the avatar, let the
+            // host answer with its "no controls" message instead of showing a
+            // menu over empty ground.
+            bool mp_vehicle_near = false;
+            const tripoint_abs_ms mp_av_pos = get_avatar().pos_abs();
+            for( const mp_cached_vpart &v : mp_vparts_cache ) {
+                if( v.pos.z() == mp_av_pos.z() &&
+                    std::abs( v.pos.x() - mp_av_pos.x() ) <= 1 &&
+                    std::abs( v.pos.y() - mp_av_pos.y() ) <= 1 ) {
+                    mp_vehicle_near = true;
+                    break;
+                }
+            }
+            if( !mp_vehicle_near ) {
+                netplay::client_send_client_action( act );
+                break;
+            }
+            uilist vm;
+            vm.title = _( "Vehicle" );
+            vm.addentry( 0, true, 'c', get_avatar().controlling_vehicle ?
+                         _( "Stop controlling" ) : _( "Control the vehicle" ) );
+            vm.addentry( 1, true, 's', _( "Vehicle status" ) );
+            vm.addentry( 2, true, 'p', _( "Vehicle parts" ) );
+            vm.addentry( 3, true, 'f', _( "Refuel vehicle" ) );
+            vm.addentry( 4, true, 'e', _( "Examine vehicle" ) );
+            vm.query();
+            switch( vm.ret ) {
+                case 0:
+                    netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                    break;
+                case 1:
+                    netplay::client_send_intent( "vehicle_info", 0, {} );
+                    break;
+                case 2:
+                    netplay::client_send_intent( "vehicle_parts", 0, {} );
+                    break;
+                case 3:
+                    netplay::client_send_intent( "vehicle_refuel", 0, {} );
+                    break;
+                case 4:
+                    netplay::client_send_client_action( ACTION_EXAMINE );
+                    break;
+                default:
+                    break;
+            }
+            break;
+        }
         case ACTION_INVENTORY:
         case ACTION_ADVANCEDINV:
             // DDA MP v4.1: the inventory comes from the mirror, not from a
