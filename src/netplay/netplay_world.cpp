@@ -1041,6 +1041,8 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
             out.veh_battery = mp_battery.first;
             out.veh_battery_color = static_cast<uint8_t>(
                                         netplay::inv_color_index( mp_battery.second ) );
+            out.veh_tracking_on = mp_veh->vehicle().tracking_on;
+            out.veh_has_horn = mp_veh->vehicle().has_part( "HORN" );
         }
     }
     // DDA MP v4.2: raw creature state for the native renderer. Only what the
@@ -2087,6 +2089,15 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             // class so talking to NPCs works.
             if( npc_ptr->myclass.is_null() || npc_ptr->myclass == npc_class_id( "NC_NONE" ) ) {
                 npc_ptr->myclass = npc_class_id( "NC_SHOPKEEP" );
+            }
+            // DDA MP v4.0a-265: npc::deserialize falls back to
+            // `idz = myclass.str()` when the JSON has no "idz" member. An
+            // avatar profile carries no NPC class, so that fallback produced
+            // the invalid template "NC_NONE" and any portrait/snippet lookup
+            // raised "Tried to get invalid npc: NC_NONE". A null template is
+            // valid for an avatar: the lookups skip it.
+            if( !npc_ptr->idz.is_valid() ) {
+                npc_ptr->idz = string_id<npc_template>::NULL_ID();
             }
             if( !npc_ptr->get_fac_id().str().empty() ) {
                 npc_ptr->set_fac( npc_ptr->get_fac_id() );
@@ -6120,6 +6131,44 @@ static bool mp_take_item_part( Character &from, item *it, int amount, item &out 
     return true;
 }
 
+/* DDA MP v4.0a-266: session handbrake. The stock handbrake() reads the host
+ * avatar's position, so a remote driver pulling it did nothing. Same physics,
+ * applied to the session avatar's vehicle, and the pull ends its turn. */
+static void mp_session_handbrake( int sid, npc &av )
+{
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    if( !vp ) {
+        return;
+    }
+    vehicle &veh = vp->vehicle();
+    const int mp_vel_before = veh.velocity;
+    const int mp_cruise_before = veh.cruise_velocity;
+    netplay::host_send_event_to_sid( sid, _( "You pull a handbrake." ),
+                                     static_cast<int>( m_info ) );
+    veh.cruise_velocity = 0;
+    if( veh.last_turn != 0_degrees && rng( 15, 60 ) * 100 < std::abs( veh.velocity ) ) {
+        veh.skidding = true;
+        netplay::host_send_event_fmt_to_sid( sid, "You lose control of %s.",
+                                             { veh.name }, static_cast<int>( m_warning ) );
+        veh.turn( veh.last_turn > 0_degrees ? 60_degrees : -60_degrees );
+    } else {
+        const int braking_power = std::abs( veh.velocity ) / 2 + 10 * 100;
+        if( std::abs( veh.velocity ) < braking_power ) {
+            veh.stop( here );
+        } else {
+            const int sgn = veh.velocity > 0 ? 1 : -1;
+            veh.velocity = sgn * ( std::abs( veh.velocity ) - braking_power );
+        }
+    }
+    av.set_moves( 0 );
+    av_move_pool[sid] = 0;
+    av_mark_acted( sid );
+    mp_ctrl_log( string_format( "handbrake sid=%d vel=%d->%d cruise=%d->%d", sid,
+                                mp_vel_before, veh.velocity, mp_cruise_before,
+                                veh.cruise_velocity ) );
+}
+
 /* DDA MP v4.0a-201: refuel a vehicle from the session avatar's inventory.
  * Mirrors veh_interact::do_refill: pick the first refillable part with a
  * compatible item and let the engine's vehicle activity do the transfer. */
@@ -6983,6 +7032,48 @@ void host_pump_intents()
                     }
                 }
                 av_send_status( in.sid );
+            }
+            continue;
+        }
+        // DDA MP v4.0a-266: host ^ vehicle menu actions for a remote driver.
+        if( in.action == "vehicle_release" || in.action == "vehicle_handbrake" ||
+            in.action == "vehicle_toggle_tracking" || in.action == "vehicle_horn" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                map &here = get_map();
+                const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+                if( in.action == "vehicle_release" ) {
+                    av->controlling_vehicle = false;
+                    mp_ctrl_log( string_format( "release sid=%d drv=%d", in.sid,
+                                                av->controlling_vehicle ? 1 : 0 ) );
+                    netplay::host_send_event_to_sid(
+                        in.sid, _( "You let go of the controls." ),
+                        static_cast<int>( m_info ) );
+                } else if( in.action == "vehicle_handbrake" ) {
+                    mp_session_handbrake( in.sid, *av );
+                } else if( in.action == "vehicle_toggle_tracking" ) {
+                    if( vp ) {
+                        vp->vehicle().toggle_tracking();
+                        mp_ctrl_log( string_format( "tracking sid=%d on=%d", in.sid,
+                                                    vp->vehicle().tracking_on ? 1 : 0 ) );
+                        netplay::host_send_event_to_sid(
+                            in.sid,
+                            vp->vehicle().tracking_on ?
+                            _( "You start keeping track of this vehicle's position." ) :
+                            _( "You stop keeping track of the vehicle position." ),
+                            static_cast<int>( m_info ) );
+                    }
+                } else if( vp ) {
+                    vp->vehicle().honk_horn( here );
+                    mp_ctrl_log( string_format( "horn sid=%d veh=%d,%d", in.sid,
+                                                vp->vehicle().pos_abs().x(),
+                                                vp->vehicle().pos_abs().y() ) );
+                }
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
             }
             continue;
         }

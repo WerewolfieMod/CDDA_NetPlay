@@ -4231,22 +4231,43 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             }
             uilist vm;
             vm.title = _( "Select an action" );
-            vm.addentry( 0, true, 'c', _( "Stop driving" ) );
-            vm.addentry( 1, true, 'e', _( "Examine vehicle" ) );
-            vm.addentry( 2, true, 'p', netplay::fork_text( "Vehicle parts" ) );
-            vm.addentry( 3, true, 'f', netplay::fork_text( "Refuel vehicle" ) );
+            netplay::vehicle_sidebar_view mp_vsb;
+            const bool mp_vsb_ok = netplay::client_vehicle_sidebar( mp_vsb );
+            vm.addentry( 0, true, 'e', _( "Examine vehicle" ) );
+            vm.addentry( 1, true, 't', mp_vsb_ok && mp_vsb.tracking_on ?
+                         _( "Forget vehicle position" ) : _( "Remember vehicle position" ) );
+            vm.addentry( 2, true, 'c', _( "Stop driving" ) );
+            vm.addentry( 3, true, 'l', _( "Let go of controls" ) );
+            vm.addentry( 4, true, 'b', _( "Pull handbrake" ) );
+            if( mp_vsb_ok && mp_vsb.has_horn ) {
+                vm.addentry( 5, true, 'o', _( "Honk horn" ) );
+            }
+            vm.addentry( 6, true, 'p', netplay::fork_text( "Vehicle parts" ) );
+            vm.addentry( 7, true, 'f', netplay::fork_text( "Refuel vehicle" ) );
             vm.query();
             switch( vm.ret ) {
                 case 0:
-                    netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
-                    break;
-                case 1:
                     netplay::client_send_client_action( ACTION_EXAMINE );
                     break;
+                case 1:
+                    netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
+                    break;
                 case 2:
-                    netplay::client_send_intent( "vehicle_parts", 0, {} );
+                    netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
                     break;
                 case 3:
+                    netplay::client_send_intent( "vehicle_release", 0, {} );
+                    break;
+                case 4:
+                    netplay::client_send_intent( "vehicle_handbrake", 0, {} );
+                    break;
+                case 5:
+                    netplay::client_send_intent( "vehicle_horn", 0, {} );
+                    break;
+                case 6:
+                    netplay::client_send_intent( "vehicle_parts", 0, {} );
+                    break;
+                case 7:
                     netplay::client_send_intent( "vehicle_refuel", 0, {} );
                     break;
                 default:
@@ -8598,6 +8619,21 @@ void run_view_loop()
                     } else if( mp_test_veh_phase == 5 && mp_veh_ms > 9500 ) {
                         mp_test_veh_phase = 6;
                         mp_inv_log( "test: vehicle done" );
+                    } else if( mp_test_veh_phase == 6 && mp_veh_ms > 10800 ) {
+                        mp_test_veh_phase = 7;
+                        netplay::client_send_intent( "vehicle_handbrake", 0, {} );
+                        mp_inv_log( "test: vehicle handbrake" );
+                    } else if( mp_test_veh_phase == 7 && mp_veh_ms > 12300 ) {
+                        mp_test_veh_phase = 8;
+                        netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
+                        mp_inv_log( "test: vehicle tracking" );
+                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 13800 ) {
+                        mp_test_veh_phase = 9;
+                        netplay::client_send_intent( "vehicle_release", 0, {} );
+                        mp_inv_log( "test: vehicle release" );
+                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 15300 ) {
+                        mp_test_veh_phase = 10;
+                        mp_inv_log( "test: vehicle menu done" );
                     }
                 }
             }

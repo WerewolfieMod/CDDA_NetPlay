@@ -419,6 +419,10 @@ struct snapshot {
     uint8_t veh_cruise_color = 8;
     uint8_t veh_fuel_color = 8;
     uint8_t veh_battery_color = 8;
+    /// DDA MP v4.0a-266: state the host's ^ vehicle menu depends on, so the
+    /// client menu shows the same entries/labels.
+    bool veh_tracking_on = false;
+    bool veh_has_horn = false;
     /// DDA MP v4.2: raw creature state for the native renderer. kind 0 =
     /// monster, 1 = npc; the JSON is the game's own serialization, position is
     /// absolute so the client can place it without a shared map address.
@@ -484,6 +488,8 @@ struct vehicle_sidebar_view {
     int cruise_color = 8;
     int fuel_color = 8;
     int battery_color = 8;
+    bool tracking_on = false;
+    bool has_horn = false;
 };
 void client_set_vehicle_sidebar( const snapshot &snap );
 bool client_vehicle_sidebar( vehicle_sidebar_view &out );
