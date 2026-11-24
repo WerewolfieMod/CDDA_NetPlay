@@ -2985,8 +2985,10 @@ void host_pump_avatar_keys()
                 const int vel_before = vp->vehicle().velocity;
                 const std::size_t mp_drive_msg_before = Messages::generation();
                 const bool mp_steering = dir_it->second.x() != 0;
+                const int mp_moves_before = npc_ptr->get_moves();
                 vp->vehicle().pldrive( here, *npc_ptr, dir_it->second.x(),
                                        dir_it->second.y(), 0 );
+                const int mp_moves_after = npc_ptr->get_moves();
                 // DDA MP v4.0a-274: pldrive can report steering/engine
                 // failures through the global log; relay those lines to the
                 // driver instead of leaving them only on the host screen.
@@ -2999,7 +3001,7 @@ void host_pump_avatar_keys()
                 // turn (TAB/autoattack with no target, or WAIT), exactly like
                 // the host, and only then does the car move.
                 if( mp_steering ) {
-                    av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
+                    av_move_pool[sk.sid] = std::max( 0, mp_moves_after );
                     npc_ptr->set_moves( av_move_pool[sk.sid] );
                     mp_drive_acted = av_move_pool[sk.sid] <= 0;
                     if( mp_drive_acted ) {
@@ -3013,7 +3015,7 @@ void host_pump_avatar_keys()
                 const int mp_pool_now = av_move_pool.count( sk.sid ) ?
                                         av_move_pool[sk.sid] : -1;
                 mp_ctrl_log( string_format(
-                                 "drive sid=%d dir=%d,%d steer=%d veh=%d,%d->%d,%d vel=%d->%d av=%d,%d in=%d pool=%d acted=%d",
+                                 "drive sid=%d dir=%d,%d steer=%d veh=%d,%d->%d,%d vel=%d->%d av=%d,%d in=%d pool=%d acted=%d moves=%d->%d",
                                  sk.sid, dir_it->second.x(), dir_it->second.y(),
                                  mp_steering ? 1 : 0,
                                  vp_before.x(), vp_before.y(),
@@ -3021,7 +3023,8 @@ void host_pump_avatar_keys()
                                  vel_before, vp->vehicle().velocity,
                                  npc_ptr->pos_bub().x(), npc_ptr->pos_bub().y(),
                                  npc_ptr->in_vehicle ? 1 : 0,
-                                 mp_pool_now, mp_drive_acted ? 1 : 0 ) );
+                                 mp_pool_now, mp_drive_acted ? 1 : 0,
+                                 mp_moves_before, mp_moves_after ) );
             } else {
                 mp_ctrl_log( string_format( "drive sid=%d no-veh av=%d,%d drv=1",
                                             sk.sid, npc_ptr->pos_bub().x(),

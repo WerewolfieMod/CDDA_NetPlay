@@ -8655,26 +8655,42 @@ void run_view_loop()
                         mp_inv_log( "test: vehicle pass 3 (tab)" );
                     } else if( mp_test_veh_phase == 8 && mp_veh_ms > 11500 ) {
                         mp_test_veh_phase = 9;
-                        mp_client_vehicle_control( ACTION_CONTROL_VEHICLE );
-                        mp_inv_log( "test: vehicle menu key" );
+                        key_event mp_turn_ke;
+                        mp_turn_ke.code = 1; // LEFT / steer
+                        client_send_keys( { mp_turn_ke } );
+                        mp_inv_log( "test: vehicle turn left" );
                     } else if( mp_test_veh_phase == 9 && mp_veh_ms > 12500 ) {
                         mp_test_veh_phase = 10;
-                        netplay::client_send_intent( "vehicle_handbrake", 0, {} );
-                        mp_inv_log( "test: vehicle handbrake" );
+                        key_event mp_turn_ke;
+                        mp_turn_ke.code = 2; // RIGHT / steer
+                        client_send_keys( { mp_turn_ke } );
+                        mp_inv_log( "test: vehicle turn right" );
                     } else if( mp_test_veh_phase == 10 && mp_veh_ms > 13500 ) {
                         mp_test_veh_phase = 11;
-                        netplay::client_send_intent( "vehicle_horn", 0, {} );
-                        mp_inv_log( "test: vehicle horn" );
+                        netplay::client_send_intent( "autoattack", 0, {} );
+                        mp_inv_log( "test: vehicle turn pass (tab)" );
                     } else if( mp_test_veh_phase == 11 && mp_veh_ms > 14500 ) {
                         mp_test_veh_phase = 12;
-                        netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
-                        mp_inv_log( "test: vehicle tracking" );
+                        mp_client_vehicle_control( ACTION_CONTROL_VEHICLE );
+                        mp_inv_log( "test: vehicle menu key" );
                     } else if( mp_test_veh_phase == 12 && mp_veh_ms > 15500 ) {
                         mp_test_veh_phase = 13;
+                        netplay::client_send_intent( "vehicle_handbrake", 0, {} );
+                        mp_inv_log( "test: vehicle handbrake" );
+                    } else if( mp_test_veh_phase == 13 && mp_veh_ms > 16500 ) {
+                        mp_test_veh_phase = 14;
+                        netplay::client_send_intent( "vehicle_horn", 0, {} );
+                        mp_inv_log( "test: vehicle horn" );
+                    } else if( mp_test_veh_phase == 14 && mp_veh_ms > 17500 ) {
+                        mp_test_veh_phase = 15;
+                        netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
+                        mp_inv_log( "test: vehicle tracking" );
+                    } else if( mp_test_veh_phase == 15 && mp_veh_ms > 18500 ) {
+                        mp_test_veh_phase = 16;
                         netplay::client_send_intent( "vehicle_release", 0, {} );
                         mp_inv_log( "test: vehicle release" );
-                    } else if( mp_test_veh_phase == 13 && mp_veh_ms > 17500 ) {
-                        mp_test_veh_phase = 14;
+                    } else if( mp_test_veh_phase == 16 && mp_veh_ms > 20500 ) {
+                        mp_test_veh_phase = 17;
                         mp_inv_log( "test: vehicle menu done" );
                     }
                 }
