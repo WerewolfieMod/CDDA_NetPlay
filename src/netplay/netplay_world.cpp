@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <list>
@@ -63,6 +64,7 @@
 #include "npctrade.h"
 #include "mtype.h"
 #include "npc.h"
+#include "options.h"
 #include "output.h"
 #include "ranged.h"
 #include "recipe.h"
@@ -1321,6 +1323,83 @@ bool host_relay_character_message( const Character *who, const std::string &text
     return false;
 }
 
+/* DDA MP v4.0a-264: same vehicle-light sight bonus game::calc_driving_offset
+ * uses on the host, so the client's forward camera offset matches it. */
+static int mp_driving_lumi( vehicle &veh )
+{
+    float veh_luminance = 0.0f;
+    float iteration = 1.0f;
+    for( const vehicle_part *pt : veh.lights() ) {
+        const vpart_info &vp = pt->info();
+        if( vp.has_flag( VPFLAG_CONE_LIGHT ) || vp.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ) {
+            veh_luminance += vp.bonus / iteration;
+            iteration = iteration * 1.1f;
+        }
+    }
+    return LIGHT_RANGE( ( veh_luminance * 3 ) );
+}
+
+/* DDA MP v4.0a-264: game::calc_driving_offset shifts the host camera ahead of
+ * the vehicle. The client only renders the streamed frame, so the host has to
+ * do the same shift and send it as snap.view_dx/dy; the client already places
+ * the mirror avatar at origin - view. The frame is FRAMEW x FRAMEH, so the
+ * host window size in the stock function maps to these constants. */
+static point mp_driving_view_offset( npc &viewer, vehicle &veh )
+{
+    map &here = get_map();
+    if( !get_option<bool>( "DRIVING_VIEW_OFFSET" ) ) {
+        return point::zero;
+    }
+    const int g_light_level = static_cast<int>( g->light_level( viewer.posz() ) );
+    const int light_sight_range = viewer.sight_range( g_light_level );
+    const int sight = std::max( mp_driving_lumi( veh ), light_sight_range );
+
+    static const int border_range = 2;
+    const point max_offset( ( FRAMEW + 1 ) / 2 - border_range - 1,
+                            ( FRAMEH + 1 ) / 2 - border_range - 1 );
+
+    static const float min_offset_vel = 1 * vehicles::vmiph_per_tile;
+    const float max_offset_vel = std::min( max_offset.y, max_offset.x ) *
+                                 vehicles::vmiph_per_tile;
+    float velocity = veh.velocity;
+    rl_vec2d offset = veh.move_vec();
+    if( !veh.skidding && veh.player_in_control( here, viewer ) &&
+        std::abs( veh.cruise_velocity - veh.velocity ) < 7 * vehicles::vmiph_per_tile ) {
+        offset = veh.face_vec();
+        velocity = veh.cruise_velocity;
+    }
+    const float rel_offset = inverse_lerp( min_offset_vel, max_offset_vel, velocity );
+    if( std::fabs( offset.x ) > std::fabs( offset.y ) && std::fabs( offset.x ) > 0.2 ) {
+        offset.y /= std::fabs( offset.x );
+        offset.x = ( offset.x > 0 ) ? +1 : -1;
+    } else if( std::fabs( offset.y ) > 0.2 ) {
+        offset.x /= std::fabs( offset.y );
+        offset.y = offset.y > 0 ? +1 : -1;
+    }
+    offset.x *= rel_offset;
+    offset.y *= rel_offset;
+    offset.x *= max_offset.x;
+    offset.y *= max_offset.y;
+
+    const point maxoff( ( sight * 2 + 1 - FRAMEW ) / 2,
+                        ( sight * 2 + 1 - FRAMEH ) / 2 );
+    if( maxoff.x <= 0 ) {
+        offset.x = 0;
+    } else if( offset.x > 0 && offset.x > maxoff.x ) {
+        offset.x = maxoff.x;
+    } else if( offset.x < 0 && -offset.x > maxoff.x ) {
+        offset.x = -maxoff.x;
+    }
+    if( maxoff.y <= 0 ) {
+        offset.y = 0;
+    } else if( offset.y > 0 && offset.y > maxoff.y ) {
+        offset.y = maxoff.y;
+    } else if( offset.y < 0 && -offset.y > maxoff.y ) {
+        offset.y = -maxoff.y;
+    }
+    return point( static_cast<int>( offset.x ), static_cast<int>( offset.y ) );
+}
+
 static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
                                      npc *viewer = nullptr )
 {
@@ -1339,6 +1418,16 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
             center += tripoint_rel_ms( off.x, off.y, offz );
             view_dx = off.x;
             view_dy = off.y;
+        } else if( viewer->in_vehicle ) {
+            // DDA MP v4.0a-264: driving view offset (camera looks ahead).
+            if( const optional_vpart_position vp = here.veh_at( viewer->pos_bub() ) ) {
+                const point drive_off = mp_driving_view_offset( *viewer, vp->vehicle() );
+                if( drive_off.x != 0 || drive_off.y != 0 ) {
+                    center += tripoint_rel_ms( drive_off.x, drive_off.y, 0 );
+                    view_dx = drive_off.x;
+                    view_dy = drive_off.y;
+                }
+            }
         }
     }
     if( !here.inbounds( center ) ) {
@@ -1789,30 +1878,46 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
             map &here = get_map();
             const tripoint_bub_ms p = npc_ptr->pos_bub();
             std::optional<tripoint_bub_ms> spot;
-            for( int r = 0; r <= 12 && !spot; ++r ) {
-                for( const tripoint_bub_ms &cand : here.points_in_radius( p, r ) ) {
-                    if( !here.inbounds( cand ) ) {
-                        continue;
-                    }
-                    bool clear = true;
-                    for( int dy = -2; dy <= 2 && clear; ++dy ) {
-                        for( int dx = -2; dx <= 2 && clear; ++dx ) {
-                            const tripoint_bub_ms q = cand + tripoint_rel_ms( dx, dy, 0 );
-                            if( !here.inbounds( q ) || !here.passable( q ) ||
-                                ( q != p && here.veh_at( q ) ) ) {
-                                clear = false;
+            for( int pass = 0; pass < 2 && !spot; ++pass ) {
+                for( int r = 0; r <= 16 && !spot; ++r ) {
+                    for( const tripoint_bub_ms &cand : here.points_in_radius( p, r ) ) {
+                        if( !here.inbounds( cand ) ) {
+                            continue;
+                        }
+                        if( pass == 0 && !here.is_outside( cand ) ) {
+                            continue;
+                        }
+                        bool clear = true;
+                        for( int dy = -2; dy <= 2 && clear; ++dy ) {
+                            for( int dx = -2; dx <= 2 && clear; ++dx ) {
+                                const tripoint_bub_ms q = cand + tripoint_rel_ms( dx, dy, 0 );
+                                if( !here.inbounds( q ) || !here.passable( q ) ||
+                                    ( q != p && here.veh_at( q ) ) ) {
+                                    clear = false;
+                                }
                             }
                         }
-                    }
-                    if( clear ) {
-                        spot = cand;
-                        break;
+                        // The client test drives north, so require a clear
+                        // three-wide lane ahead of the spawn.
+                        for( int ny = -1; ny >= -14 && clear; --ny ) {
+                            for( int nx = -1; nx <= 1 && clear; ++nx ) {
+                                const tripoint_bub_ms q = cand + tripoint_rel_ms( nx, ny, 0 );
+                                if( !here.inbounds( q ) || !here.passable( q ) ||
+                                    ( q != p && here.veh_at( q ) ) ) {
+                                    clear = false;
+                                }
+                            }
+                        }
+                        if( clear ) {
+                            spot = cand;
+                            break;
+                        }
                     }
                 }
             }
             if( spot ) {
                 npc_ptr->setpos( here, *spot, false );
-                vehicle *veh = here.add_vehicle( vproto_id( "golf_cart" ), *spot, 0_degrees,
+                vehicle *veh = here.add_vehicle( vproto_id( "golf_cart" ), *spot, -90_degrees,
                                                  100, veh_spawn_status::UNDAMAGED, true, true );
                 if( veh != nullptr ) {
                     here.board_vehicle( *spot, npc_ptr.get() );
