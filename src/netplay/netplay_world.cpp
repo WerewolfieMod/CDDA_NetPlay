@@ -1014,6 +1014,8 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     // DDA MP v4.0a-252: Character::store does not save `facing`, so the mirror
     // sprite kept looking right while its owner walked left. Stream it.
     out.avatar_facing = static_cast<uint8_t>( viewer != nullptr ? viewer->facing : u.facing );
+    out.avatar_controlling = viewer != nullptr ? viewer->controlling_vehicle :
+                             u.controlling_vehicle;
     // DDA MP v4.2: raw creature state for the native renderer. Only what the
     // session avatar can see (or everything for a watcher), and within the
     // visible range (the client sidebar list and compass show creatures well
@@ -1335,6 +1337,25 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
         }
     }
     netplay::host_send_snapshot_to_sid( sid, snap );
+    // DDA MP v4.0a-262: once per second, record the controlled vehicle's
+    // actual movement after the world turn (pldrive only sets cruise_velocity;
+    // the position/velocity in the key-handler line are pre-move).
+    if( viewer != nullptr && viewer->controlling_vehicle ) {
+        static auto mp_veh_last = std::chrono::steady_clock::now() - std::chrono::seconds( 5 );
+        const auto mp_veh_now = std::chrono::steady_clock::now();
+        if( mp_veh_now - mp_veh_last >= std::chrono::seconds( 1 ) ) {
+            mp_veh_last = mp_veh_now;
+            map &mp_veh_here = get_map();
+            if( const optional_vpart_position vp = mp_veh_here.veh_at( viewer->pos_bub() ) ) {
+                mp_ctrl_log( string_format(
+                                 "turn veh=%d,%d vel=%d cruise=%d av=%d,%d engine=%d",
+                                 vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
+                                 vp->vehicle().velocity, vp->vehicle().cruise_velocity,
+                                 viewer->pos_bub().x(), viewer->pos_bub().y(),
+                                 vp->vehicle().engine_on ? 1 : 0 ) );
+            }
+        }
+    }
 }
 
 /* DDA MP v4.0a-223: a session that is sleeping, busy with an activity,
@@ -1731,6 +1752,56 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
     npc_ptr->remove_effect( effect_sleep );
     npc_ptr->wake_up();
     av_fix_vehicle_state( *npc_ptr );
+    // DDA MP test hook: spawn a charged golf cart under the first session
+    // avatar and board it, so an automated run can verify engine start and
+    // pldrive on the client without touching the user's world.
+    static bool mp_test_golf_done = false;
+    if( !mp_test_golf_done ) {
+        const char *test_golf = std::getenv( "DDA_MP_TEST_GOLF" );
+        if( test_golf != nullptr && test_golf[0] != '\0' ) {
+            mp_test_golf_done = true;
+            mp_ctrl_log( "test golf env seen" );
+            map &here = get_map();
+            const tripoint_bub_ms p = npc_ptr->pos_bub();
+            std::optional<tripoint_bub_ms> spot;
+            for( int r = 0; r <= 12 && !spot; ++r ) {
+                for( const tripoint_bub_ms &cand : here.points_in_radius( p, r ) ) {
+                    if( !here.inbounds( cand ) ) {
+                        continue;
+                    }
+                    bool clear = true;
+                    for( int dy = -2; dy <= 2 && clear; ++dy ) {
+                        for( int dx = -2; dx <= 2 && clear; ++dx ) {
+                            const tripoint_bub_ms q = cand + tripoint_rel_ms( dx, dy, 0 );
+                            if( !here.inbounds( q ) || !here.passable( q ) ||
+                                ( q != p && here.veh_at( q ) ) ) {
+                                clear = false;
+                            }
+                        }
+                    }
+                    if( clear ) {
+                        spot = cand;
+                        break;
+                    }
+                }
+            }
+            if( spot ) {
+                npc_ptr->setpos( here, *spot, false );
+                vehicle *veh = here.add_vehicle( vproto_id( "golf_cart" ), *spot, 0_degrees,
+                                                 100, veh_spawn_status::UNDAMAGED, true, true );
+                if( veh != nullptr ) {
+                    here.board_vehicle( *spot, npc_ptr.get() );
+                    mp_ctrl_log( string_format( "test golf spawned at %d,%d",
+                                                spot->x(), spot->y() ) );
+                } else {
+                    mp_ctrl_log( string_format( "test golf add failed at %d,%d",
+                                                spot->x(), spot->y() ) );
+                }
+            } else {
+                mp_ctrl_log( "test golf no free tile" );
+            }
+        }
+    }
 }
 
 /* DDA MP v4.0a-214: a malformed client profile must never pop a modal on the
@@ -2709,8 +2780,12 @@ void host_pump_avatar_keys()
                                             sk.sid, npc_ptr->pos_bub().x(),
                                             npc_ptr->pos_bub().y() ) );
             }
-            av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
-            npc_ptr->set_moves( av_move_pool[sk.sid] );
+            // DDA MP v4.0a-262: driving is this turn's order. Keeping the
+            // walking pool positive made host_round_done wait forever, so the
+            // world turn (where vehmove applies cruise velocity) never ran and
+            // the vehicle stayed at 0 mph despite pldrive.
+            av_move_pool[sk.sid] = 0;
+            npc_ptr->set_moves( 0 );
             av_mark_acted( sk.sid );
             if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
         !netplay::long_wait_active() ) {
@@ -6524,6 +6599,13 @@ void host_pump_intents()
                         if( g->check_safe_mode_allowed() ) {
                             av->pause();
                         }
+                        // DDA MP v4.0a-262: autoattack with no target must
+                        // pass the turn like the host. The avatar's netplay
+                        // move pool is authoritative for the round gate; the
+                        // engine pause alone left the client's pool full, so
+                        // the host never considered the round finished.
+                        av_move_pool[in.sid] = 0;
+                        av->set_moves( 0 );
                     } else {
                         const auto rate = []( const Creature & c ) -> float {
                             if( const npc *np = dynamic_cast<const npc *>( &c ) ) {

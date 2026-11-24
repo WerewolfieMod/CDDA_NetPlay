@@ -405,6 +405,9 @@ struct snapshot {
     /// FacingDirection of the session avatar (the frame's viewer), streamed
     /// because Character::store/load does not carry `facing`.
     uint8_t avatar_facing = 2;
+    /// The session avatar is controlling a vehicle (the flag is avatar-only in
+    /// the JSON, so an npc mirror never saw it).
+    bool avatar_controlling = false;
     /// DDA MP v4.2: raw creature state for the native renderer. kind 0 =
     /// monster, 1 = npc; the JSON is the game's own serialization, position is
     /// absolute so the client can place it without a shared map address.

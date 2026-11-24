@@ -6714,7 +6714,22 @@ void vehicle::gain_moves( map &here )
 {
     fuel_used_last_turn.clear();
     check_falling_or_floating();
-    const bool pl_control = player_is_driving_this_veh( &here );
+    bool pl_control = player_is_driving_this_veh( &here );
+    if( !pl_control ) {
+        // DDA MP v4.0a-262: a netplay session avatar (an npc) can be the
+        // driver. Cruise control used to run only when the host avatar drove,
+        // so pldrive set cruise_velocity but the vehicle never accelerated.
+        for( npc &guy : g->all_npcs() ) {
+            if( !guy.controlling_vehicle || !guy.in_vehicle ) {
+                continue;
+            }
+            const optional_vpart_position vp = here.veh_at( guy.pos_bub() );
+            if( vp && &vp->vehicle() == this ) {
+                pl_control = true;
+                break;
+            }
+        }
+    }
     if( is_moving() || is_falling ) {
         if( !loose_parts.empty() ) {
             shed_loose_parts();

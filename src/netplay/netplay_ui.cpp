@@ -5431,6 +5431,7 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // DDA MP v4.0a-252: the avatar JSON (Character::store) has no `facing`, so
     // the mirror used to keep its default RIGHT even while walking left.
     get_avatar().facing = static_cast<FacingDirection>( snap.avatar_facing );
+    get_avatar().controlling_vehicle = snap.avatar_controlling;
     if( netplay::mp_diag_enabled() ) {
         static int mp_facing_log = 0;
         if( mp_facing_log < 10 ) {
@@ -8550,6 +8551,44 @@ void run_view_loop()
                     mp_test_pick_done = true;
                     netplay::client_send_client_action( ACTION_PICKUP );
                     mp_inv_log( "test: pickup key" );
+                }
+            }
+            // DDA MP test hook: take control of the golf cart spawned by the
+            // host test hook and drive forward, so engine start / pldrive can
+            // be verified from netplay_control.log without a human client.
+            if( const char *test_veh = std::getenv( "DDA_MP_TEST_CLIENT_VEHICLE" );
+                test_veh != nullptr && test_veh[0] != '\0' ) {
+                static bool mp_test_veh_started = false;
+                static auto mp_test_veh_t0 = std::chrono::steady_clock::now();
+                static int mp_test_veh_phase = 0;
+                if( !mp_test_veh_started && mp_have_picture && mp_native_avatar_ready ) {
+                    mp_test_veh_started = true;
+                    mp_test_veh_t0 = std::chrono::steady_clock::now();
+                    mp_inv_log( "test: vehicle hook start" );
+                }
+                if( mp_test_veh_started ) {
+                    const auto mp_veh_now = std::chrono::steady_clock::now();
+                    const long long mp_veh_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            mp_veh_now - mp_test_veh_t0 ).count();
+                    if( mp_test_veh_phase == 0 && mp_veh_ms > 1500 ) {
+                        mp_test_veh_phase = 1;
+                        netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                        mp_inv_log( "test: vehicle control" );
+                    } else if( mp_test_veh_phase >= 1 && mp_test_veh_phase <= 4 ) {
+                        const long long next_at = 2500 + ( mp_test_veh_phase - 1 ) * 1500;
+                        if( mp_veh_ms > next_at ) {
+                            key_event mp_veh_ke;
+                            mp_veh_ke.code = 3; // UP / accelerate
+                            client_send_keys( { mp_veh_ke } );
+                            mp_inv_log( string_format( "test: vehicle forward %d",
+                                                       mp_test_veh_phase ) );
+                            ++mp_test_veh_phase;
+                        }
+                    } else if( mp_test_veh_phase == 5 && mp_veh_ms > 9500 ) {
+                        mp_test_veh_phase = 6;
+                        mp_inv_log( "test: vehicle done" );
+                    }
                 }
             }
             // DDA MP test hook: force the pickup-tile chooser on the client to

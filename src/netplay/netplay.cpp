@@ -1801,6 +1801,7 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     put_i32( p, snap.turn );
     put_str( p, snap.weather );
     p.push_back( static_cast<char>( snap.avatar_facing ) );
+    p.push_back( static_cast<char>( snap.avatar_controlling ? 1 : 0 ) );
     put_u16( p, static_cast<uint16_t>( snap.creatures.size() ) );
     for( const snapshot::creature_frame &cf : snap.creatures ) {
         p.push_back( static_cast<char>( cf.kind ) );
@@ -3659,6 +3660,7 @@ static void client_run( socket_t sock )
             snap.turn = r.get_i32();
             snap.weather = r.get_str();
             snap.avatar_facing = r.get_u8();
+            snap.avatar_controlling = r.get_u8() != 0;
             const uint16_t mp_ncre = r.get_u16();
             for( uint16_t i = 0; i < mp_ncre && r.ok; i++ ) {
                 snapshot::creature_frame cf;
