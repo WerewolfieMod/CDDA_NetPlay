@@ -4174,6 +4174,75 @@ static void mp_run_workout()
                                menu.ret + 1, minutes ) );
 }
 
+/* DDA MP v4.0a-269: ^ while driving opens the host-style vehicle menu on the
+ * client. Shared by the normal action path and the headless test hook. */
+static void mp_client_vehicle_control( int act )
+{
+    // `controlling_vehicle` in the latest snapshot is the authoritative host
+    // state. The old check also required a streamed vpart next to the avatar;
+    // when the parts cache was not filled yet, the second ^ skipped the menu
+    // and sent "take control", which the host answered by releasing the
+    // vehicle.
+    if( !get_avatar().controlling_vehicle ) {
+        // First ^ takes control like the host; the menu is the second ^ while
+        // driving, mirroring game::control_vehicle.
+        netplay::client_send_client_action( act );
+        return;
+    }
+    uilist vm;
+    vm.title = _( "Select an action" );
+    netplay::vehicle_sidebar_view mp_vsb;
+    const bool mp_vsb_ok = netplay::client_vehicle_sidebar( mp_vsb );
+    vm.addentry( 0, true, 'e', _( "Examine vehicle" ) );
+    vm.addentry( 1, true, 't', mp_vsb_ok && mp_vsb.tracking_on ?
+                 _( "Forget vehicle position" ) : _( "Remember vehicle position" ) );
+    vm.addentry( 2, true, 'c', _( "Stop driving" ) );
+    vm.addentry( 3, true, 'l', _( "Let go of controls" ) );
+    vm.addentry( 4, true, 'b', _( "Pull handbrake" ) );
+    if( mp_vsb_ok && mp_vsb.has_horn ) {
+        vm.addentry( 5, true, 'o', _( "Honk horn" ) );
+    }
+    vm.addentry( 6, true, 'p', netplay::fork_text( "Vehicle parts" ) );
+    vm.addentry( 7, true, 'f', netplay::fork_text( "Refuel vehicle" ) );
+    // Test hook: prove the second ^ reaches the host-style menu (and does not
+    // fall through to "take control") without blocking the headless client on
+    // a modal.
+    if( const char *dismiss = std::getenv( "DDA_MP_TEST_DISMISS_MENUS" );
+        dismiss != nullptr && dismiss[0] != '\0' ) {
+        mp_inv_log( "vehicle menu open (test dismissed)" );
+        return;
+    }
+    vm.query();
+    switch( vm.ret ) {
+        case 0:
+            netplay::client_send_client_action( ACTION_EXAMINE );
+            break;
+        case 1:
+            netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
+            break;
+        case 2:
+            netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+            break;
+        case 3:
+            netplay::client_send_intent( "vehicle_release", 0, {} );
+            break;
+        case 4:
+            netplay::client_send_intent( "vehicle_handbrake", 0, {} );
+            break;
+        case 5:
+            netplay::client_send_intent( "vehicle_horn", 0, {} );
+            break;
+        case 6:
+            netplay::client_send_intent( "vehicle_parts", 0, {} );
+            break;
+        case 7:
+            netplay::client_send_intent( "vehicle_refuel", 0, {} );
+            break;
+        default:
+            break;
+    }
+}
+
 /* DDA MP v4.0a-80: runs one action id chosen in the client's action menu.
  * Local UIs run on the client; every other order travels to the host. */
 static void mp_client_dispatch_action( int act, const std::string &inv_text,
@@ -4209,73 +4278,9 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
         return;
     }
     switch( static_cast<action_id>( act ) ) {
-        case ACTION_CONTROL_VEHICLE: {
-            // DDA MP v4.0a-260: the stock vehicle action menu, shown on the
-            // client. If no streamed part is at/next to the avatar, let the
-            // host answer with its "no controls" message instead of showing a
-            // menu over empty ground.
-            bool mp_vehicle_near = false;
-            const tripoint_abs_ms mp_av_pos = get_avatar().pos_abs();
-            for( const mp_cached_vpart &v : mp_vparts_cache ) {
-                if( v.pos.z() == mp_av_pos.z() &&
-                    std::abs( v.pos.x() - mp_av_pos.x() ) <= 1 &&
-                    std::abs( v.pos.y() - mp_av_pos.y() ) <= 1 ) {
-                    mp_vehicle_near = true;
-                    break;
-                }
-            }
-            if( !mp_vehicle_near || !get_avatar().controlling_vehicle ) {
-                // First ^ takes control like the host; the menu is the
-                // second ^ while driving, mirroring game::control_vehicle.
-                netplay::client_send_client_action( act );
-                break;
-            }
-            uilist vm;
-            vm.title = _( "Select an action" );
-            netplay::vehicle_sidebar_view mp_vsb;
-            const bool mp_vsb_ok = netplay::client_vehicle_sidebar( mp_vsb );
-            vm.addentry( 0, true, 'e', _( "Examine vehicle" ) );
-            vm.addentry( 1, true, 't', mp_vsb_ok && mp_vsb.tracking_on ?
-                         _( "Forget vehicle position" ) : _( "Remember vehicle position" ) );
-            vm.addentry( 2, true, 'c', _( "Stop driving" ) );
-            vm.addentry( 3, true, 'l', _( "Let go of controls" ) );
-            vm.addentry( 4, true, 'b', _( "Pull handbrake" ) );
-            if( mp_vsb_ok && mp_vsb.has_horn ) {
-                vm.addentry( 5, true, 'o', _( "Honk horn" ) );
-            }
-            vm.addentry( 6, true, 'p', netplay::fork_text( "Vehicle parts" ) );
-            vm.addentry( 7, true, 'f', netplay::fork_text( "Refuel vehicle" ) );
-            vm.query();
-            switch( vm.ret ) {
-                case 0:
-                    netplay::client_send_client_action( ACTION_EXAMINE );
-                    break;
-                case 1:
-                    netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
-                    break;
-                case 2:
-                    netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
-                    break;
-                case 3:
-                    netplay::client_send_intent( "vehicle_release", 0, {} );
-                    break;
-                case 4:
-                    netplay::client_send_intent( "vehicle_handbrake", 0, {} );
-                    break;
-                case 5:
-                    netplay::client_send_intent( "vehicle_horn", 0, {} );
-                    break;
-                case 6:
-                    netplay::client_send_intent( "vehicle_parts", 0, {} );
-                    break;
-                case 7:
-                    netplay::client_send_intent( "vehicle_refuel", 0, {} );
-                    break;
-                default:
-                    break;
-            }
+        case ACTION_CONTROL_VEHICLE:
+            mp_client_vehicle_control( act );
             break;
-        }
         case ACTION_INVENTORY:
         case ACTION_ADVANCEDINV:
             // DDA MP v4.1: the inventory comes from the mirror, not from a
@@ -8634,20 +8639,24 @@ void run_view_loop()
                     } else if( mp_test_veh_phase == 5 && mp_veh_ms > 9500 ) {
                         mp_test_veh_phase = 6;
                         mp_inv_log( "test: vehicle done" );
-                    } else if( mp_test_veh_phase == 6 && mp_veh_ms > 10800 ) {
+                    } else if( mp_test_veh_phase == 6 && mp_veh_ms > 10000 ) {
                         mp_test_veh_phase = 7;
+                        mp_client_vehicle_control( ACTION_CONTROL_VEHICLE );
+                        mp_inv_log( "test: vehicle menu key" );
+                    } else if( mp_test_veh_phase == 7 && mp_veh_ms > 11300 ) {
+                        mp_test_veh_phase = 8;
                         netplay::client_send_intent( "vehicle_handbrake", 0, {} );
                         mp_inv_log( "test: vehicle handbrake" );
-                    } else if( mp_test_veh_phase == 7 && mp_veh_ms > 12300 ) {
-                        mp_test_veh_phase = 8;
+                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 12800 ) {
+                        mp_test_veh_phase = 9;
                         netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
                         mp_inv_log( "test: vehicle tracking" );
-                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 13800 ) {
-                        mp_test_veh_phase = 9;
+                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 14300 ) {
+                        mp_test_veh_phase = 10;
                         netplay::client_send_intent( "vehicle_release", 0, {} );
                         mp_inv_log( "test: vehicle release" );
-                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 15300 ) {
-                        mp_test_veh_phase = 10;
+                    } else if( mp_test_veh_phase == 10 && mp_veh_ms > 15800 ) {
+                        mp_test_veh_phase = 11;
                         mp_inv_log( "test: vehicle menu done" );
                     }
                 }
