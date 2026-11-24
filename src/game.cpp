@@ -3622,6 +3622,28 @@ std::optional<tripoint_rel_ms> game::get_veh_dir_indicator_location( bool next )
 {
     map &here = get_map();
 
+    // DDA MP v4.0a-278: the client's mirror has no vehicle object. Use the
+    // offsets the host computed with this same formula; cata_tiles::draw then
+    // paints the stock "cursor" tile exactly like on the host. Check this
+    // before the local option because the host already decided whether to
+    // stream the indicator.
+    {
+        tripoint_rel_ms streamed;
+        if( netplay::client_vehicle_dir_indicator( next, streamed ) ) {
+            if( netplay::mp_diag_enabled() ) {
+                static int mp_ind_logs = 0;
+                if( mp_ind_logs < 20 ) {
+                    ++mp_ind_logs;
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                        std::fprintf( f, "veh indicator next=%d dx=%d dy=%d\n",
+                                      next ? 1 : 0, streamed.x(), streamed.y() );
+                        std::fclose( f );
+                    }
+                }
+            }
+            return tripoint_rel_ms( streamed.x(), streamed.y(), u.posz() );
+        }
+    }
     if( !get_option<bool>( "VEHICLE_DIR_INDICATOR" ) ) {
         return std::nullopt;
     }

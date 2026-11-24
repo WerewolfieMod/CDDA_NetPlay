@@ -1813,6 +1813,13 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
         p.push_back( static_cast<char>( snap.veh_battery_color ) );
         p.push_back( static_cast<char>( snap.veh_tracking_on ? 1 : 0 ) );
         p.push_back( static_cast<char>( snap.veh_has_horn ? 1 : 0 ) );
+        p.push_back( static_cast<char>( snap.veh_has_indicator ? 1 : 0 ) );
+        if( snap.veh_has_indicator ) {
+            put_i32( p, snap.veh_indicator_next_dx );
+            put_i32( p, snap.veh_indicator_next_dy );
+            put_i32( p, snap.veh_indicator_face_dx );
+            put_i32( p, snap.veh_indicator_face_dy );
+        }
     }
     put_u16( p, static_cast<uint16_t>( snap.creatures.size() ) );
     for( const snapshot::creature_frame &cf : snap.creatures ) {
@@ -3684,6 +3691,13 @@ static void client_run( socket_t sock )
                 snap.veh_battery_color = static_cast<uint8_t>( r.get_u8() );
                 snap.veh_tracking_on = r.get_u8() != 0;
                 snap.veh_has_horn = r.get_u8() != 0;
+                snap.veh_has_indicator = r.get_u8() != 0;
+                if( snap.veh_has_indicator ) {
+                    snap.veh_indicator_next_dx = r.get_i32();
+                    snap.veh_indicator_next_dy = r.get_i32();
+                    snap.veh_indicator_face_dx = r.get_i32();
+                    snap.veh_indicator_face_dy = r.get_i32();
+                }
             }
             const uint16_t mp_ncre = r.get_u16();
             for( uint16_t i = 0; i < mp_ncre && r.ok; i++ ) {
@@ -4491,6 +4505,23 @@ void client_set_vehicle_sidebar( const snapshot &snap )
     client_vehicle_sidebar_data.battery_color = snap.veh_battery_color;
     client_vehicle_sidebar_data.tracking_on = snap.veh_tracking_on;
     client_vehicle_sidebar_data.has_horn = snap.veh_has_horn;
+    client_vehicle_sidebar_data.has_indicator = snap.veh_has_indicator;
+    client_vehicle_sidebar_data.indicator_next_dx = snap.veh_indicator_next_dx;
+    client_vehicle_sidebar_data.indicator_next_dy = snap.veh_indicator_next_dy;
+    client_vehicle_sidebar_data.indicator_face_dx = snap.veh_indicator_face_dx;
+    client_vehicle_sidebar_data.indicator_face_dy = snap.veh_indicator_face_dy;
+}
+
+bool client_vehicle_dir_indicator( bool next, tripoint_rel_ms &out )
+{
+    if( !client_vehicle_sidebar_data.valid || !client_vehicle_sidebar_data.has_indicator ) {
+        return false;
+    }
+    out = tripoint_rel_ms( next ? client_vehicle_sidebar_data.indicator_next_dx :
+                            client_vehicle_sidebar_data.indicator_face_dx,
+                            next ? client_vehicle_sidebar_data.indicator_next_dy :
+                            client_vehicle_sidebar_data.indicator_face_dy, 0 );
+    return true;
 }
 
 bool client_vehicle_sidebar( vehicle_sidebar_view &out )

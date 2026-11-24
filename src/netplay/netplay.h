@@ -423,6 +423,15 @@ struct snapshot {
     /// client menu shows the same entries/labels.
     bool veh_tracking_on = false;
     bool veh_has_horn = false;
+    /// DDA MP v4.0a-278: the host's VEHICLE_DIR_INDICATOR "cursor" offsets
+    /// (10 tiles along dir_vec()/face_vec(), from the avatar). The client
+    /// mirror has no vehicle object, so game::get_veh_dir_indicator_location
+    /// needs these to draw the same square the host shows while driving.
+    bool veh_has_indicator = false;
+    int veh_indicator_next_dx = 0;
+    int veh_indicator_next_dy = 0;
+    int veh_indicator_face_dx = 0;
+    int veh_indicator_face_dy = 0;
     /// DDA MP v4.2: raw creature state for the native renderer. kind 0 =
     /// monster, 1 = npc; the JSON is the game's own serialization, position is
     /// absolute so the client can place it without a shared map address.
@@ -490,9 +499,18 @@ struct vehicle_sidebar_view {
     int battery_color = 8;
     bool tracking_on = false;
     bool has_horn = false;
+    bool has_indicator = false;
+    int indicator_next_dx = 0;
+    int indicator_next_dy = 0;
+    int indicator_face_dx = 0;
+    int indicator_face_dy = 0;
 };
 void client_set_vehicle_sidebar( const snapshot &snap );
 bool client_vehicle_sidebar( vehicle_sidebar_view &out );
+/// DDA MP v4.0a-278: streamed host VEHICLE_DIR_INDICATOR offset, if the latest
+/// snapshot carried one. `next` = dir_vec() (where the vehicle is heading),
+/// false = face_vec() (where the hull points).
+bool client_vehicle_dir_indicator( bool next, tripoint_rel_ms &out );
 
 /// One keyboard pseudo-event from the client.
 struct key_event {

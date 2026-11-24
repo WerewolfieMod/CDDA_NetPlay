@@ -1043,6 +1043,22 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
                                         netplay::inv_color_index( mp_battery.second ) );
             out.veh_tracking_on = mp_veh->vehicle().tracking_on;
             out.veh_has_horn = mp_veh->vehicle().has_part( "HORN" );
+            out.veh_has_indicator = false;
+            if( viewer->controlling_vehicle &&
+                get_option<bool>( "VEHICLE_DIR_INDICATOR" ) ) {
+                // DDA MP v4.0a-278: game::get_veh_dir_indicator_location puts
+                // its "cursor" 10 tiles along dir_vec()/face_vec() from the
+                // avatar. The mirror has no vehicle, so stream both offsets.
+                const vehicle &mp_dirveh = mp_veh->vehicle();
+                const rl_vec2d mp_next = mp_dirveh.dir_vec();
+                const rl_vec2d mp_face = mp_dirveh.face_vec();
+                const float mp_r = 10.0f;
+                out.veh_indicator_next_dx = static_cast<int>( mp_r * mp_next.x );
+                out.veh_indicator_next_dy = static_cast<int>( mp_r * mp_next.y );
+                out.veh_indicator_face_dx = static_cast<int>( mp_r * mp_face.x );
+                out.veh_indicator_face_dy = static_cast<int>( mp_r * mp_face.y );
+                out.veh_has_indicator = true;
+            }
         }
     }
     // DDA MP v4.2: raw creature state for the native renderer. Only what the
@@ -1409,6 +1425,7 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
     tripoint_bub_ms center = center_in;
     int view_dx = 0;
     int view_dy = 0;
+    bool mp_look_view = false;
     // DDA MP v4.0a-232: while the client is looking/aiming its cursor is the
     // camera: centre the frame on avatar + the offset it requested. No
     // clamping - cells outside the bubble simply stay blank, and the offset
@@ -1420,6 +1437,7 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
             center += tripoint_rel_ms( off.x, off.y, offz );
             view_dx = off.x;
             view_dy = off.y;
+            mp_look_view = true;
         } else if( viewer->in_vehicle ) {
             // DDA MP v4.0a-264: driving view offset (camera looks ahead).
             if( const optional_vpart_position vp = here.veh_at( viewer->pos_bub() ) ) {
@@ -1440,6 +1458,12 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
     snap.view_dy = view_dy;
     const auto mp_build_t0 = std::chrono::steady_clock::now();
     build_host_snapshot( snap, center, viewer );
+    if( mp_look_view ) {
+        // The host hides the driving direction cursor while looking around;
+        // the streamed offsets are relative to the avatar and would otherwise
+        // draw the marker in the scrolled view.
+        snap.veh_has_indicator = false;
+    }
     const long long mp_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                       std::chrono::steady_clock::now() - mp_build_t0 ).count();
     if( netplay::mp_diag_enabled() ) {
@@ -2954,39 +2978,57 @@ void host_pump_avatar_keys()
         av_fix_vehicle_state( *npc_ptr );
         // DDA MP v4.0a-132: driving. The movement keys steer/thrust the
         // vehicle instead of moving the avatar on foot.
+        bool mp_drive_acted = false;
         if( npc_ptr->controlling_vehicle ) {
             if( const optional_vpart_position vp = here.veh_at( npc_ptr->pos_bub() ) ) {
                 const tripoint_abs_ms vp_before = vp->vehicle().pos_abs();
                 const int vel_before = vp->vehicle().velocity;
                 const std::size_t mp_drive_msg_before = Messages::generation();
+                const bool mp_steering = dir_it->second.x() != 0;
                 vp->vehicle().pldrive( here, *npc_ptr, dir_it->second.x(),
                                        dir_it->second.y(), 0 );
                 // DDA MP v4.0a-274: pldrive can report steering/engine
                 // failures through the global log; relay those lines to the
                 // driver instead of leaving them only on the host screen.
                 host_forward_new_messages( sk.sid, mp_drive_msg_before );
+                // DDA MP v4.0a-278: mirror the host's move costs. pldrive
+                // spends the driver's moves only when steering; acceleration
+                // and braking just move the cruise target. Ending the turn on
+                // every speed change made each keypress advance the world one
+                // turn. The player sets the speed first and then passes the
+                // turn (TAB/autoattack with no target, or WAIT), exactly like
+                // the host, and only then does the car move.
+                if( mp_steering ) {
+                    av_move_pool[sk.sid] = std::max( 0, npc_ptr->get_moves() );
+                    npc_ptr->set_moves( av_move_pool[sk.sid] );
+                    mp_drive_acted = av_move_pool[sk.sid] <= 0;
+                    if( mp_drive_acted ) {
+                        av_mark_acted( sk.sid );
+                    }
+                }
+                // Acceleration must leave the round pool untouched: writing
+                // 0 here (even without av_mark_acted) made host_round_done()
+                // treat the order as finished, so the very first UP still
+                // advanced a world turn.
+                const int mp_pool_now = av_move_pool.count( sk.sid ) ?
+                                        av_move_pool[sk.sid] : -1;
                 mp_ctrl_log( string_format(
-                                 "drive sid=%d dir=%d,%d veh=%d,%d->%d,%d vel=%d->%d av=%d,%d in=%d",
+                                 "drive sid=%d dir=%d,%d steer=%d veh=%d,%d->%d,%d vel=%d->%d av=%d,%d in=%d pool=%d acted=%d",
                                  sk.sid, dir_it->second.x(), dir_it->second.y(),
+                                 mp_steering ? 1 : 0,
                                  vp_before.x(), vp_before.y(),
                                  vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
                                  vel_before, vp->vehicle().velocity,
                                  npc_ptr->pos_bub().x(), npc_ptr->pos_bub().y(),
-                                 npc_ptr->in_vehicle ? 1 : 0 ) );
+                                 npc_ptr->in_vehicle ? 1 : 0,
+                                 mp_pool_now, mp_drive_acted ? 1 : 0 ) );
             } else {
                 mp_ctrl_log( string_format( "drive sid=%d no-veh av=%d,%d drv=1",
                                             sk.sid, npc_ptr->pos_bub().x(),
                                             npc_ptr->pos_bub().y() ) );
             }
-            // DDA MP v4.0a-262: driving is this turn's order. Keeping the
-            // walking pool positive made host_round_done wait forever, so the
-            // world turn (where vehmove applies cruise velocity) never ran and
-            // the vehicle stayed at 0 mph despite pldrive.
-            av_move_pool[sk.sid] = 0;
-            npc_ptr->set_moves( 0 );
-            av_mark_acted( sk.sid );
-            if( av_move_pool[sk.sid] <= 0 && !netplay::host_session_afk( sk.sid ) &&
-        !netplay::long_wait_active() ) {
+            if( mp_drive_acted && !netplay::host_session_afk( sk.sid ) &&
+                !netplay::long_wait_active() ) {
                 av_waiting_for_turn[sk.sid] = true;
                 netplay::host_send_hover_to_sid( sk.sid, netplay::fork_text( "Waiting for other players..." ) );
             } else {
@@ -6859,13 +6901,17 @@ void host_pump_intents()
                         if( g->check_safe_mode_allowed() ) {
                             av->pause();
                         }
-                        // DDA MP v4.0a-262: autoattack with no target must
+                        // DDA MP v4.0a-262/278: autoattack with no target must
                         // pass the turn like the host. The avatar's netplay
                         // move pool is authoritative for the round gate; the
                         // engine pause alone left the client's pool full, so
-                        // the host never considered the round finished.
+                        // the host never considered the round finished. Mark
+                        // the order too: host_turn_blocked() also checks it,
+                        // otherwise TAB only clears the pool wait but not the
+                        // acted gate.
                         av_move_pool[in.sid] = 0;
                         av->set_moves( 0 );
+                        av_mark_acted( in.sid );
                     } else {
                         const auto rate = []( const Creature & c ) -> float {
                             if( const npc *np = dynamic_cast<const npc *>( &c ) ) {

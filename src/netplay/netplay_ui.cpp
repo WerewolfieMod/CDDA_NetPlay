@@ -6002,9 +6002,11 @@ static void mp_queue_native_vparts()
             continue;
         }
         // draw_vpart computes angle_to_dir4(veh_dir - 270); feed the angle
-        // that yields the host's dir4 value for this part.
-        const int deg = v.rot == 0 ? 270 : v.rot == 1 ? 540 :
-                        v.rot == 2 ? 450 : 360;
+        // that yields the host's dir4 value for this part. dir4 is
+        // 0=N, 1=W, 2=S, 3=E, i.e. 270 + 90*dir4 degrees in the tileray
+        // convention (0=east). The old table had 1 and 3 swapped, so cars
+        // facing east/west were drawn facing the opposite way.
+        const int deg = 270 + v.rot * 90;
         tilecontext->init_draw_vpart_override( p, vpart_id( v.id ), v.sub,
                                               units::from_degrees( deg ), false,
                                               point_rel_ms::zero, v.variant );
@@ -8639,31 +8641,40 @@ void run_view_loop()
                                                        mp_test_veh_phase ) );
                             ++mp_test_veh_phase;
                         }
-                    } else if( mp_test_veh_phase == 5 && mp_veh_ms > 9500 ) {
+                    } else if( mp_test_veh_phase == 5 && mp_veh_ms > 8500 ) {
                         mp_test_veh_phase = 6;
-                        mp_inv_log( "test: vehicle done" );
-                    } else if( mp_test_veh_phase == 6 && mp_veh_ms > 10000 ) {
+                        netplay::client_send_intent( "autoattack", 0, {} );
+                        mp_inv_log( "test: vehicle pass 1 (tab)" );
+                    } else if( mp_test_veh_phase == 6 && mp_veh_ms > 9500 ) {
                         mp_test_veh_phase = 7;
+                        netplay::client_send_intent( "autoattack", 0, {} );
+                        mp_inv_log( "test: vehicle pass 2 (tab)" );
+                    } else if( mp_test_veh_phase == 7 && mp_veh_ms > 10500 ) {
+                        mp_test_veh_phase = 8;
+                        netplay::client_send_intent( "autoattack", 0, {} );
+                        mp_inv_log( "test: vehicle pass 3 (tab)" );
+                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 11500 ) {
+                        mp_test_veh_phase = 9;
                         mp_client_vehicle_control( ACTION_CONTROL_VEHICLE );
                         mp_inv_log( "test: vehicle menu key" );
-                    } else if( mp_test_veh_phase == 7 && mp_veh_ms > 11300 ) {
-                        mp_test_veh_phase = 8;
+                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 12500 ) {
+                        mp_test_veh_phase = 10;
                         netplay::client_send_intent( "vehicle_handbrake", 0, {} );
                         mp_inv_log( "test: vehicle handbrake" );
-                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 12300 ) {
-                        mp_test_veh_phase = 9;
+                    } else if( mp_test_veh_phase == 10 && mp_veh_ms > 13500 ) {
+                        mp_test_veh_phase = 11;
                         netplay::client_send_intent( "vehicle_horn", 0, {} );
                         mp_inv_log( "test: vehicle horn" );
-                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 13300 ) {
-                        mp_test_veh_phase = 10;
+                    } else if( mp_test_veh_phase == 11 && mp_veh_ms > 14500 ) {
+                        mp_test_veh_phase = 12;
                         netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
                         mp_inv_log( "test: vehicle tracking" );
-                    } else if( mp_test_veh_phase == 10 && mp_veh_ms > 14300 ) {
-                        mp_test_veh_phase = 11;
+                    } else if( mp_test_veh_phase == 12 && mp_veh_ms > 15500 ) {
+                        mp_test_veh_phase = 13;
                         netplay::client_send_intent( "vehicle_release", 0, {} );
                         mp_inv_log( "test: vehicle release" );
-                    } else if( mp_test_veh_phase == 11 && mp_veh_ms > 15800 ) {
-                        mp_test_veh_phase = 12;
+                    } else if( mp_test_veh_phase == 13 && mp_veh_ms > 17500 ) {
+                        mp_test_veh_phase = 14;
                         mp_inv_log( "test: vehicle menu done" );
                     }
                 }
