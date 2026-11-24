@@ -4251,7 +4251,10 @@ static void mp_client_vehicle_control( int act )
     // vehicle.
     if( !get_avatar().controlling_vehicle ) {
         // First ^ takes control like the host; the menu is the second ^ while
-        // driving, mirroring game::control_vehicle.
+        // driving, mirroring game::control_vehicle. Mark it locally at once so
+        // a fast second ^ requests the menu instead of sending "take control"
+        // again, which the host would answer by releasing the vehicle.
+        get_avatar().controlling_vehicle = true;
         netplay::client_send_client_action( act );
         return;
     }
