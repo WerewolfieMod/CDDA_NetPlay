@@ -4215,7 +4215,11 @@ static void mp_client_vehicle_control( int act )
     vm.query();
     switch( vm.ret ) {
         case 0:
-            netplay::client_send_client_action( ACTION_EXAMINE );
+            // The host's "Examine vehicle" opens the vehicle screen. The
+            // mirror has no vehicle object, so the closest stock-equivalent is
+            // the streamed parts/condition window (the old ACTION_EXAMINE went
+            // to nearby furniture instead).
+            netplay::client_send_intent( "vehicle_parts", 0, {} );
             break;
         case 1:
             netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
@@ -8647,16 +8651,20 @@ void run_view_loop()
                         mp_test_veh_phase = 8;
                         netplay::client_send_intent( "vehicle_handbrake", 0, {} );
                         mp_inv_log( "test: vehicle handbrake" );
-                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 12800 ) {
+                    } else if( mp_test_veh_phase == 8 && mp_veh_ms > 12300 ) {
                         mp_test_veh_phase = 9;
+                        netplay::client_send_intent( "vehicle_horn", 0, {} );
+                        mp_inv_log( "test: vehicle horn" );
+                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 13300 ) {
+                        mp_test_veh_phase = 10;
                         netplay::client_send_intent( "vehicle_toggle_tracking", 0, {} );
                         mp_inv_log( "test: vehicle tracking" );
-                    } else if( mp_test_veh_phase == 9 && mp_veh_ms > 14300 ) {
-                        mp_test_veh_phase = 10;
+                    } else if( mp_test_veh_phase == 10 && mp_veh_ms > 14300 ) {
+                        mp_test_veh_phase = 11;
                         netplay::client_send_intent( "vehicle_release", 0, {} );
                         mp_inv_log( "test: vehicle release" );
-                    } else if( mp_test_veh_phase == 10 && mp_veh_ms > 15800 ) {
-                        mp_test_veh_phase = 11;
+                    } else if( mp_test_veh_phase == 11 && mp_veh_ms > 15800 ) {
+                        mp_test_veh_phase = 12;
                         mp_inv_log( "test: vehicle menu done" );
                     }
                 }
