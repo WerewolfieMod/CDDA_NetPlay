@@ -1418,6 +1418,31 @@ static point mp_driving_view_offset( npc &viewer, vehicle &veh )
     return point( static_cast<int>( offset.x ), static_cast<int>( offset.y ) );
 }
 
+/* DDA MP v4.0a-280: the host does not recalculate the driving camera on an
+ * input key - game::calc_driving_offset() runs when the vehicle is actually
+ * displaced (map::displace_vehicle) and, only if an offset already exists, at
+ * the end of a turn. Recomputing it on every streamed frame made the client's
+ * camera jump forward as soon as UP changed cruise_velocity, before the car
+ * moved. Keep per-session state and update only on displacement / a new turn. */
+struct mp_drive_view_state {
+    bool valid = false;
+    tripoint_abs_ms last_pos;
+    int last_turn = -1;
+    point offset;
+};
+static std::map<int, mp_drive_view_state> av_drive_view_state;
+
+static point mp_step_drive_offset( const point &cur, const point &target )
+{
+    const auto step = []( int c, int t ) {
+        if( std::abs( t - c ) > 1 ) {
+            return c + ( t > c ? 1 : -1 );
+        }
+        return t;
+    };
+    return point( step( cur.x, target.x ), step( cur.y, target.y ) );
+}
+
 static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
                                      npc *viewer = nullptr )
 {
@@ -1439,15 +1464,40 @@ static void av_send_session_picture( int sid, const tripoint_bub_ms &center_in,
             view_dy = off.y;
             mp_look_view = true;
         } else if( viewer->in_vehicle ) {
-            // DDA MP v4.0a-264: driving view offset (camera looks ahead).
+            // DDA MP v4.0a-264/280: driving view offset (camera looks ahead).
+            // Update it only when the host would: after the vehicle actually
+            // moves, or at a new turn when an offset is already active. A
+            // cruise change alone (UP/DOWN) must not shift the camera.
             if( const optional_vpart_position vp = here.veh_at( viewer->pos_bub() ) ) {
-                const point drive_off = mp_driving_view_offset( *viewer, vp->vehicle() );
-                if( drive_off.x != 0 || drive_off.y != 0 ) {
-                    center += tripoint_rel_ms( drive_off.x, drive_off.y, 0 );
-                    view_dx = drive_off.x;
-                    view_dy = drive_off.y;
+                vehicle &veh = vp->vehicle();
+                mp_drive_view_state &st = av_drive_view_state[sid];
+                const tripoint_abs_ms vpos = veh.pos_abs();
+                const int turn_now = to_turn<int>( calendar::turn );
+                const bool moved = !st.valid || vpos != st.last_pos;
+                const bool new_turn = !st.valid || turn_now != st.last_turn;
+                const bool offset_active = st.offset.x != 0 || st.offset.y != 0;
+                if( moved ) {
+                    st.offset = ( viewer->controlling_vehicle || offset_active ) ?
+                                mp_driving_view_offset( *viewer, veh ) : point::zero;
+                } else if( offset_active && new_turn ) {
+                    // game::calc_driving_offset runs once after a turn only
+                    // when an offset exists; it steps at most one tile.
+                    st.offset = mp_step_drive_offset(
+                                    st.offset, mp_driving_view_offset( *viewer, veh ) );
                 }
+                st.valid = true;
+                st.last_pos = vpos;
+                st.last_turn = turn_now;
+                if( st.offset.x != 0 || st.offset.y != 0 ) {
+                    center += tripoint_rel_ms( st.offset.x, st.offset.y, 0 );
+                    view_dx = st.offset.x;
+                    view_dy = st.offset.y;
+                }
+            } else {
+                av_drive_view_state.erase( sid );
             }
+        } else {
+            av_drive_view_state.erase( sid );
         }
     }
     if( !here.inbounds( center ) ) {
@@ -2383,6 +2433,7 @@ static void av_prune_dead_sessions()
             av_move_pool.erase( it->first );
             av_speed_cache.erase( it->first );
             av_session_avatar_flow.erase( it->first );
+            av_drive_view_state.erase( it->first );
             it = av_sid_to_npc.erase( it );
         } else {
             ++it;
