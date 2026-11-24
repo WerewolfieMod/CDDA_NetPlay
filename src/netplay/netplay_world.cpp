@@ -2037,16 +2037,25 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
                 }
             }
             if( spot ) {
+                const char *test_model = std::getenv( "DDA_MP_TEST_GOLF_MODEL" );
+                const std::string model = test_model != nullptr && test_model[0] != '\0' ?
+                                          test_model : "golf_cart";
                 npc_ptr->setpos( here, *spot, false );
-                vehicle *veh = here.add_vehicle( vproto_id( "golf_cart" ), *spot, -90_degrees,
+                vehicle *veh = here.add_vehicle( vproto_id( model ), *spot, -90_degrees,
                                                  100, veh_spawn_status::UNDAMAGED, true, true );
                 if( veh != nullptr ) {
+                    // Test menu coverage: let the test car show its ordinary
+                    // entries even if the prototype spawned locked. Clear the
+                    // lock before boarding so boarding cannot raise a theft
+                    // prompt on the host.
+                    veh->is_locked = false;
+                    veh->is_alarm_on = false;
                     here.board_vehicle( *spot, npc_ptr.get() );
-                    mp_ctrl_log( string_format( "test golf spawned at %d,%d",
-                                                spot->x(), spot->y() ) );
+                    mp_ctrl_log( string_format( "test golf spawned at %d,%d model=%s",
+                                                spot->x(), spot->y(), model.c_str() ) );
                 } else {
-                    mp_ctrl_log( string_format( "test golf add failed at %d,%d",
-                                                spot->x(), spot->y() ) );
+                    mp_ctrl_log( string_format( "test golf add failed at %d,%d model=%s",
+                                                spot->x(), spot->y(), model.c_str() ) );
                 }
             } else {
                 mp_ctrl_log( "test golf no free tile" );
