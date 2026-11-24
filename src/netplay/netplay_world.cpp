@@ -6557,6 +6557,7 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
                                 sid, built.generation, index, mp_menu_action.c_str(),
                                 safe ? 1 : 0, chosen._enabled ? 1 : 0 ) );
     try {
+        mp_quiet_remote_data quiet;
         mp_player_character_scope scope( *av );
         chosen._on_submit();
     } catch( const std::exception &e ) {
