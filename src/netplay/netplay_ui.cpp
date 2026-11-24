@@ -37,6 +37,7 @@
 #include "field_type.h"  // field_type_str_id
 #include "creature.h"    // Creature::attitude_raw_string (attitude badge)
 #include "debug.h"       // debug_suppress_prompts (fat client load)
+#include "display.h"
 #include "init.h"        // DynamicDataLoader (fat client finalize guard)
 #include "json.h"        // JsonOut (avatar profile serialization)
 #include "json_loader.h" // profile/json cfg parsing
@@ -5453,14 +5454,27 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // the mirror used to keep its default RIGHT even while walking left.
     get_avatar().facing = static_cast<FacingDirection>( snap.avatar_facing );
     get_avatar().controlling_vehicle = snap.avatar_controlling;
+    // DDA MP v4.0a-268: the character mirror is sent at bind/status time, so
+    // it kept in_vehicle=false after the avatar boarded. The stock vehicle
+    // sidebar widgets gate on u.in_vehicle and then go looking for a vehicle
+    // object the mirror does not have, so they stayed empty even though the
+    // values were streamed. The snapshot knows the real host state.
+    get_avatar().in_vehicle = snap.has_vehicle_status;
     netplay::client_set_vehicle_sidebar( snap );
     if( netplay::mp_diag_enabled() && snap.has_vehicle_status ) {
-        static int mp_veh_sb_log = 0;
-        if( mp_veh_sb_log < 5 ) {
-            ++mp_veh_sb_log;
-            mp_inv_log( string_format( "veh sidebar az=[%s] cruise=[%s] fuel=[%s] batt=[%s]",
-                                       snap.veh_azimuth.c_str(), snap.veh_cruise.c_str(),
-                                       snap.veh_fuel.c_str(), snap.veh_battery.c_str() ) );
+        static std::string mp_veh_sb_last;
+        const std::string mp_veh_sb_now = string_format(
+                                              "veh sidebar az=[%s] cruise=[%s] fuel=[%s] batt=[%s]",
+                                              snap.veh_azimuth.c_str(), snap.veh_cruise.c_str(),
+                                              snap.veh_fuel.c_str(), snap.veh_battery.c_str() );
+        if( mp_veh_sb_now != mp_veh_sb_last ) {
+            mp_veh_sb_last = mp_veh_sb_now;
+            mp_inv_log( mp_veh_sb_now );
+            mp_inv_log( string_format( "veh widget az=[%s] cruise=[%s] fuel=[%s] batt=[%s]",
+                                       display::vehicle_azimuth_text( get_avatar() ).c_str(),
+                                       display::vehicle_cruise_text_color( get_avatar() ).first.c_str(),
+                                       display::vehicle_fuel_percent_text_color( get_avatar() ).first.c_str(),
+                                       display::vehicle_battery_percent_text_color( get_avatar() ).first.c_str() ) );
         }
     }
     if( netplay::mp_diag_enabled() ) {

@@ -1017,7 +1017,7 @@ nc_color display::limb_color( const Character &u, const bodypart_id &bp, bool bl
 std::string display::vehicle_azimuth_text( const Character &u )
 {
     netplay::vehicle_sidebar_view npv;
-    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+    if( netplay::client_vehicle_sidebar( npv ) ) {
         return npv.azimuth;
     }
     vehicle *veh = display::vehicle_driven( u );
@@ -1036,7 +1036,7 @@ std::pair<std::string, nc_color> display::vehicle_cruise_text_color( const Chara
     nc_color vel_color = c_light_gray;
 
     netplay::vehicle_sidebar_view npv;
-    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+    if( netplay::client_vehicle_sidebar( npv ) ) {
         return std::make_pair( npv.cruise,
                                netplay::inv_color_from_index( npv.cruise_color ) );
     }
@@ -1077,7 +1077,7 @@ std::pair<std::string, nc_color> display::vehicle_fuel_percent_text_color( const
     nc_color fuel_color = c_light_gray;
 
     netplay::vehicle_sidebar_view npv;
-    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+    if( netplay::client_vehicle_sidebar( npv ) ) {
         return std::make_pair( npv.fuel,
                                netplay::inv_color_from_index( npv.fuel_color ) );
     }
@@ -1118,7 +1118,7 @@ std::pair<std::string, nc_color> display::vehicle_battery_percent_text_color( co
     nc_color battery_color = c_light_gray;
 
     netplay::vehicle_sidebar_view npv;
-    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+    if( netplay::client_vehicle_sidebar( npv ) ) {
         return std::make_pair( npv.battery,
                                netplay::inv_color_from_index( npv.battery_color ) );
     }
