@@ -1,4 +1,6 @@
 #include "display.h"
+#include "netplay/inventory_source.h"
+#include "netplay/netplay.h"
 
 #include <algorithm>
 #include <array>
@@ -1014,6 +1016,10 @@ nc_color display::limb_color( const Character &u, const bodypart_id &bp, bool bl
 
 std::string display::vehicle_azimuth_text( const Character &u )
 {
+    netplay::vehicle_sidebar_view npv;
+    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+        return npv.azimuth;
+    }
     vehicle *veh = display::vehicle_driven( u );
     if( veh ) {
         return veh->face.to_string_azimuth_from_north();
@@ -1028,6 +1034,12 @@ std::pair<std::string, nc_color> display::vehicle_cruise_text_color( const Chara
     // Defaults in case no vehicle is found
     std::string vel_text;
     nc_color vel_color = c_light_gray;
+
+    netplay::vehicle_sidebar_view npv;
+    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+        return std::make_pair( npv.cruise,
+                               netplay::inv_color_from_index( npv.cruise_color ) );
+    }
 
     // Show target velocity and current velocity, with units.
     // For example:
@@ -1064,6 +1076,12 @@ std::pair<std::string, nc_color> display::vehicle_fuel_percent_text_color( const
     std::string fuel_text;
     nc_color fuel_color = c_light_gray;
 
+    netplay::vehicle_sidebar_view npv;
+    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+        return std::make_pair( npv.fuel,
+                               netplay::inv_color_from_index( npv.fuel_color ) );
+    }
+
     vehicle *veh = display::vehicle_driven( u );
     if( veh ) {
         itype_id fuel_type = itype_id::NULL_ID();
@@ -1098,6 +1116,12 @@ std::pair<std::string, nc_color> display::vehicle_battery_percent_text_color( co
     // Defaults in case no vehicle is found
     std::string battery_text;
     nc_color battery_color = c_light_gray;
+
+    netplay::vehicle_sidebar_view npv;
+    if( u.in_vehicle && netplay::client_vehicle_sidebar( npv ) ) {
+        return std::make_pair( npv.battery,
+                               netplay::inv_color_from_index( npv.battery_color ) );
+    }
 
     const vehicle *veh = vehicle_driven( u );
     if( veh ) {

@@ -1802,6 +1802,16 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     put_str( p, snap.weather );
     p.push_back( static_cast<char>( snap.avatar_facing ) );
     p.push_back( static_cast<char>( snap.avatar_controlling ? 1 : 0 ) );
+    p.push_back( static_cast<char>( snap.has_vehicle_status ? 1 : 0 ) );
+    if( snap.has_vehicle_status ) {
+        put_str8( p, snap.veh_azimuth );
+        put_str8( p, snap.veh_cruise );
+        put_str8( p, snap.veh_fuel );
+        put_str8( p, snap.veh_battery );
+        p.push_back( static_cast<char>( snap.veh_cruise_color ) );
+        p.push_back( static_cast<char>( snap.veh_fuel_color ) );
+        p.push_back( static_cast<char>( snap.veh_battery_color ) );
+    }
     put_u16( p, static_cast<uint16_t>( snap.creatures.size() ) );
     for( const snapshot::creature_frame &cf : snap.creatures ) {
         p.push_back( static_cast<char>( cf.kind ) );
@@ -3661,6 +3671,16 @@ static void client_run( socket_t sock )
             snap.weather = r.get_str();
             snap.avatar_facing = r.get_u8();
             snap.avatar_controlling = r.get_u8() != 0;
+            snap.has_vehicle_status = r.get_u8() != 0;
+            if( snap.has_vehicle_status ) {
+                snap.veh_azimuth = r.get_str8();
+                snap.veh_cruise = r.get_str8();
+                snap.veh_fuel = r.get_str8();
+                snap.veh_battery = r.get_str8();
+                snap.veh_cruise_color = static_cast<uint8_t>( r.get_u8() );
+                snap.veh_fuel_color = static_cast<uint8_t>( r.get_u8() );
+                snap.veh_battery_color = static_cast<uint8_t>( r.get_u8() );
+            }
             const uint16_t mp_ncre = r.get_u16();
             for( uint16_t i = 0; i < mp_ncre && r.ok; i++ ) {
                 snapshot::creature_frame cf;
@@ -4449,9 +4469,35 @@ void client_status_hint( const std::string &text )
 }
 #endif
 
-bool client_inventory( std::string &out )
+static vehicle_sidebar_view client_vehicle_sidebar_data;
+
+void client_set_vehicle_sidebar( const snapshot &snap )
 {
-    std::lock_guard<std::mutex> lk( state.inv_mutex );
+    client_vehicle_sidebar_data = vehicle_sidebar_view{};
+    if( !snap.has_vehicle_status ) {
+        return;
+    }
+    client_vehicle_sidebar_data.valid = true;
+    client_vehicle_sidebar_data.azimuth = snap.veh_azimuth;
+    client_vehicle_sidebar_data.cruise = snap.veh_cruise;
+    client_vehicle_sidebar_data.fuel = snap.veh_fuel;
+    client_vehicle_sidebar_data.battery = snap.veh_battery;
+    client_vehicle_sidebar_data.cruise_color = snap.veh_cruise_color;
+    client_vehicle_sidebar_data.fuel_color = snap.veh_fuel_color;
+    client_vehicle_sidebar_data.battery_color = snap.veh_battery_color;
+}
+
+bool client_vehicle_sidebar( vehicle_sidebar_view &out )
+{
+    if( !client_vehicle_sidebar_data.valid ) {
+        return false;
+    }
+    out = client_vehicle_sidebar_data;
+    return true;
+}
+
+bool client_inventory( std::string &out )
+{    std::lock_guard<std::mutex> lk( state.inv_mutex );
     if( !state.have_inv ) {
         return false;
     }

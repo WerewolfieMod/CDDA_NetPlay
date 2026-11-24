@@ -94,6 +94,17 @@ inline int inv_color_index( nc_color c )
     return 8;
 }
 
+/// Inverse of inv_color_index, for display data streamed as a base-16 index.
+inline nc_color inv_color_from_index( int i )
+{
+    static const nc_color base16[] = {
+        c_black, c_red, c_green, c_brown, c_blue, c_magenta, c_cyan,
+        c_light_gray, c_dark_gray, c_light_red, c_light_green, c_yellow,
+        c_light_blue, c_pink, c_light_cyan, c_white
+    };
+    return base16[i >= 0 && i < 16 ? i : 8];
+}
+
 struct inv_packet {
     inv_header_view header;
     std::vector<inv_entry_view> entries;

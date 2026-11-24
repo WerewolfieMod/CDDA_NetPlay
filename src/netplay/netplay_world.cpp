@@ -34,6 +34,7 @@
 #include "construction.h"
 #include "construction_group.h"
 #include "dialogue.h"
+#include "display.h"
 #include "catacharset.h"
 #include "color.h"
 #include "creature.h"
@@ -1016,6 +1017,30 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.avatar_facing = static_cast<uint8_t>( viewer != nullptr ? viewer->facing : u.facing );
     out.avatar_controlling = viewer != nullptr ? viewer->controlling_vehicle :
                              u.controlling_vehicle;
+    // DDA MP v4.0a-263: host-side vehicle sidebar values. The client mirror
+    // has no vehicle object, so the stock vehicle widgets would stay empty.
+    out.has_vehicle_status = false;
+    if( viewer != nullptr && viewer->in_vehicle ) {
+        if( const optional_vpart_position mp_veh = here.veh_at( viewer->pos_bub() ) ) {
+            out.has_vehicle_status = true;
+            out.veh_azimuth = display::vehicle_azimuth_text( *viewer );
+            const std::pair<std::string, nc_color> mp_cruise =
+                display::vehicle_cruise_text_color( *viewer );
+            out.veh_cruise = mp_cruise.first;
+            out.veh_cruise_color = static_cast<uint8_t>(
+                                       netplay::inv_color_index( mp_cruise.second ) );
+            const std::pair<std::string, nc_color> mp_fuel =
+                display::vehicle_fuel_percent_text_color( *viewer );
+            out.veh_fuel = mp_fuel.first;
+            out.veh_fuel_color = static_cast<uint8_t>(
+                                     netplay::inv_color_index( mp_fuel.second ) );
+            const std::pair<std::string, nc_color> mp_battery =
+                display::vehicle_battery_percent_text_color( *viewer );
+            out.veh_battery = mp_battery.first;
+            out.veh_battery_color = static_cast<uint8_t>(
+                                        netplay::inv_color_index( mp_battery.second ) );
+        }
+    }
     // DDA MP v4.2: raw creature state for the native renderer. Only what the
     // session avatar can see (or everything for a watcher), and within the
     // visible range (the client sidebar list and compass show creatures well

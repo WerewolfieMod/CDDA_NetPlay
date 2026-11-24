@@ -5432,6 +5432,16 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // the mirror used to keep its default RIGHT even while walking left.
     get_avatar().facing = static_cast<FacingDirection>( snap.avatar_facing );
     get_avatar().controlling_vehicle = snap.avatar_controlling;
+    netplay::client_set_vehicle_sidebar( snap );
+    if( netplay::mp_diag_enabled() && snap.has_vehicle_status ) {
+        static int mp_veh_sb_log = 0;
+        if( mp_veh_sb_log < 5 ) {
+            ++mp_veh_sb_log;
+            mp_inv_log( string_format( "veh sidebar az=[%s] cruise=[%s] fuel=[%s] batt=[%s]",
+                                       snap.veh_azimuth.c_str(), snap.veh_cruise.c_str(),
+                                       snap.veh_fuel.c_str(), snap.veh_battery.c_str() ) );
+        }
+    }
     if( netplay::mp_diag_enabled() ) {
         static int mp_facing_log = 0;
         if( mp_facing_log < 10 ) {

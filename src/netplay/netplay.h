@@ -408,6 +408,17 @@ struct snapshot {
     /// The session avatar is controlling a vehicle (the flag is avatar-only in
     /// the JSON, so an npc mirror never saw it).
     bool avatar_controlling = false;
+    /// DDA MP v4.0a-263: the host's vehicle sidebar values while the avatar is
+    /// in a vehicle. The client mirror has no vehicle object, so the stock
+    /// vehicle widgets/panels would stay empty without these.
+    bool has_vehicle_status = false;
+    std::string veh_azimuth;
+    std::string veh_cruise;
+    std::string veh_fuel;
+    std::string veh_battery;
+    uint8_t veh_cruise_color = 8;
+    uint8_t veh_fuel_color = 8;
+    uint8_t veh_battery_color = 8;
     /// DDA MP v4.2: raw creature state for the native renderer. kind 0 =
     /// monster, 1 = npc; the JSON is the game's own serialization, position is
     /// absolute so the client can place it without a shared map address.
@@ -459,6 +470,23 @@ struct snapshot {
     };
     std::vector<vehicle_part_frame> vehicle_parts;
 };
+
+/// DDA MP v4.0a-263: the host's vehicle sidebar values while the session
+/// avatar is in a vehicle. The mirror map has no vehicle object, so the stock
+/// vehicle panels would render empty; the client feeds these to the same
+/// display::vehicle_* widgets.
+struct vehicle_sidebar_view {
+    bool valid = false;
+    std::string azimuth;
+    std::string cruise;
+    std::string fuel;
+    std::string battery;
+    int cruise_color = 8;
+    int fuel_color = 8;
+    int battery_color = 8;
+};
+void client_set_vehicle_sidebar( const snapshot &snap );
+bool client_vehicle_sidebar( vehicle_sidebar_view &out );
 
 /// One keyboard pseudo-event from the client.
 struct key_event {
