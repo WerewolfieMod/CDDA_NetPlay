@@ -1863,11 +1863,29 @@ static void av_fix_vehicle_state( npc &n )
     }
 }
 
+/* DDA MP v4.0a-270: a client profile (and an avatar saved by an older build)
+ * carries no NPC class/template. npc::deserialize then leaves `myclass` at
+ * NC_NONE and falls back to `idz = myclass.str()`, which raises "Tried to get
+ * invalid npc: NC_NONE" on the first portrait/snippet lookup. Repair both on
+ * every create and resume. */
+static void av_fix_identity( npc &n )
+{
+    if( n.myclass.is_null() || n.myclass == npc_class_id( "NC_NONE" ) ) {
+        n.myclass = npc_class_id( "NC_SHOPKEEP" );
+    }
+    if( !n.idz.is_valid() ) {
+        // A null template is valid for an avatar: portrait/snippet lookups
+        // skip it instead of dereferencing an invalid id.
+        n.idz = string_id<npc_template>::NULL_ID();
+    }
+}
+
 static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
 {
     npc_ptr->remove_effect( effect_sleep );
     npc_ptr->wake_up();
     av_fix_vehicle_state( *npc_ptr );
+    av_fix_identity( *npc_ptr );
     // DDA MP test hook: spawn a charged golf cart under the first session
     // avatar and board it, so an automated run can verify engine start and
     // pldrive on the client without touching the user's world.
@@ -2083,22 +2101,9 @@ static void host_handle_one_avatar_op( const avatar_op &op )
             jo.allow_omitted_members();
             npc_ptr = make_shared_fast<npc>();
             npc_ptr->deserialize( jo );
-            // DDA MP: player profiles carry no NPC class, leaving `myclass` at
-            // NC_NONE; dialogue and related lookups then resolve an invalid NPC
-            // template ("Tried to get invalid npc: NC_NONE"). Assign a valid
-            // class so talking to NPCs works.
-            if( npc_ptr->myclass.is_null() || npc_ptr->myclass == npc_class_id( "NC_NONE" ) ) {
-                npc_ptr->myclass = npc_class_id( "NC_SHOPKEEP" );
-            }
-            // DDA MP v4.0a-265: npc::deserialize falls back to
-            // `idz = myclass.str()` when the JSON has no "idz" member. An
-            // avatar profile carries no NPC class, so that fallback produced
-            // the invalid template "NC_NONE" and any portrait/snippet lookup
-            // raised "Tried to get invalid npc: NC_NONE". A null template is
-            // valid for an avatar: the lookups skip it.
-            if( !npc_ptr->idz.is_valid() ) {
-                npc_ptr->idz = string_id<npc_template>::NULL_ID();
-            }
+            // DDA MP: player profiles carry no NPC class; repair the identity
+            // before the avatar enters the world (also done on every resume).
+            av_fix_identity( *npc_ptr );
             if( !npc_ptr->get_fac_id().str().empty() ) {
                 npc_ptr->set_fac( npc_ptr->get_fac_id() );
             }
