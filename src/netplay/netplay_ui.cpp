@@ -5463,12 +5463,11 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // the mirror used to keep its default RIGHT even while walking left.
     get_avatar().facing = static_cast<FacingDirection>( snap.avatar_facing );
     get_avatar().controlling_vehicle = snap.avatar_controlling;
-    // DDA MP v4.0a-268: the character mirror is sent at bind/status time, so
-    // it kept in_vehicle=false after the avatar boarded. The stock vehicle
-    // sidebar widgets gate on u.in_vehicle and then go looking for a vehicle
-    // object the mirror does not have, so they stayed empty even though the
-    // values were streamed. The snapshot knows the real host state.
-    get_avatar().in_vehicle = snap.has_vehicle_status;
+    // DDA MP v4.0a-268: the stock vehicle widgets used to gate on u.in_vehicle
+    // and then look for a vehicle object the mirror does not have. They now
+    // read the streamed values whenever they are valid, so the mirror must NOT
+    // fake in_vehicle=true: other local UIs assume that flag implies a real
+    // vehicle at the avatar's position.
     netplay::client_set_vehicle_sidebar( snap );
     if( netplay::mp_diag_enabled() && snap.has_vehicle_status ) {
         static std::string mp_veh_sb_last;

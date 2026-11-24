@@ -5695,7 +5695,8 @@ static void mp_register_help( Character &helper, Character &target )
         if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
             std::fprintf( f, "help: registered helper=%s target=%s activity=%s skill=%s level=%d factor=%.2f\n",
                           helper.get_name().c_str(), target.get_name().c_str(), what.c_str(),
-                          diag_skill.str().c_str(), helper.get_skill_level( diag_skill ),
+                          diag_skill.str().c_str(),
+                          static_cast<int>( helper.get_skill_level( diag_skill ) ),
                           help_speed_factor( target, diag_skill ) );
             std::fclose( f );
         }
