@@ -4485,6 +4485,18 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_view_dz = 0;
             break;
         case ACTION_EXAMINE: {
+            // DDA MP v4.0a-302: native vehicle screen on the mirror object.
+            // Gated until the complete vehicle command set is migrated; the
+            // legacy remote uilist remains the default.
+            if( mp_native_avatar_ready &&
+                std::getenv( "DDA_MP_NATIVE_VEH_INTERACT" ) != nullptr ) {
+                if( const optional_vpart_position mp_vp =
+                        get_map().veh_at( get_avatar().pos_bub() ) ) {
+                    mp_inv_log( "action: native veh_interact" );
+                    g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                    break;
+                }
+            }
             // DDA MP v4.0a-246: a mechanical winch asks "Use the ...?" on the
             // host. Ask it here instead and send the confirmed action, so the
             // prompt appears on the client. Other examine targets still run on

@@ -162,11 +162,34 @@ std::string enum_to_string<vehicle_action>( vehicle_action stage )
 }
 } // namespace io
 
+/// DDA MP v4.0a-302: true when this is a netplay client running the native
+/// vehicle screen on its mirror object (not the host's remote-NPC scope).
+static bool mp_client_mirror_vehicle()
+{
+    return netplay::client_is_connected() && get_player_character_override() == nullptr;
+}
+
 void veh_interact::assign_activity( map &here )
 {
     const vehicle_part *pt = sel_vehicle_part;
     const vpart_info *vp = sel_vpart_info;
     Character &player_character = get_player_character();
+
+    if( mp_client_mirror_vehicle() ) {
+        if( sel_cmd == VEHICLE_REPAIR && pt != nullptr ) {
+            netplay::client_send_intent( "vehicle_repair", 0,
+                                         { veh->index_of_part( pt ) } );
+            return;
+        }
+        if( sel_cmd == VEHICLE_REFILL ) {
+            netplay::client_send_intent( "vehicle_refuel", 0, {} );
+            return;
+        }
+        if( sel_cmd != VEHICLE_QUIT && sel_cmd != VEHICLE_SHAPE ) {
+            popup( _( "This vehicle action is not available on the netplay client yet." ) );
+        }
+        return;
+    }
 
     if( sel_cmd == VEHICLE_SHAPE ) {
         if( !parts_here.empty() ) {
@@ -595,7 +618,9 @@ void veh_interact::do_main_loop( map &here )
                 do_remove( here );
             }
         } else if( action == "RENAME" ) {
-            if( owned_by_player ) {
+            if( mp_client_mirror_vehicle() ) {
+                popup( _( "Renaming is not available on the netplay client yet." ) );
+            } else if( owned_by_player ) {
                 do_rename();
             } else {
                 if( owner_fac ) {
@@ -603,7 +628,9 @@ void veh_interact::do_main_loop( map &here )
                 }
             }
         } else if( action == "SIPHON" ) {
-            if( veh->handle_potential_theft( player_character ) ) {
+            if( mp_client_mirror_vehicle() ) {
+                popup( _( "Siphoning is not available on the netplay client yet." ) );
+            } else if( veh->handle_potential_theft( player_character ) ) {
                 do_siphon( here );
                 // Siphoning may have started a player activity. If so, we should close the
                 // vehicle dialog and continue with the activity.
@@ -615,13 +642,21 @@ void veh_interact::do_main_loop( map &here )
                 }
             }
         } else if( action == "UNLOAD" ) {
-            if( veh->handle_potential_theft( player_character ) ) {
+            if( mp_client_mirror_vehicle() ) {
+                popup( _( "Unloading is not available on the netplay client yet." ) );
+            } else if( veh->handle_potential_theft( player_character ) ) {
                 finish = do_unload( here );
             }
         } else if( action == "CHANGE_SHAPE" ) {
-            sel_cmd = VEHICLE_SHAPE;
+            if( mp_client_mirror_vehicle() ) {
+                popup( _( "Changing the vehicle shape is not available on the netplay client yet." ) );
+            } else {
+                sel_cmd = VEHICLE_SHAPE;
+            }
         } else if( action == "ASSIGN_CREW" ) {
-            if( owned_by_player ) {
+            if( mp_client_mirror_vehicle() ) {
+                popup( _( "Assigning crew is not available on the netplay client yet." ) );
+            } else if( owned_by_player ) {
                 do_assign_crew( here );
             } else {
                 if( owner_fac ) {
@@ -630,7 +665,9 @@ void veh_interact::do_main_loop( map &here )
                 }
             }
         } else if( action == "RELABEL" ) {
-            if( owned_by_player ) {
+            if( mp_client_mirror_vehicle() ) {
+                popup( _( "Relabeling is not available on the netplay client yet." ) );
+            } else if( owned_by_player ) {
                 do_relabel( here );
             } else {
                 if( owner_fac ) {
