@@ -19,8 +19,9 @@
 **Публикация:** обычные коммиты и теги можно заливать на GitHub. GitHub
 Release / zip-архив не публиковать до полной играбельной версии без
 значительных багов; zip — только после финальной приёмки.
-**Текущая оценка B:** ~40–45% архитектуры, ~30–35% «нативного UI как в
-одиночке», ~70–75% играбельного vertical slice на тестовом полигоне.
+**Текущая оценка B:** ~45–50% архитектуры (P0+P1 закрыты), ~30–35%
+«нативного UI как в одиночке», ~70–75% играбельного vertical slice на
+тестовом полигоне.
 **Исходные аудиты:**
 - `netplay_action_audit.md` — расхождения действий/валидации.
 - `netplay_render.audit.md` — расхождения рендера/UI.
@@ -522,9 +523,9 @@ JSON/mapgen:
 
 ### 9.4. Следующие 5 задач
 
-1. P1-2: добить оставшиеся legacy-intent'ы (autoattack/fire/missions/trade/dialogue).
-2. P2-4: полное vehicle-зеркало.
-3. P3-4: native `veh_interact` на зеркале.
+1. P2-4: полное vehicle-зеркало (serialize/deserialize частей, cargo, tools).
+2. P3-4: native `veh_interact` на зеркале.
+3. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
 4. P4-1/P4-6: полировка native sidebar/layout (наложения панелей).
 5. P7-1: валидаторы для control vehicle/fire/NPC.
 
