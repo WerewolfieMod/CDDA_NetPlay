@@ -7421,6 +7421,192 @@ static bool mp_cmd_haul( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_smash( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const int dx = in.args[0];
+    const int dy = in.args[1];
+    if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "You can't smash there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    map &here = get_map();
+    const tripoint_bub_ms target = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+    if( here.inbounds( target ) && mp_has_smash_target( here, target ) ) {
+        host_smash_at( in.sid, *av, target );
+    } else {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There's nothing to smash there." ),
+            static_cast<int>( m_info ) );
+    }
+    av_send_status( in.sid );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_reach_attack( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    map &here = get_map();
+    const tripoint_bub_ms target = av->pos_bub() +
+                                   tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    if( here.inbounds( target ) ) {
+        const std::size_t msg_before = Messages::generation();
+        av->reach_attack( target );
+        av_mark_acted( in.sid );
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+        mp_forward_new_messages( in.sid, msg_before );
+    }
+    av_send_status( in.sid );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_use_winch( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    map &here = get_map();
+    const tripoint_bub_ms target = av->pos_bub() +
+                                   tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    static const std::set<std::string> mp_winches = {
+        "t_gates_mech_control", "t_gates_mech_control_lab",
+        "t_gates_mech_control_lab_2"
+    };
+    const bool is_winch = here.inbounds( target ) &&
+                          mp_winches.count( here.ter( target ).id().str() ) > 0;
+    if( is_winch ) {
+        const std::size_t msg_before = Messages::generation();
+        gates::open_gate( target, *av );
+        mp_forward_new_messages( in.sid, msg_before );
+        av_mark_acted( in.sid );
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+    } else {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no winch there." ),
+            static_cast<int>( m_info ) );
+    }
+    av_send_status( in.sid );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_butcher( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const int dx = in.args.empty() ? 0 : in.args[0];
+    const int dy = in.args.size() < 2 ? 0 : in.args[1];
+    const int pick = in.args.size() < 3 ? 0 : in.args[2];
+    const std::size_t msg_before = Messages::generation();
+    host_butcher_at( in.sid, *av,
+                     av->pos_bub() + tripoint_rel_ms( dx, dy, 0 ), pick );
+    mp_forward_new_messages( in.sid, msg_before );
+    av_send_status( in.sid );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_construct( const netplay::intent_request &in )
+{
+    if( in.data.empty() || in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const construction_group_str_id group( in.data );
+    if( !group.is_valid() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, string_format( _( "Unknown construction \"%s\"." ), in.data ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    const int dx = in.args[0];
+    const int dy = in.args[1];
+    if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "You can't construct there." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const tripoint_bub_ms pnt = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+    const std::size_t msg_before = Messages::generation();
+    if( place_construction_at( group, *av, pnt ) ) {
+        av_mark_acted( in.sid );
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+    }
+    mp_forward_new_messages( in.sid, msg_before );
+    av_send_status( in.sid );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_workout( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const int intensity = std::clamp( in.args[0], 1, 4 );
+    const int minutes = std::clamp( in.args[1], 1, 24 * 60 );
+    g->mp_anchor_map_on( *av, true );
+    workout_activity_actor workout( av->pos_bub() );
+    workout.configure( intensity, minutes * 1_minutes );
+    av->assign_activity( workout );
+    av_mark_acted( in.sid );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "workout start sid=%d intensity=%d minutes=%d\n",
+                      in.sid, intensity, minutes );
+        std::fclose( f );
+    }
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -7479,6 +7665,12 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
                                 "autohaul_on", "autohaul_off" } ) {
             r.emplace( id, mp_cmd_haul );
         }
+        r.emplace( "smash", mp_cmd_smash );
+        r.emplace( "reach_attack", mp_cmd_reach_attack );
+        r.emplace( "use_winch", mp_cmd_use_winch );
+        r.emplace( "butcher", mp_cmd_butcher );
+        r.emplace( "construct", mp_cmd_construct );
+        r.emplace( "workout", mp_cmd_workout );
         return r;
     }();
     return registry;
@@ -7535,164 +7727,6 @@ void host_pump_intents()
                 av_send_session_picture( in.sid, av->pos_bub(), av );
                 mp_forward_new_messages( in.sid, msg_before );
                 g->mp_anchor_map_on( get_avatar() );
-            }
-            continue;
-        }
-        // DDA MP v4.0a-171: butcher the corpse under (or next to) the avatar.
-        if( in.action == "smash" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const int dx = in.args[0];
-                const int dy = in.args[1];
-                if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
-                    netplay::host_send_event_to_sid(
-                        in.sid, _( "You can't smash there." ),
-                        static_cast<int>( m_info ) );
-                    continue;
-                }
-                g->mp_anchor_map_on( *av, true );
-                map &here = get_map();
-                const tripoint_bub_ms target = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
-                if( here.inbounds( target ) && mp_has_smash_target( here, target ) ) {
-                    host_smash_at( in.sid, *av, target );
-                } else {
-                    netplay::host_send_event_to_sid(
-                        in.sid, netplay::fork_text( "There's nothing to smash there." ),
-                        static_cast<int>( m_info ) );
-                }
-                av_send_status( in.sid );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        if( in.action == "reach_attack" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                map &here = get_map();
-                const tripoint_bub_ms target = av->pos_bub() +
-                                               tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                if( here.inbounds( target ) ) {
-                    const std::size_t msg_before = Messages::generation();
-                    av->reach_attack( target );
-                    av_mark_acted( in.sid );
-                    av_send_session_picture( in.sid, av->pos_bub(), av );
-                    mp_forward_new_messages( in.sid, msg_before );
-                }
-                av_send_status( in.sid );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        if( in.action == "use_winch" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                map &here = get_map();
-                const tripoint_bub_ms target = av->pos_bub() +
-                                               tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                static const std::set<std::string> mp_winches = {
-                    "t_gates_mech_control", "t_gates_mech_control_lab",
-                    "t_gates_mech_control_lab_2"
-                };
-                const bool is_winch = here.inbounds( target ) &&
-                                      mp_winches.count( here.ter( target ).id().str() ) > 0;
-                if( is_winch ) {
-                    const std::size_t msg_before = Messages::generation();
-                    gates::open_gate( target, *av );
-                    mp_forward_new_messages( in.sid, msg_before );
-                    av_mark_acted( in.sid );
-                    av_send_session_picture( in.sid, av->pos_bub(), av );
-                } else {
-                    netplay::host_send_event_to_sid(
-                        in.sid, netplay::fork_text( "There is no winch there." ),
-                        static_cast<int>( m_info ) );
-                }
-                av_send_status( in.sid );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        if( in.action == "butcher" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                const int dx = in.args.empty() ? 0 : in.args[0];
-                const int dy = in.args.size() < 2 ? 0 : in.args[1];
-                const int pick = in.args.size() < 3 ? 0 : in.args[2];
-                const std::size_t msg_before = Messages::generation();
-                host_butcher_at( in.sid, *av,
-                                 av->pos_bub() + tripoint_rel_ms( dx, dy, 0 ), pick );
-                mp_forward_new_messages( in.sid, msg_before );
-                av_send_status( in.sid );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-171: construction chosen in the client's own menu.
-        if( in.action == "construct" && !in.data.empty() && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av == nullptr ) {
-                continue;
-            }
-            const construction_group_str_id group( in.data );
-            if( !group.is_valid() ) {
-                netplay::host_send_event_to_sid(
-                    in.sid, string_format( _( "Unknown construction \"%s\"." ), in.data ),
-                    static_cast<int>( m_info ) );
-                continue;
-            }
-            const int dx = in.args[0];
-            const int dy = in.args[1];
-            if( std::abs( dx ) > 1 || std::abs( dy ) > 1 || ( dx == 0 && dy == 0 ) ) {
-                netplay::host_send_event_to_sid(
-                    in.sid, _( "You can't construct there." ), static_cast<int>( m_info ) );
-                continue;
-            }
-            g->mp_anchor_map_on( *av, true );
-            const tripoint_bub_ms pnt = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
-            const std::size_t msg_before = Messages::generation();
-            if( place_construction_at( group, *av, pnt ) ) {
-                av_mark_acted( in.sid );
-                av_send_session_picture( in.sid, av->pos_bub(), av );
-            }
-            mp_forward_new_messages( in.sid, msg_before );
-            av_send_status( in.sid );
-            if( !netplay::host_avatar_keys_pending() ) {
-                g->mp_anchor_map_on( get_avatar() );
-            }
-            continue;
-        }
-        // DDA MP v4.0a-199: training chosen on the client. The host configures
-        // the engine workout actor directly, so no host dialogs are shown.
-        if( in.action == "workout" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const int intensity = std::clamp( in.args[0], 1, 4 );
-                const int minutes = std::clamp( in.args[1], 1, 24 * 60 );
-                g->mp_anchor_map_on( *av, true );
-                workout_activity_actor workout( av->pos_bub() );
-                workout.configure( intensity, minutes * 1_minutes );
-                av->assign_activity( workout );
-                av_mark_acted( in.sid );
-                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "workout start sid=%d intensity=%d minutes=%d\n",
-                                  in.sid, intensity, minutes );
-                    std::fclose( f );
-                }
-                av_send_status( in.sid );
-                av_send_session_picture( in.sid, av->pos_bub(), av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
             }
             continue;
         }
