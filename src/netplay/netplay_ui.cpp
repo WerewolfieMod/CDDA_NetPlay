@@ -8587,6 +8587,24 @@ void run_view_loop()
                     mp_inv_log( std::string( "test: intent " ) + test_intent );
                 }
             }
+            // DDA MP v4.0a-303 test hook: spawn a test car (host env), wait
+            // for the mirror vehicle, then open the native vehicle screen.
+            if( const char *test_veh = std::getenv( "DDA_MP_TEST_CLIENT_VEH_INTERACT" );
+                test_veh != nullptr && test_veh[0] != '\0' ) {
+                static bool mp_test_veh_asked = false;
+                static bool mp_test_veh_opened = false;
+                if( !mp_test_veh_opened ) {
+                    if( get_map().veh_at( get_avatar().pos_bub() ) ) {
+                        mp_test_veh_opened = true;
+                        mp_inv_log( "test: native veh_interact open" );
+                        mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                    } else if( !mp_test_veh_asked && mp_native_avatar_ready ) {
+                        mp_test_veh_asked = true;
+                        netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                        mp_inv_log( "test: native veh_interact spawn car" );
+                    }
+                }
+            }
             // DDA MP test hook: send one engine action from the client after
             // the first picture, so automated runs can exercise the host's
             // per-action message routing (smash emits action messages).
