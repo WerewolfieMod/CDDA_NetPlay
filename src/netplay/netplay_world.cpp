@@ -7158,6 +7158,269 @@ namespace
 {
 using mp_intent_handler = std::function<bool( const netplay::intent_request & )>;
 
+/// DDA MP v4.0a-291: vehicle control commands from the client's native ^ menu.
+/// They share the host's engine calls; only the command id differs.
+static bool mp_cmd_vehicle_control( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( in.action == "vehicle_release" ) {
+        av->controlling_vehicle = false;
+        mp_ctrl_log( string_format( "release sid=%d drv=%d", in.sid,
+                                    av->controlling_vehicle ? 1 : 0 ) );
+        netplay::host_send_event_to_sid(
+            in.sid, _( "You let go of the controls." ),
+            static_cast<int>( m_info ) );
+    } else if( in.action == "vehicle_handbrake" ) {
+        mp_session_handbrake( in.sid, *av );
+    } else if( in.action == "vehicle_toggle_tracking" ) {
+        if( vp ) {
+            vp->vehicle().toggle_tracking();
+            mp_ctrl_log( string_format( "tracking sid=%d on=%d", in.sid,
+                                        vp->vehicle().tracking_on ? 1 : 0 ) );
+            netplay::host_send_event_to_sid(
+                in.sid,
+                vp->vehicle().tracking_on ?
+                _( "You start keeping track of this vehicle's position." ) :
+                _( "You stop keeping track of the vehicle position." ),
+                static_cast<int>( m_info ) );
+        }
+    } else if( vp ) {
+        vp->vehicle().honk_horn( here );
+        mp_ctrl_log( string_format( "horn sid=%d veh=%d,%d", in.sid,
+                                    vp->vehicle().pos_abs().x(),
+                                    vp->vehicle().pos_abs().y() ) );
+    }
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_menu( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        g->mp_anchor_map_on( *av, true );
+        if( !av->controlling_vehicle ) {
+            netplay::host_send_event_to_sid(
+                in.sid, netplay::fork_text( "You are not driving." ),
+                static_cast<int>( m_info ) );
+        } else {
+            mp_send_vehicle_menu( in.sid, *av );
+        }
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_engine_menu( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        g->mp_anchor_map_on( *av, true );
+        mp_send_engine_menu( in.sid, *av );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_info( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, fork_text( "You are not in a vehicle." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const std::pair<int, int> bat = veh.battery_power_level();
+    int damaged = 0;
+    for( int i = 0; i < veh.part_count(); ++i ) {
+        if( veh.part( i ).damage() > 0 ) {
+            ++damaged;
+        }
+    }
+    std::string payload = veh.name;
+    payload += '\x1e';
+    payload += std::to_string( veh.velocity / 100 );
+    payload += '\x1e';
+    payload += std::to_string( veh.cruise_velocity / 100 );
+    payload += '\x1e';
+    payload += veh.engine_on ? "1" : "0";
+    payload += '\x1e';
+    payload += std::to_string( bat.first );
+    payload += '\x1e';
+    payload += std::to_string( bat.second );
+    payload += '\x1e';
+    payload += std::to_string( veh.part_count() );
+    payload += '\x1e';
+    payload += std::to_string( damaged );
+    for( const std::pair<const itype_id, int> &fuel : veh.fuels_left() ) {
+        if( fuel.first == itype_id( "battery" ) || fuel.second <= 0 ) {
+            continue;
+        }
+        payload += '\x1f';
+        payload += fuel.first.str();
+        payload += '\x1e';
+        payload += std::to_string( fuel.second );
+    }
+    netplay::host_send_event_to_sid( in.sid, payload, netplay::EVENT_VEHICLE_INFO );
+    return true;
+}
+
+static bool mp_cmd_suicide( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr && !av->is_dead() ) {
+        map &here = get_map();
+        g->mp_anchor_map_on( *av, true );
+        av->set_moves( 0 );
+        av->die( &here, nullptr );
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "suicide sid=%d dead=%d\n", in.sid,
+                          av->is_dead() ? 1 : 0 );
+            std::fclose( f );
+        }
+        av_send_status( in.sid );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_sort_armor( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        std::vector<std::string> uids;
+        std::string::size_type start = 0;
+        while( start <= in.data.size() ) {
+            const std::string::size_type sep = in.data.find( ',', start );
+            const std::string uid = in.data.substr(
+                                        start, sep == std::string::npos
+                                        ? std::string::npos : sep - start );
+            if( !uid.empty() ) {
+                uids.push_back( uid );
+            }
+            if( sep == std::string::npos ) {
+                break;
+            }
+            start = sep + 1;
+        }
+        av->worn.reorder_worn( uids );
+        av->calc_encumbrance();
+        av_send_status( in.sid );
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "sort armor sid=%d items=%d\n",
+                          in.sid, static_cast<int>( uids.size() ) );
+            std::fclose( f );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_movement_mode( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        const move_mode_id mode( in.data );
+        if( mode.is_valid() ) {
+            av->set_movement_mode( mode );
+            av_send_status( in.sid );
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "movement mode sid=%d mode=%s\n",
+                              in.sid, mode.str().c_str() );
+                std::fclose( f );
+            }
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_zones( const netplay::intent_request &in )
+{
+    if( av_session_npc( in.sid ) != nullptr ) {
+        mp_send_zones( in.sid );
+    }
+    return true;
+}
+
+static bool mp_cmd_grab( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr && in.args.size() >= 2 ) {
+        mp_session_grab( in.sid, *av, in.args[0], in.args[1] );
+        av_send_status( in.sid );
+    }
+    return true;
+}
+
+static bool mp_cmd_grab_test( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        if( in.action == "grab_release" ) {
+            mp_session_grab( in.sid, *av, 0, 0 );
+        } else {
+            const tripoint_bub_ms bench_pos =
+                av->pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+            if( !get_map().has_furn( bench_pos ) ) {
+                get_map().furn_set( bench_pos, furn_str_id( "f_bench" ) );
+            }
+            if( in.action == "test_grab_start" ) {
+                mp_session_grab( in.sid, *av, 1, 0 );
+            } else {
+                mp_test_grab_drag( in.sid, *av );
+            }
+        }
+        av_send_status( in.sid );
+    }
+    return true;
+}
+
+static bool mp_cmd_haul( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        g->mp_anchor_map_on( *av, true );
+        const std::size_t msg_before = Messages::generation();
+        if( in.action == "haul_toggle" ) {
+            av->toggle_hauling();
+        } else if( in.action == "haul_here" ) {
+            av->start_hauling( get_map().get_haulable_items( av->pos_bub() ) );
+        } else if( in.action == "haul_stop" ) {
+            av->stop_hauling();
+        } else if( in.action == "autohaul_on" ) {
+            av->start_autohaul();
+        } else {
+            av->stop_autohaul();
+        }
+        mp_forward_new_messages( in.sid, msg_before );
+        av_send_status( in.sid );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+    }
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -7185,6 +7448,37 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
                                              static_cast<int>( m_info ) );
             return true;
         } );
+        for( const char *id : { "vehicle_release", "vehicle_handbrake",
+                                "vehicle_toggle_tracking", "vehicle_horn" } ) {
+            r.emplace( id, mp_cmd_vehicle_control );
+        }
+        r.emplace( "vehicle_menu", mp_cmd_vehicle_menu );
+        r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
+            if( in.args.size() >= 2 ) {
+                mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
+            }
+            return true;
+        } );
+        r.emplace( "vehicle_engine_menu", mp_cmd_vehicle_engine_menu );
+        r.emplace( "vehicle_engine_toggle", []( const netplay::intent_request &in ) {
+            if( in.args.size() >= 2 ) {
+                mp_toggle_engine( in.sid, in.args[0], in.args[1] );
+            }
+            return true;
+        } );
+        r.emplace( "vehicle_info", mp_cmd_vehicle_info );
+        r.emplace( "suicide", mp_cmd_suicide );
+        r.emplace( "sort_armor", mp_cmd_sort_armor );
+        r.emplace( "movement_mode", mp_cmd_movement_mode );
+        r.emplace( "zones", mp_cmd_zones );
+        r.emplace( "grab", mp_cmd_grab );
+        for( const char *id : { "grab_release", "test_grab_start", "test_grab_drag" } ) {
+            r.emplace( id, mp_cmd_grab_test );
+        }
+        for( const char *id : { "haul_toggle", "haul_here", "haul_stop",
+                                "autohaul_on", "autohaul_off" } ) {
+            r.emplace( id, mp_cmd_haul );
+        }
         return r;
     }();
     return registry;
@@ -7595,192 +7889,6 @@ void host_pump_intents()
             }
             continue;
         }
-        // DDA MP v4.0a-210: suicide confirmed on the client; the host applies
-        // the engine death path to the session NPC.
-        if( in.action == "suicide" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr && !av->is_dead() ) {
-                map &here = get_map();
-                g->mp_anchor_map_on( *av, true );
-                av->set_moves( 0 );
-                av->die( &here, nullptr );
-                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "suicide sid=%d dead=%d\n", in.sid,
-                                  av->is_dead() ? 1 : 0 );
-                    std::fclose( f );
-                }
-                av_send_status( in.sid );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-210: armor sorting from the mirror's uid order.
-        if( in.action == "sort_armor" && !in.data.empty() ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                std::vector<std::string> uids;
-                std::string::size_type start = 0;
-                while( start <= in.data.size() ) {
-                    const std::string::size_type sep = in.data.find( ',', start );
-                    const std::string uid = in.data.substr(
-                                                start, sep == std::string::npos
-                                                ? std::string::npos : sep - start );
-                    if( !uid.empty() ) {
-                        uids.push_back( uid );
-                    }
-                    if( sep == std::string::npos ) {
-                        break;
-                    }
-                    start = sep + 1;
-                }
-                av->worn.reorder_worn( uids );
-                av->calc_encumbrance();
-                av_send_status( in.sid );
-                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "sort armor sid=%d items=%d\n",
-                                  in.sid, static_cast<int>( uids.size() ) );
-                    std::fclose( f );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-210: movement-mode picker from the client.
-        if( in.action == "movement_mode" && !in.data.empty() ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const move_mode_id mode( in.data );
-                if( mode.is_valid() ) {
-                    av->set_movement_mode( mode );
-                    av_send_status( in.sid );
-                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                        std::fprintf( f, "movement mode sid=%d mode=%s\n",
-                                      in.sid, mode.str().c_str() );
-                        std::fclose( f );
-                    }
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-209: read-only zone list.
-        if( in.action == "zones" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                mp_send_zones( in.sid );
-            }
-            continue;
-        }
-        // DDA MP v4.0a-205: grab/release furniture for the session avatar.
-        if( in.action == "grab" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                mp_session_grab( in.sid, *av, in.args[0], in.args[1] );
-                av_send_status( in.sid );
-            }
-            continue;
-        }
-        if( in.action == "grab_release" || in.action == "test_grab_start" ||
-            in.action == "test_grab_drag" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                if( in.action == "grab_release" ) {
-                    mp_session_grab( in.sid, *av, 0, 0 );
-                } else {
-                    const tripoint_bub_ms bench_pos =
-                        av->pos_bub() + tripoint_rel_ms( 1, 0, 0 );
-                    if( !get_map().has_furn( bench_pos ) ) {
-                        get_map().furn_set( bench_pos, furn_str_id( "f_bench" ) );
-                    }
-                    if( in.action == "test_grab_start" ) {
-                        mp_session_grab( in.sid, *av, 1, 0 );
-                    } else {
-                        mp_test_grab_drag( in.sid, *av );
-                    }
-                }
-                av_send_status( in.sid );
-            }
-            continue;
-        }
-        // DDA MP v4.0a-266: host ^ vehicle menu actions for a remote driver.
-        if( in.action == "vehicle_release" || in.action == "vehicle_handbrake" ||
-            in.action == "vehicle_toggle_tracking" || in.action == "vehicle_horn" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                map &here = get_map();
-                const optional_vpart_position vp = here.veh_at( av->pos_bub() );
-                if( in.action == "vehicle_release" ) {
-                    av->controlling_vehicle = false;
-                    mp_ctrl_log( string_format( "release sid=%d drv=%d", in.sid,
-                                                av->controlling_vehicle ? 1 : 0 ) );
-                    netplay::host_send_event_to_sid(
-                        in.sid, _( "You let go of the controls." ),
-                        static_cast<int>( m_info ) );
-                } else if( in.action == "vehicle_handbrake" ) {
-                    mp_session_handbrake( in.sid, *av );
-                } else if( in.action == "vehicle_toggle_tracking" ) {
-                    if( vp ) {
-                        vp->vehicle().toggle_tracking();
-                        mp_ctrl_log( string_format( "tracking sid=%d on=%d", in.sid,
-                                                    vp->vehicle().tracking_on ? 1 : 0 ) );
-                        netplay::host_send_event_to_sid(
-                            in.sid,
-                            vp->vehicle().tracking_on ?
-                            _( "You start keeping track of this vehicle's position." ) :
-                            _( "You stop keeping track of the vehicle position." ),
-                            static_cast<int>( m_info ) );
-                    }
-                } else if( vp ) {
-                    vp->vehicle().honk_horn( here );
-                    mp_ctrl_log( string_format( "horn sid=%d veh=%d,%d", in.sid,
-                                                vp->vehicle().pos_abs().x(),
-                                                vp->vehicle().pos_abs().y() ) );
-                }
-                av_send_session_picture( in.sid, av->pos_bub(), av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-282: host-built vehicle interact menu.
-        if( in.action == "vehicle_menu" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                if( !av->controlling_vehicle ) {
-                    netplay::host_send_event_to_sid(
-                        in.sid, netplay::fork_text( "You are not driving." ),
-                        static_cast<int>( m_info ) );
-                } else {
-                    mp_send_vehicle_menu( in.sid, *av );
-                }
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        if( in.action == "vehicle_menu_select" && in.args.size() >= 2 ) {
-            mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
-            continue;
-        }
-        if( in.action == "vehicle_engine_menu" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                mp_send_engine_menu( in.sid, *av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        if( in.action == "vehicle_engine_toggle" && in.args.size() >= 2 ) {
-            mp_toggle_engine( in.sid, in.args[0], in.args[1] );
-            continue;
-        }
         // DDA MP v4.0a-204: damaged vehicle parts list and repair.
         if( in.action == "vehicle_parts" || in.action == "test_vehicle_parts" ) {
             npc *av = av_session_npc( in.sid );
@@ -7849,82 +7957,6 @@ void host_pump_intents()
                 av_mark_acted( in.sid );
                 av_send_status( in.sid );
                 av_send_session_picture( in.sid, av->pos_bub(), av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-198: read-only vehicle status for the session avatar.
-        if( in.action == "vehicle_info" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
-                if( !vp ) {
-                    netplay::host_send_event_to_sid(
-                        in.sid, fork_text( "You are not in a vehicle." ),
-                        static_cast<int>( m_info ) );
-                } else {
-                    vehicle &veh = vp->vehicle();
-                    const std::pair<int, int> bat = veh.battery_power_level();
-                    int damaged = 0;
-                    for( int i = 0; i < veh.part_count(); ++i ) {
-                        if( veh.part( i ).damage() > 0 ) {
-                            ++damaged;
-                        }
-                    }
-                    std::string payload = veh.name;
-                    payload += '\x1e';
-                    payload += std::to_string( veh.velocity / 100 );
-                    payload += '\x1e';
-                    payload += std::to_string( veh.cruise_velocity / 100 );
-                    payload += '\x1e';
-                    payload += veh.engine_on ? "1" : "0";
-                    payload += '\x1e';
-                    payload += std::to_string( bat.first );
-                    payload += '\x1e';
-                    payload += std::to_string( bat.second );
-                    payload += '\x1e';
-                    payload += std::to_string( veh.part_count() );
-                    payload += '\x1e';
-                    payload += std::to_string( damaged );
-                    for( const std::pair<const itype_id, int> &fuel : veh.fuels_left() ) {
-                        if( fuel.first == itype_id( "battery" ) || fuel.second <= 0 ) {
-                            continue;
-                        }
-                        payload += '\x1f';
-                        payload += fuel.first.str();
-                        payload += '\x1e';
-                        payload += std::to_string( fuel.second );
-                    }
-                    netplay::host_send_event_to_sid( in.sid, payload,
-                                                     netplay::EVENT_VEHICLE_INFO );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-196: hauling state lives on Character, so the session
-        // avatar can haul through the same engine calls the host player uses.
-        if( in.action == "haul_toggle" || in.action == "haul_here" ||
-            in.action == "haul_stop" || in.action == "autohaul_on" ||
-            in.action == "autohaul_off" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                const std::size_t msg_before = Messages::generation();
-                if( in.action == "haul_toggle" ) {
-                    av->toggle_hauling();
-                } else if( in.action == "haul_here" ) {
-                    av->start_hauling( get_map().get_haulable_items( av->pos_bub() ) );
-                } else if( in.action == "haul_stop" ) {
-                    av->stop_hauling();
-                } else if( in.action == "autohaul_on" ) {
-                    av->start_autohaul();
-                } else {
-                    av->stop_autohaul();
-                }
-                mp_forward_new_messages( in.sid, msg_before );
-                av_send_status( in.sid );
                 if( !netplay::host_avatar_keys_pending() ) {
                     g->mp_anchor_map_on( get_avatar() );
                 }

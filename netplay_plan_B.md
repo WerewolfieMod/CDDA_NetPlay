@@ -149,7 +149,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
 | P1-1 | Схема команды: id, args, generation/epoch, actor, target, idempotency | `netplay.h`, schema | — | одна схема для host/client | DONE (`command_id`, args, generation, sid) |
-| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | PARTIAL (registry + `help`; legacy chain) |
+| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | PARTIAL (registry: help, vehicle control/menu/engine/info, suicide, sort_armor, movement_mode, zones, grab, haul; остальные legacy) |
 | P1-3 | `CommandSink` на клиенте + wrappers | `netplay_ui.cpp` | P1-1 | UI вызывает sink, не пишет напрямую | TODO |
 | P1-4 | ACK/NACK/result/error model; таймауты/retry | protocol | P1-1 | клиент видит успех/ошибку | TODO |
 | P1-5 | Generation/epoch/revision; stale rejection | protocol | P1-1 | устаревшая команда не применяется | PARTIAL (exact duplicate drop by `command_id`; generation/revision legacy) |
@@ -496,6 +496,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-289 | `background_pane` в `run_view_loop`: `stdscr` ack-ается до tile-canvas; устранён чёрный кадр из input-pump между двумя корректными present'ами | replay и native: `netplay_present_client_*` стабильно ~273 КБ, карта и native-sidebar видны; `drawwin stdscr` больше не каждый кадр |
 | 2026-11-25 | ddamp-v4.0a-289 | Версия netplay-протокола поднята до 2 из-за несовместимого формата снапшота (32-битные длины строк); старый клиент получает явный DENY | host/client одной сборки соединяются; несовместимый клиент отклоняется |
 | 2026-11-25 | ddamp-v4.0a-290 | P1: `intent_request::command_id` (опциональный trailing u32) и точное отбрасывание дублей; первый `CommandRegistry` с обработчиками `help`/`test.registry` | host/client: `intent tx test.registry` → `registry ok sid=1 cmd=1 action=test.registry`; `rx snap tiles=1568` |
+| 2026-11-25 | ddamp-v4.0a-291 | P1-2: в registry перенесены vehicle control/menu/engine/info, suicide, sort_armor, movement_mode, zones, grab/grab-test, haul/autohaul | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 
 ### 9.3. Что протестировано
 
@@ -505,6 +506,7 @@ JSON/mapgen:
 | 2026-11-25 | P0-2 | Host+client: host слушает `24224`, клиент `--mpclient 127.0.0.1:24224` + `DDA_MP_TEST_AVATAR_AUTO=1` | TCP established; аватар привязан (`avatar op kind=3`), `rx snap tiles=1568`, `snapapply #1`; стабильный кадр карты |
 | 2026-11-25 | P4-6 | Replay/native renderer клиента после `background_pane` | native: карта + панели, `render geom`, `snapapply`; `present_client_*` ~273 КБ без чёрных кадров |
 | 2026-11-25 | P1-1/P1-2 | `command_id` + registry: `DDA_MP_TEST_CLIENT_INTENT=test.registry` | `intent tx test.registry`; host `registry ok sid=1 cmd=1 action=test.registry`; client `test: intent test.registry` |
+| 2026-11-25 | P1-2 | Registry batch: vehicle/simple actions after migration | сборка успешна; host/client прогон: `registry ok`, `rx snap tiles=1568`, соединение стабильно |
 
 ### 9.4. Следующие 5 задач
 
