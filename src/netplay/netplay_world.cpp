@@ -7252,6 +7252,64 @@ static bool mp_cmd_vehicle_engine_menu( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_vehicle_remove( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.empty() ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const int idx = in.args[0];
+    if( idx < 0 || idx >= veh.part_count() ) {
+        return true;
+    }
+    vehicle_part &pt = veh.part( idx );
+    const point_rel_ms q = veh.coord_translate( pt.mount );
+    av->set_moves( 100 );
+    av->assign_activity( vehicle_activity_actor(
+                             VEHICLE_REMOVE, pt.info().removal_time( *av ), &veh,
+                             veh.pos_abs() + q, tripoint_rel_ms( pt.mount, 0 ), idx,
+                             pt.info().id, item_location() ) );
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "vehicle remove sid=%d part=%d\n", in.sid, idx );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_mend( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.empty() ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const int idx = in.args[0];
+    if( idx < 0 || idx >= veh.part_count() ) {
+        return true;
+    }
+    av->mend_item( veh.part_base( idx ) );
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "vehicle mend sid=%d part=%d\n", in.sid, idx );
+        std::fclose( f );
+    }
+    return true;
+}
+
 static bool mp_cmd_vehicle_rename( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -8517,6 +8575,8 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_info", mp_cmd_vehicle_info );
         r.emplace( "vehicle_rename", mp_cmd_vehicle_rename );
         r.emplace( "vehicle_relabel", mp_cmd_vehicle_relabel );
+        r.emplace( "vehicle_remove", mp_cmd_vehicle_remove );
+        r.emplace( "vehicle_mend", mp_cmd_vehicle_mend );
         r.emplace( "suicide", mp_cmd_suicide );
         r.emplace( "sort_armor", mp_cmd_sort_armor );
         r.emplace( "movement_mode", mp_cmd_movement_mode );

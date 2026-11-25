@@ -181,7 +181,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-1 | `SessionWorld`/`GameView` или mirror-game mode | client | P2 | UI читает зеркало | TODO |
 | P3-2 | Перехват мутаций (activities/map/vehicle/item/character/dialogue/EOC) | client | P3-1/P1 | UI не меняет мир напрямую | TODO |
 | P3-3 | Перевести native inventory/@/craft/pickup на command bus | client | P1/P3-2 | actions идут через registry | PARTIAL |
-| P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | PARTIAL (полноэкранный native UI; repair/refuel/rename/relabel через intents; install/remove/mend/siphon/unload/shape/crew пока заблокированы) |
+| P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | PARTIAL (полноэкранный native UI; repair/refuel/rename/relabel/remove/mend через intents; install/siphon/unload/shape/crew пока заблокированы) |
 | P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | PARTIAL |
 | P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (auto-target) |
 | P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | TODO |
@@ -511,6 +511,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-302 | P3-4 WIP: native `veh_interact` на клиенте за `DDA_MP_NATIVE_VEH_INTERACT`; ремонт/заправка отправляются интентами, остальные действия пока блокируются | сборка; автономный прогон не выполнялся |
 | 2026-11-26 | ddamp-v4.0a-303 | P3-4: тестовый хук `DDA_MP_TEST_CLIENT_VEH_INTERACT` (спавн машины + открытие native `veh_interact`); полноэкранный vehicle UI на клиенте подтверждён | `action: native veh_interact`; `netplay_present_client_200.png` — части/двигатель/колёса/баки/описание |
 | 2026-11-26 | ddamp-v4.0a-304 | P3-4: `vehicle_rename` и `vehicle_relabel` добавлены в registry; native UI отправляет их на хост | `intent tx vehicle_rename`; host `vehicle rename sid=1 name=Netplay Test Car` |
+| 2026-11-26 | ddamp-v4.0a-305 | P3-4: `vehicle_remove` и `vehicle_mend` добавлены в registry; native UI отправляет индекс части, хост запускает activity/починку на авторитетной машине | `intent tx vehicle_remove`; host `vehicle remove sid=1 part=90` |
 
 ### 9.3. Что протестировано
 
@@ -534,6 +535,7 @@ JSON/mapgen:
 | 2026-11-26 | P3-4 | Native `veh_interact` build (`DDA_MP_NATIVE_VEH_INTERACT`) | только сборка; игровой прогон не выполнялся |
 | 2026-11-26 | P3-4 | Native `veh_interact` render on client mirror (`DDA_MP_TEST_CLIENT_VEH_INTERACT=1`) | `vehicle: mirror applied parts=91 veh_at=1`; `action: native veh_interact`; полноэкранный UI (части/двигатель/колёса/баки) |
 | 2026-11-26 | P3-4 | `vehicle_rename` через native command bus (`DDA_MP_TEST_CLIENT_ACTION=vehicle_rename`) | `intent tx vehicle_rename`; host `vehicle rename sid=1 name=Netplay Test Car` |
+| 2026-11-26 | P3-4 | `vehicle_remove` через native command bus (`DDA_MP_TEST_CLIENT_ACTION=vehicle_remove`) | `intent tx vehicle_remove gen=0 args=1`; host `vehicle remove sid=1 part=90` |
 
 ### 9.4. Следующие 5 задач
 

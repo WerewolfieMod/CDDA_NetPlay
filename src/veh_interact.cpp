@@ -185,6 +185,16 @@ void veh_interact::assign_activity( map &here )
             netplay::client_send_intent( "vehicle_refuel", 0, {} );
             return;
         }
+        if( sel_cmd == VEHICLE_REMOVE && pt != nullptr ) {
+            netplay::client_send_intent( "vehicle_remove", 0,
+                                         { veh->index_of_part( pt ) } );
+            return;
+        }
+        if( sel_cmd == VEHICLE_MEND_FAULTS && pt != nullptr ) {
+            netplay::client_send_intent( "vehicle_mend", 0,
+                                         { veh->index_of_part( pt ) } );
+            return;
+        }
         if( sel_cmd != VEHICLE_QUIT && sel_cmd != VEHICLE_SHAPE ) {
             popup( _( "This vehicle action is not available on the netplay client yet." ) );
         }
@@ -1886,7 +1896,12 @@ void veh_interact::do_mend( map &here )
     };
 
     auto act = [&]( const map &, const vehicle_part & pt ) {
-        player_character.mend_item( veh->part_base( veh->index_of_part( &pt ) ) );
+        const int idx = veh->index_of_part( &pt );
+        if( mp_client_mirror_vehicle() ) {
+            netplay::client_send_intent( "vehicle_mend", 0, { idx } );
+        } else {
+            player_character.mend_item( veh->part_base( idx ) );
+        }
         sel_cmd = VEHICLE_QUIT;
     };
 

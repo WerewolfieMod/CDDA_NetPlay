@@ -8777,6 +8777,20 @@ void run_view_loop()
                         } else {
                             sent = false;
                         }
+                    } else if( action_name == "vehicle_remove" ) {
+                        if( const optional_vpart_position mp_vp =
+                                get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            const vehicle &mp_veh = mp_vp->vehicle();
+                            if( mp_veh.part_count() > 0 ) {
+                                netplay::client_send_intent(
+                                    "vehicle_remove", 0,
+                                    { mp_veh.part_count() - 1 } );
+                            } else {
+                                sent = false;
+                            }
+                        } else {
+                            sent = false;
+                        }
                     } else if( action_name == "vehicle_refuel" ) {
                         netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
                     } else if( action_name == "vehicle_parts" ) {
