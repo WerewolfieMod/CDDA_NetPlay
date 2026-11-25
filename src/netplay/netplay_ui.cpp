@@ -4030,9 +4030,6 @@ static void mp_run_vehicle_info( const std::string &payload )
  * selected row for this session avatar. Entries that need a host-side modal
  * (examine vehicle, engine control, smart controller, turrets, tools, water,
  * workbench, ...) arrive disabled with an explanation. */
-static constexpr int MP_VEHICLE_MENU_REFUEL = 1000001;
-static constexpr int MP_VEHICLE_MENU_ITEMS = 1000002;
-
 static void mp_run_vehicle_menu( const std::string &payload )
 {
     int generation = 0;
@@ -4042,14 +4039,17 @@ static void mp_run_vehicle_menu( const std::string &payload )
     menu.hilight_disabled = true;
     std::vector<std::string> client_actions;
     std::vector<std::string> actions;
+    std::vector<int> keys;
     try {
         JsonValue jv = json_loader::from_string( payload );
         JsonObject jo = jv.get_object();
         generation = jo.get_int( "generation" );
         int idx = 0;
         for( JsonObject e : jo.get_array( "entries" ) ) {
-            menu.addentry( uilist_entry( idx, e.get_bool( "enabled" ), MENU_AUTOASSIGN,
+            const int mp_hotkey = e.has_int( "key" ) ? e.get_int( "key" ) : MENU_AUTOASSIGN;
+            menu.addentry( uilist_entry( idx, e.get_bool( "enabled" ), mp_hotkey,
                                          e.get_string( "text" ), e.get_string( "desc" ) ) );
+            keys.push_back( mp_hotkey );
             client_actions.push_back( e.has_string( "client_action" ) ?
                                       e.get_string( "client_action" ) : std::string() );
             actions.push_back( e.has_string( "action" ) ? e.get_string( "action" ) : std::string() );
@@ -4074,8 +4074,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
             }
         }
         for( int i = 0; i < static_cast<int>( actions.size() ); ++i ) {
-            mp_inv_log( string_format( "vehicle menu row %d enabled=%d action=%s text=%s",
-                                       i, menu.entries[i].enabled ? 1 : 0,
+            mp_inv_log( string_format( "vehicle menu row %d enabled=%d key=%d action=%s text=%s",
+                                       i, menu.entries[i].enabled ? 1 : 0, keys[i],
                                        actions[i].c_str(),
                                        menu.entries[i].txt.c_str() ) );
         }
@@ -4110,12 +4110,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
         mp_inv_log( "vehicle menu received (test dismissed)" );
         return;
     }
-    // Host-only modal entries stay visible but disabled; these two are the
-    // client-side equivalents we already bridge.
-    menu.addentry( MP_VEHICLE_MENU_REFUEL, true, MENU_AUTOASSIGN,
-                   netplay::fork_text( "Refuel vehicle" ) );
-    menu.addentry( MP_VEHICLE_MENU_ITEMS, true, MENU_AUTOASSIGN,
-                   netplay::fork_text( "Get items" ) );
+    // The streamed rows are the host menu; no client-only extras are added so
+    // the function set and row order stay identical.
     mp_inv_log( string_format( "vehicle menu open gen=%d rows=%d",
                                generation, static_cast<int>( menu.entries.size() ) ) );
     {
@@ -4134,10 +4130,6 @@ static void mp_run_vehicle_menu( const std::string &payload )
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
         }
-    } else if( menu.ret == MP_VEHICLE_MENU_REFUEL ) {
-        netplay::client_send_intent( "vehicle_refuel", 0, {} );
-    } else if( menu.ret == MP_VEHICLE_MENU_ITEMS ) {
-        netplay::client_send_client_action( ACTION_PICKUP );
     }
 }
 
@@ -5584,6 +5576,17 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     // the mirror used to keep its default RIGHT even while walking left.
     get_avatar().facing = static_cast<FacingDirection>( snap.avatar_facing );
     get_avatar().controlling_vehicle = snap.avatar_controlling;
+    get_avatar().oxygen = snap.oxygen;
+    get_avatar().netplay_oxygen_max = snap.oxygen_max;
+    if( netplay::mp_diag_enabled() ) {
+        static int mp_oxy_log = 0;
+        if( mp_oxy_log < 5 ) {
+            ++mp_oxy_log;
+            mp_inv_log( string_format( "native: oxygen mirror=%d/%d host=%d/%d",
+                                       get_avatar().oxygen, get_avatar().get_oxygen_max(),
+                                       snap.oxygen, snap.oxygen_max ) );
+        }
+    }
     // DDA MP v4.0a-268: the stock vehicle widgets used to gate on u.in_vehicle
     // and then look for a vehicle object the mirror does not have. They now
     // read the streamed values whenever they are valid, so the mirror must NOT

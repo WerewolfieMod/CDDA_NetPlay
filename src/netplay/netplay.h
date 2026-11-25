@@ -408,6 +408,11 @@ struct snapshot {
     /// The session avatar is controlling a vehicle (the flag is avatar-only in
     /// the JSON, so an npc mirror never saw it).
     bool avatar_controlling = false;
+    /// DDA MP v4.0a-288: the viewer's oxygen and cap. Character::store already
+    /// carries oxygen, but the mirror's own stat-derived cap could differ, so
+    /// the sidebar's oxygen clause (max != value) disagreed with the host.
+    int oxygen = 0;
+    int oxygen_max = 0;
     /// DDA MP v4.0a-263: the host's vehicle sidebar values while the avatar is
     /// in a vehicle. The client mirror has no vehicle object, so the stock
     /// vehicle widgets/panels would stay empty without these.

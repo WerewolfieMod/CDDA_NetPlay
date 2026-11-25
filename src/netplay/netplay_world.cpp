@@ -51,6 +51,7 @@
 #include "item.h"
 #include "item_group.h"
 #include "itype.h"
+#include "input_context.h"
 #include "json.h"
 #include "json_loader.h"
 #include "lightmap.h"
@@ -1020,6 +1021,13 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.avatar_facing = static_cast<uint8_t>( viewer != nullptr ? viewer->facing : u.facing );
     out.avatar_controlling = viewer != nullptr ? viewer->controlling_vehicle :
                              u.controlling_vehicle;
+    {
+        const Character *mp_oxy = viewer != nullptr ?
+                                  static_cast<const Character *>( viewer ) :
+                                  static_cast<const Character *>( &u );
+        out.oxygen = mp_oxy->oxygen;
+        out.oxygen_max = mp_oxy->get_oxygen_max();
+    }
     // DDA MP v4.0a-263: host-side vehicle sidebar values. The client mirror
     // has no vehicle object, so the stock vehicle widgets would stay empty.
     out.has_vehicle_status = false;
@@ -2051,6 +2059,12 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
                     veh->is_locked = false;
                     veh->is_alarm_on = false;
                     here.board_vehicle( *spot, npc_ptr.get() );
+                    if( const char *test_oxy = std::getenv( "DDA_MP_TEST_OXYGEN" );
+                        test_oxy != nullptr && test_oxy[0] != '\0' ) {
+                        npc_ptr->oxygen = std::atoi( test_oxy );
+                        mp_ctrl_log( string_format( "test oxygen=%d max=%d", npc_ptr->oxygen,
+                                                    npc_ptr->get_oxygen_max() ) );
+                    }
                     mp_ctrl_log( string_format( "test golf spawned at %d,%d model=%s",
                                                 spot->x(), spot->y(), model.c_str() ) );
                 } else {
@@ -6410,9 +6424,25 @@ struct mp_vehicle_menu_data {
     std::vector<veh_menu_item> items;
 };
 
-static uint32_t mp_vehicle_menu_hash( const std::vector<veh_menu_item> &items )
+static int mp_vehicle_menu_key( const veh_menu_item &it )
 {
-    uint32_t h = 2166136261u;
+    if( it._hotkey_action.has_value() && !it._hotkey_action->empty() ) {
+        const std::vector<input_event> keys =
+            input_context( "VEHICLE" ).keys_bound_to( *it._hotkey_action,
+                    /* maximum_modifier_count = */ 1 );
+        if( !keys.empty() ) {
+            return keys.front().get_first_input();
+        }
+        return MENU_AUTOASSIGN;
+    }
+    if( it._hotkey_char.has_value() ) {
+        return static_cast<unsigned char>( it._hotkey_char.value() );
+    }
+    return MENU_AUTOASSIGN;
+}
+
+static uint32_t mp_vehicle_menu_hash( const std::vector<veh_menu_item> &items )
+{    uint32_t h = 2166136261u;
     const auto add = [&h]( const std::string & s ) {
         for( const unsigned char c : s ) {
             h ^= c;
@@ -6503,6 +6533,7 @@ static void mp_send_vehicle_menu( int sid, npc &av )
         js.member( "desc", desc );
         js.member( "enabled", enabled );
         js.member( "action", it._hotkey_action.value_or( "" ) );
+        js.member( "key", mp_vehicle_menu_key( it ) );
         if( client_handled ) {
             js.member( "client_action", client_action );
         }

@@ -1802,6 +1802,8 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     put_str( p, snap.weather );
     p.push_back( static_cast<char>( snap.avatar_facing ) );
     p.push_back( static_cast<char>( snap.avatar_controlling ? 1 : 0 ) );
+    put_i32( p, snap.oxygen );
+    put_i32( p, snap.oxygen_max );
     p.push_back( static_cast<char>( snap.has_vehicle_status ? 1 : 0 ) );
     if( snap.has_vehicle_status ) {
         put_str8( p, snap.veh_azimuth );
@@ -3680,6 +3682,8 @@ static void client_run( socket_t sock )
             snap.weather = r.get_str();
             snap.avatar_facing = r.get_u8();
             snap.avatar_controlling = r.get_u8() != 0;
+            snap.oxygen = r.get_i32();
+            snap.oxygen_max = r.get_i32();
             snap.has_vehicle_status = r.get_u8() != 0;
             if( snap.has_vehicle_status ) {
                 snap.veh_azimuth = r.get_str8();

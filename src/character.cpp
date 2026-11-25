@@ -646,6 +646,9 @@ int Character::count_threshold_substitute_traits() const
 
 int Character::get_oxygen_max() const
 {
+    if( netplay_oxygen_max >= 0 ) {
+        return netplay_oxygen_max;
+    }
     return 30 + ( has_bionic( bio_synlungs ) ? 30 : 2 * get_str() );
 }
 

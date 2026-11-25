@@ -2926,6 +2926,9 @@ class Character : public Creature, public visitable
         // Whether the character can recover their oxygen level
         bool can_recover_oxygen() const;
         int oxygen = 0;
+        /// DDA MP v4.0a-288: host-streamed oxygen cap for the client's avatar
+        /// mirror; -1 means compute from the mirror's own stats.
+        int netplay_oxygen_max = -1;
         int slow_rad = 0;
         blood_type my_blood_type;
         bool blood_rh_factor = false;
