@@ -149,7 +149,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
 | P1-1 | Схема команды: id, args, generation/epoch, actor, target, idempotency | `netplay.h`, schema | — | одна схема для host/client | DONE (`command_id`, args, generation, sid) |
-| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | PARTIAL (registry: help, vehicle control/menu/engine/info/parts/repair/refuel, suicide, sort_armor, movement_mode, zones, grab, haul, smash, reach_attack, use_winch, butcher, construct, workout, pick_style, default_ammo, recraft; остальные legacy) |
+| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | PARTIAL (registry: help, vehicle control/menu/engine/info/parts/repair/refuel, suicide, sort_armor, movement_mode, zones, grab, haul, smash, reach_attack, use_winch, butcher, construct, workout, pick_style, default_ammo, recraft, craft, spells, mission_journal; остальные legacy: autoattack/fire/missions/trade/dialogue) |
 | P1-3 | `CommandSink` на клиенте + wrappers | `netplay_ui.cpp` | P1-1 | UI вызывает sink, не пишет напрямую | TODO |
 | P1-4 | ACK/NACK/result/error model; таймауты/retry | protocol | P1-1 | клиент видит успех/ошибку | TODO |
 | P1-5 | Generation/epoch/revision; stale rejection | protocol | P1-1 | устаревшая команда не применяется | PARTIAL (exact duplicate drop by `command_id`; generation/revision legacy) |
@@ -499,6 +499,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-291 | P1-2: в registry перенесены vehicle control/menu/engine/info, suicide, sort_armor, movement_mode, zones, grab/grab-test, haul/autohaul | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-292 | P1-2: в registry перенесены smash, reach_attack, use_winch, butcher, construct, workout; legacy-блоки удалены | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-293 | P1-2: в registry перенесены vehicle parts/repair/refuel, pick_style, default_ammo, recraft | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
+| 2026-11-25 | ddamp-v4.0a-294 | P1-2: в registry перенесены craft/craft.all, test_spell_cast, cast_spell, mission_journal | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 
 ### 9.3. Что протестировано
 
@@ -511,6 +512,7 @@ JSON/mapgen:
 | 2026-11-25 | P1-2 | Registry batch: vehicle/simple actions after migration | сборка успешна; host/client прогон: `registry ok`, `rx snap tiles=1568`, соединение стабильно |
 | 2026-11-25 | P1-2 | Registry batch: smash/reach/winch/butcher/construct/workout | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P1-2 | Registry batch: vehicle parts/repair/refuel, pick_style, default_ammo, recraft | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
+| 2026-11-25 | P1-2 | Registry batch: craft, spells, mission_journal | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 
 ### 9.4. Следующие 5 задач
 

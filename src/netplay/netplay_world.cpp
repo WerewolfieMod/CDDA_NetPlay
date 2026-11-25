@@ -7740,6 +7740,108 @@ static bool mp_cmd_recraft( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_craft( const netplay::intent_request &in )
+{
+    if( in.data.empty() ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const recipe_id rid( in.data );
+    if( !rid.is_valid() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "Unknown recipe." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    const int batch = in.args.empty() ? 1 : std::max( 1, in.args[0] );
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    if( in.action == "craft.all" ) {
+        av->make_all_craft( rid, batch, std::nullopt );
+    } else {
+        av->make_craft( rid, batch );
+    }
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    mp_forward_new_messages( in.sid, msg_before );
+    g->mp_anchor_map_on( get_avatar() );
+    return true;
+}
+
+static bool mp_cmd_test_spell_cast( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        const spell_id id( "bio_nl_antigravity_jump_spell" );
+        if( id.is_valid() ) {
+            av->magic->learn_spell( id, *av, true );
+            spell &sp = av->magic->get_spell( id );
+            const tripoint_bub_ms target =
+                av->pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+            const bool ok = av->cast_spell(
+                                sp, false,
+                                std::optional<tripoint_bub_ms>( target ) );
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "test spell cast sid=%d id=%s ok=%d\n",
+                              in.sid, id.str().c_str(), ok ? 1 : 0 );
+                std::fclose( f );
+            }
+            av_mark_acted( in.sid );
+            av_send_status( in.sid );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_cast_spell( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 || in.data.empty() ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const spell_id id( in.data );
+    if( !id.is_valid() || !av->magic->knows_spell( id ) ) {
+        netplay::host_send_event_fmt_to_sid(
+            in.sid, "You don't know that spell.", {},
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    spell &sp = av->magic->get_spell( id );
+    const tripoint_bub_ms target =
+        av->pos_bub() + tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    const std::vector<tripoint_bub_ms> valid =
+        sp.targetable_locations( *av );
+    if( target != av->pos_bub() &&
+        std::find( valid.begin(), valid.end(), target ) == valid.end() ) {
+        netplay::host_send_event_fmt_to_sid(
+            in.sid, "Invalid target.", {},
+            static_cast<int>( m_info ) );
+    } else if( av->cast_spell( sp, false,
+                               std::optional<tripoint_bub_ms>( target ) ) ) {
+        av_mark_acted( in.sid );
+        av_send_status( in.sid );
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "spell cast sid=%d id=%s dx=%d dy=%d\n",
+                          in.sid, id.str().c_str(), in.args[0], in.args[1] );
+            std::fclose( f );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_mission_journal( const netplay::intent_request &in )
+{
+    mp_send_mission_journal( in.sid );
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -7813,6 +7915,11 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "pick_style", mp_cmd_pick_style );
         r.emplace( "default_ammo", mp_cmd_default_ammo );
         r.emplace( "recraft", mp_cmd_recraft );
+        r.emplace( "craft", mp_cmd_craft );
+        r.emplace( "craft.all", mp_cmd_craft );
+        r.emplace( "test_spell_cast", mp_cmd_test_spell_cast );
+        r.emplace( "cast_spell", mp_cmd_cast_spell );
+        r.emplace( "mission_journal", mp_cmd_mission_journal );
         return r;
     }();
     return registry;
@@ -7845,33 +7952,7 @@ void host_pump_intents()
             it->second( in );
             continue;
         }
-        // DDA MP v4.0a-131: crafting recipe chosen in the client's own UI.
-        if( ( in.action == "craft" || in.action == "craft.all" ) && !in.data.empty() ) {
-            npc *av = av_session_npc( in.sid );
-            const recipe_id rid( in.data );
-            if( av == nullptr ) {
-                continue;
-            }
-            if( !rid.is_valid() ) {
-                netplay::host_send_event_to_sid(
-                    in.sid, netplay::fork_text( "Unknown recipe." ), static_cast<int>( m_info ) );
-            } else {
-                const int batch = in.args.empty() ? 1 : std::max( 1, in.args[0] );
-                g->mp_anchor_map_on( *av, true );
-                const std::size_t msg_before = Messages::generation();
-                if( in.action == "craft.all" ) {
-                    av->make_all_craft( rid, batch, std::nullopt );
-                } else {
-                    av->make_craft( rid, batch );
-                }
-                av_mark_acted( in.sid );
-                av_send_status( in.sid );
-                av_send_session_picture( in.sid, av->pos_bub(), av );
-                mp_forward_new_messages( in.sid, msg_before );
-                g->mp_anchor_map_on( get_avatar() );
-            }
-            continue;
-        }
+
         // DDA MP v4.0a-212: autoattack from the client. avatar_action::autoattack()
         // only takes an avatar, so the host repeats its target selection with
         // Character-level calls.
@@ -8001,65 +8082,6 @@ void host_pump_intents()
                         std::fprintf( f, "autoattack sid=%d targets=%d\n", in.sid,
                                       target_count );
                         std::fclose( f );
-                    }
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-210: test-only spell cast for a world without spell data.
-        if( in.action == "test_spell_cast" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const spell_id id( "bio_nl_antigravity_jump_spell" );
-                if( id.is_valid() ) {
-                    av->magic->learn_spell( id, *av, true );
-                    spell &sp = av->magic->get_spell( id );
-                    const tripoint_bub_ms target =
-                        av->pos_bub() + tripoint_rel_ms( 1, 0, 0 );
-                    const bool ok = av->cast_spell(
-                                        sp, false,
-                                        std::optional<tripoint_bub_ms>( target ) );
-                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                        std::fprintf( f, "test spell cast sid=%d id=%s ok=%d\n",
-                                      in.sid, id.str().c_str(), ok ? 1 : 0 );
-                        std::fclose( f );
-                    }
-                    av_mark_acted( in.sid );
-                    av_send_status( in.sid );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-210: cast a spell at an explicit client cursor target.
-        if( in.action == "cast_spell" && in.args.size() >= 2 && !in.data.empty() ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const spell_id id( in.data );
-                if( !id.is_valid() || !av->magic->knows_spell( id ) ) {
-                    netplay::host_send_event_fmt_to_sid(
-                        in.sid, "You don't know that spell.", {},
-                        static_cast<int>( m_info ) );
-                } else {
-                    spell &sp = av->magic->get_spell( id );
-                    const tripoint_bub_ms target =
-                        av->pos_bub() + tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                    const std::vector<tripoint_bub_ms> valid =
-                        sp.targetable_locations( *av );
-                    if( target != av->pos_bub() &&
-                        std::find( valid.begin(), valid.end(), target ) == valid.end() ) {
-                        netplay::host_send_event_fmt_to_sid(
-                            in.sid, "Invalid target.", {},
-                            static_cast<int>( m_info ) );
-                    } else if( av->cast_spell( sp, false,
-                                               std::optional<tripoint_bub_ms>( target ) ) ) {
-                        av_mark_acted( in.sid );
-                        av_send_status( in.sid );
-                        av_send_session_picture( in.sid, av->pos_bub(), av );
-                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                            std::fprintf( f, "spell cast sid=%d id=%s dx=%d dy=%d\n",
-                                          in.sid, id.str().c_str(), in.args[0], in.args[1] );
-                            std::fclose( f );
-                        }
                     }
                 }
             }
@@ -8233,10 +8255,6 @@ void host_pump_intents()
                     }
                 }
             }
-            continue;
-        }
-        if( in.action == "mission_journal" ) {
-            mp_send_mission_journal( in.sid );
             continue;
         }
         // DDA MP v4.0a-193: custom barter. Lists are built by the host with
