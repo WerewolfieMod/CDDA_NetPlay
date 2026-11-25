@@ -7842,6 +7842,188 @@ static bool mp_cmd_mission_journal( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_autoattack( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || av->is_dead() ) {
+        return true;
+    }
+    map &here = get_map();
+    g->mp_anchor_map_on( *av, true );
+    static const json_character_flag cannot_attack( "CANNOT_ATTACK" );
+    if( av->has_flag( cannot_attack ) ) {
+        netplay::host_send_event_fmt_to_sid(
+            in.sid, "You are incapable of attacking!", {},
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    const item_location weapon = av->get_wielded_item();
+    const int reach = weapon ? weapon->reach_range( *av ).first : 1;
+    std::vector<Creature *> critters =
+        av->get_targetable_creatures( reach, true );
+    critters.erase( std::remove_if( critters.begin(), critters.end(),
+    [av, reach]( const Creature * c ) {
+        if( reach == 1 && !av->is_adjacent( c, true ) ) {
+            return true;
+        }
+        if( !av->can_reach_attack( *c ) ) {
+            return true;
+        }
+        if( !c->is_npc() ) {
+            return false;
+        }
+        return !dynamic_cast<const npc &>( *c ).is_enemy();
+    } ), critters.end() );
+    const int target_count = static_cast<int>( critters.size() );
+    if( critters.empty() ) {
+        netplay::host_send_event_fmt_to_sid(
+            in.sid, "No hostile creature in reach.  Waiting a turn.", {},
+            static_cast<int>( m_info ) );
+        if( g->check_safe_mode_allowed() ) {
+            av->pause();
+        }
+        av_move_pool[in.sid] = 0;
+        av->set_moves( 0 );
+        av_mark_acted( in.sid );
+    } else {
+        const auto rate = []( const Creature & c ) -> float {
+            if( const npc *np = dynamic_cast<const npc *>( &c ) ) {
+                if( item_location w = np->get_wielded_item() ) {
+                    return np->evaluate_weapon( *w );
+                }
+                return np->unarmed_value();
+            }
+            if( const monster *mon = dynamic_cast<const monster *>( &c ) ) {
+                return mon->type->get_total_difficulty();
+            }
+            return 0.0f;
+        };
+        Creature &best = **std::max_element(
+                              critters.begin(), critters.end(),
+        [&rate]( const Creature * l, const Creature * r ) {
+            return rate( *l ) > rate( *r );
+        } );
+        const tripoint_rel_ms diff = best.pos_bub() - av->pos_bub();
+        const bool adjacent = std::abs( diff.x() ) <= 1 &&
+                              std::abs( diff.y() ) <= 1 && diff.z() == 0;
+        const int hp_before = best.is_dead_state() ? 0 : best.get_hp();
+        const std::size_t atk_msg_before = Messages::generation();
+        bool did_attack = false;
+        if( adjacent ) {
+            av->melee_attack( best, true );
+            did_attack = true;
+            monster *mon = dynamic_cast<monster *>( &best );
+            if( mon != nullptr && mon->is_hallucination() &&
+                !mon->is_dead_state() ) {
+                mon->die( &here, av );
+            }
+        } else if( weapon && !av->used_weapon() &&
+                   !weapon->is_gun() ) {
+            netplay::host_send_event_fmt_to_sid(
+                in.sid,
+                "You can't use reach attacks while forcing "
+                "yourself to fight unarmed.", {},
+                static_cast<int>( m_info ) );
+        } else {
+            av->reach_attack( best.pos_bub() );
+            did_attack = true;
+        }
+        if( did_attack ) {
+            const std::size_t atk_new = Messages::generation() - atk_msg_before;
+            if( atk_new > 0 ) {
+                Messages::remove_last( std::min( atk_new, Messages::size() ) );
+            }
+            const bool dead = best.is_dead_state();
+            const int hp_after = dead ? 0 : best.get_hp();
+            if( dead ) {
+                netplay::host_send_event_fmt_to_sid(
+                    in.sid, "The %s dies!", { mp_creature_arg( &best ) },
+                    static_cast<int>( m_good ) );
+            } else if( hp_after < hp_before ) {
+                netplay::host_send_event_fmt_to_sid(
+                    in.sid, "You hit %1$s for %2$d damage.",
+                    { mp_creature_arg( &best ),
+                      std::to_string( hp_before - hp_after ) },
+                    static_cast<int>( m_good ) );
+            } else {
+                netplay::host_send_event_to_sid(
+                    in.sid, netplay::fork_text( "You miss." ),
+                    static_cast<int>( m_info ) );
+            }
+        }
+    }
+    if( !av->is_dead() ) {
+        av_mark_acted( in.sid );
+    }
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "autoattack sid=%d targets=%d\n", in.sid,
+                      target_count );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_fire( const netplay::intent_request &in )
+{
+    if( in.args.size() < 3 ) {
+        return true;
+    }
+    shared_ptr_fast<npc> npc_ptr;
+    const auto sid_it = av_sid_to_npc.find( in.sid );
+    if( sid_it != av_sid_to_npc.end() ) {
+        npc_ptr = av_find_npc( sid_it->second );
+    }
+    if( !npc_ptr || !av_npc_alive( npc_ptr ) ) {
+        return true;
+    }
+    npc *av = npc_ptr.get();
+    g->mp_anchor_map_on( *av, true );
+    const tripoint_bub_ms from = av->pos_bub();
+    const tripoint_bub_ms tgt = from + tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    const int shots = std::max( 1, in.args[2] );
+    const item_location gun = av->get_wielded_item();
+    if( gun && gun->is_gun() ) {
+        const std::size_t msg_before = Messages::generation();
+        av->fire_gun( tgt, shots );
+        av_move_pool[in.sid] = std::max( 0, av->get_moves() );
+        av->set_moves( av_move_pool[in.sid] );
+        av_mark_acted( in.sid );
+        if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) &&
+            !netplay::long_wait_active() ) {
+            av_waiting_for_turn[in.sid] = true;
+            netplay::host_send_hover_to_sid(
+                in.sid, netplay::fork_text( "Waiting for other players..." ) );
+        } else {
+            netplay::host_send_hover_to_sid( in.sid, "" );
+        }
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+        mp_forward_new_messages( in.sid, msg_before );
+    } else {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You are not wielding a gun." ),
+            static_cast<int>( m_info ) );
+    }
+    g->mp_anchor_map_on( get_avatar() );
+    return true;
+}
+
+static bool mp_cmd_chat( const netplay::intent_request &in )
+{
+    if( in.data.empty() ) {
+        return true;
+    }
+    std::string nick = host_session_name( in.sid );
+    if( nick.empty() ) {
+        nick = "player";
+    }
+    const std::string line = string_format( "%s: %s", nick, in.data );
+    host_broadcast_event( line, static_cast<int>( m_info ) );
+    add_msg( "%s", line );
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -7920,6 +8102,9 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_spell_cast", mp_cmd_test_spell_cast );
         r.emplace( "cast_spell", mp_cmd_cast_spell );
         r.emplace( "mission_journal", mp_cmd_mission_journal );
+        r.emplace( "autoattack", mp_cmd_autoattack );
+        r.emplace( "fire", mp_cmd_fire );
+        r.emplace( "chat", mp_cmd_chat );
         return r;
     }();
     return registry;
@@ -7956,137 +8141,6 @@ void host_pump_intents()
         // DDA MP v4.0a-212: autoattack from the client. avatar_action::autoattack()
         // only takes an avatar, so the host repeats its target selection with
         // Character-level calls.
-        if( in.action == "autoattack" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr && !av->is_dead() ) {
-                map &here = get_map();
-                g->mp_anchor_map_on( *av, true );
-                static const json_character_flag cannot_attack( "CANNOT_ATTACK" );
-                if( av->has_flag( cannot_attack ) ) {
-                    netplay::host_send_event_fmt_to_sid(
-                        in.sid, "You are incapable of attacking!", {},
-                        static_cast<int>( m_info ) );
-                } else {
-                    const item_location weapon = av->get_wielded_item();
-                    const int reach = weapon ? weapon->reach_range( *av ).first : 1;
-                    std::vector<Creature *> critters =
-                        av->get_targetable_creatures( reach, true );
-                    critters.erase( std::remove_if( critters.begin(), critters.end(),
-                    [av, reach]( const Creature * c ) {
-                        if( reach == 1 && !av->is_adjacent( c, true ) ) {
-                            return true;
-                        }
-                        if( !av->can_reach_attack( *c ) ) {
-                            return true;
-                        }
-                        if( !c->is_npc() ) {
-                            return false;
-                        }
-                        return !dynamic_cast<const npc &>( *c ).is_enemy();
-                    } ), critters.end() );
-                    const int target_count = static_cast<int>( critters.size() );
-                    if( critters.empty() ) {
-                        netplay::host_send_event_fmt_to_sid(
-                            in.sid, "No hostile creature in reach.  Waiting a turn.", {},
-                            static_cast<int>( m_info ) );
-                        if( g->check_safe_mode_allowed() ) {
-                            av->pause();
-                        }
-                        // DDA MP v4.0a-262/278: autoattack with no target must
-                        // pass the turn like the host. The avatar's netplay
-                        // move pool is authoritative for the round gate; the
-                        // engine pause alone left the client's pool full, so
-                        // the host never considered the round finished. Mark
-                        // the order too: host_turn_blocked() also checks it,
-                        // otherwise TAB only clears the pool wait but not the
-                        // acted gate.
-                        av_move_pool[in.sid] = 0;
-                        av->set_moves( 0 );
-                        av_mark_acted( in.sid );
-                    } else {
-                        const auto rate = []( const Creature & c ) -> float {
-                            if( const npc *np = dynamic_cast<const npc *>( &c ) ) {
-                                if( item_location w = np->get_wielded_item() ) {
-                                    return np->evaluate_weapon( *w );
-                                }
-                                return np->unarmed_value();
-                            }
-                            if( const monster *mon = dynamic_cast<const monster *>( &c ) ) {
-                                return mon->type->get_total_difficulty();
-                            }
-                            return 0.0f;
-                        };
-                        Creature &best = **std::max_element(
-                                              critters.begin(), critters.end(),
-                        [&rate]( const Creature * l, const Creature * r ) {
-                            return rate( *l ) > rate( *r );
-                        } );
-                        const tripoint_rel_ms diff = best.pos_bub() - av->pos_bub();
-                        const bool adjacent = std::abs( diff.x() ) <= 1 &&
-                                              std::abs( diff.y() ) <= 1 && diff.z() == 0;
-                        // DDA MP v4.0a-244: the engine's own attack lines are
-                        // written for the host's player and are not relayed for
-                        // an NPC attacker; send the first-person result here.
-                        const int hp_before = best.is_dead_state() ? 0 : best.get_hp();
-                        const std::size_t atk_msg_before = Messages::generation();
-                        bool did_attack = false;
-                        if( adjacent ) {
-                            av->melee_attack( best, true );
-                            did_attack = true;
-                            monster *mon = dynamic_cast<monster *>( &best );
-                            if( mon != nullptr && mon->is_hallucination() &&
-                                !mon->is_dead_state() ) {
-                                mon->die( &here, av );
-                            }
-                        } else if( weapon && !av->used_weapon() &&
-                                   !weapon->is_gun() ) {
-                            netplay::host_send_event_fmt_to_sid(
-                                in.sid,
-                                "You can't use reach attacks while forcing "
-                                "yourself to fight unarmed.", {},
-                                static_cast<int>( m_info ) );
-                        } else {
-                            av->reach_attack( best.pos_bub() );
-                            did_attack = true;
-                        }
-                        if( did_attack ) {
-                            const std::size_t atk_new = Messages::generation() - atk_msg_before;
-                            if( atk_new > 0 ) {
-                                Messages::remove_last( std::min( atk_new, Messages::size() ) );
-                            }
-                            const bool dead = best.is_dead_state();
-                            const int hp_after = dead ? 0 : best.get_hp();
-                            if( dead ) {
-                                netplay::host_send_event_fmt_to_sid(
-                                    in.sid, "The %s dies!", { mp_creature_arg( &best ) },
-                                    static_cast<int>( m_good ) );
-                            } else if( hp_after < hp_before ) {
-                                netplay::host_send_event_fmt_to_sid(
-                                    in.sid, "You hit %1$s for %2$d damage.",
-                                    { mp_creature_arg( &best ),
-                                      std::to_string( hp_before - hp_after ) },
-                                    static_cast<int>( m_good ) );
-                            } else {
-                                netplay::host_send_event_to_sid(
-                                    in.sid, netplay::fork_text( "You miss." ),
-                                    static_cast<int>( m_info ) );
-                            }
-                        }
-                    }
-                    if( !av->is_dead() ) {
-                        av_mark_acted( in.sid );
-                    }
-                    av_send_status( in.sid );
-                    av_send_session_picture( in.sid, av->pos_bub(), av );
-                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                        std::fprintf( f, "autoattack sid=%d targets=%d\n", in.sid,
-                                      target_count );
-                        std::fclose( f );
-                    }
-                }
-            }
-            continue;
-        }
         // DDA MP v4.0a-174: help with another player's long activity.
         // DDA MP v4.0a-191: per-session mission ledger. The client lists the
         // NPC's unassigned missions, accepts one with the index, and can open
@@ -8448,55 +8502,7 @@ void host_pump_intents()
 
         // DDA MP v4.0a-121: ranged fire. The client picked the target with the
         // stock cursor; the host resolves the shot on the session avatar.
-        if( in.action == "fire" && in.args.size() >= 3 ) {
-            shared_ptr_fast<npc> npc_ptr;
-            const auto sid_it = av_sid_to_npc.find( in.sid );
-            if( sid_it != av_sid_to_npc.end() ) {
-                npc_ptr = av_find_npc( sid_it->second );
-            }
-            if( npc_ptr && av_npc_alive( npc_ptr ) ) {
-                npc *av = npc_ptr.get();
-                g->mp_anchor_map_on( *av, true );
-                const tripoint_bub_ms from = av->pos_bub();
-                const tripoint_bub_ms tgt = from + tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                const int shots = std::max( 1, in.args[2] );
-                const item_location gun = av->get_wielded_item();
-                if( gun && gun->is_gun() ) {
-                    const std::size_t msg_before = Messages::generation();
-                    av->fire_gun( tgt, shots );
-                    av_move_pool[in.sid] = std::max( 0, av->get_moves() );
-                    av->set_moves( av_move_pool[in.sid] );
-                    av_mark_acted( in.sid );
-                    if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) &&
-                        !netplay::long_wait_active() ) {
-                        av_waiting_for_turn[in.sid] = true;
-                        netplay::host_send_hover_to_sid( in.sid,
-                                                         netplay::fork_text( "Waiting for other players..." ) );
-                    } else {
-                        netplay::host_send_hover_to_sid( in.sid, "" );
-                    }
-                    av_send_session_picture( in.sid, av->pos_bub(), av );
-                    mp_forward_new_messages( in.sid, msg_before );
-                } else {
-                    netplay::host_send_event_to_sid(
-                        in.sid, netplay::fork_text( "You are not wielding a gun." ),
-                        static_cast<int>( m_info ) );
-                }
-                g->mp_anchor_map_on( get_avatar() );
-            }
-            continue;
-        }
-        // DDA MP v4.0a-137: player chat, broadcast to every session.
-        if( in.action == "chat" && !in.data.empty() ) {
-            std::string nick = host_session_name( in.sid );
-            if( nick.empty() ) {
-                nick = "player";
-            }
-            const std::string line = string_format( "%s: %s", nick, in.data );
-            host_broadcast_event( line, static_cast<int>( m_info ) );
-            add_msg( "%s", line );
-            continue;
-        }
+
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
             std::fprintf( f, "intent unhandled sid=%d action=%s args=%d\n",
                           in.sid, in.action.c_str(), static_cast<int>( in.args.size() ) );
