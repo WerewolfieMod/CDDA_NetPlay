@@ -8770,6 +8770,13 @@ void run_view_loop()
                         netplay::client_send_intent( "haul_toggle", 0, {} );
                     } else if( action_name == "vehicle_info" ) {
                         netplay::client_send_intent( "vehicle_info", 0, {} );
+                    } else if( action_name == "vehicle_rename" ) {
+                        if( get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            netplay::client_send_intent( "vehicle_rename", 0, {},
+                                                         "Netplay Test Car" );
+                        } else {
+                            sent = false;
+                        }
                     } else if( action_name == "vehicle_refuel" ) {
                         netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
                     } else if( action_name == "vehicle_parts" ) {

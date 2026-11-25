@@ -7252,6 +7252,48 @@ static bool mp_cmd_vehicle_engine_menu( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_vehicle_rename( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    if( const optional_vpart_position vp = get_map().veh_at( av->pos_bub() ) ) {
+        vp->vehicle().name = in.data;
+        if( vp->vehicle().tracking_on ) {
+            overmap_buffer.remove_vehicle( &vp->vehicle() );
+            overmap_buffer.add_vehicle( &vp->vehicle() );
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "vehicle rename sid=%d name=%s\n", in.sid, in.data.c_str() );
+            std::fclose( f );
+        }
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_relabel( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.empty() ) {
+        return true;
+    }
+    if( const optional_vpart_position vp = get_map().veh_at( av->pos_bub() ) ) {
+        const int idx = in.args[0];
+        if( idx >= 0 && idx < vp->vehicle().part_count() ) {
+            vpart_position( vp->vehicle(), idx ).set_label( in.data );
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "vehicle relabel sid=%d part=%d label=%s\n",
+                              in.sid, idx, in.data.c_str() );
+                std::fclose( f );
+            }
+            av_send_session_picture( in.sid, av->pos_bub(), av );
+        }
+    }
+    return true;
+}
+
 static bool mp_cmd_vehicle_info( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -8473,6 +8515,8 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
             return true;
         } );
         r.emplace( "vehicle_info", mp_cmd_vehicle_info );
+        r.emplace( "vehicle_rename", mp_cmd_vehicle_rename );
+        r.emplace( "vehicle_relabel", mp_cmd_vehicle_relabel );
         r.emplace( "suicide", mp_cmd_suicide );
         r.emplace( "sort_armor", mp_cmd_sort_armor );
         r.emplace( "movement_mode", mp_cmd_movement_mode );

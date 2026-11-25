@@ -619,7 +619,11 @@ void veh_interact::do_main_loop( map &here )
             }
         } else if( action == "RENAME" ) {
             if( mp_client_mirror_vehicle() ) {
-                popup( _( "Renaming is not available on the netplay client yet." ) );
+                string_input_popup_imgui popup( 34, veh->name, _( "Enter new vehicle name:" ) );
+                const std::string name = popup.query();
+                if( !name.empty() ) {
+                    netplay::client_send_intent( "vehicle_rename", 0, {}, name );
+                }
             } else if( owned_by_player ) {
                 do_rename();
             } else {
@@ -666,7 +670,16 @@ void veh_interact::do_main_loop( map &here )
             }
         } else if( action == "RELABEL" ) {
             if( mp_client_mirror_vehicle() ) {
-                popup( _( "Relabeling is not available on the netplay client yet." ) );
+                if( cpart >= 0 ) {
+                    const vpart_position vp( *veh, cpart );
+                    string_input_popup_imgui popup(
+                        34, vp.get_label().value_or( "" ), _( "New label:" ) );
+                    const std::string text = popup.query();
+                    if( !popup.cancelled() ) {
+                        netplay::client_send_intent( "vehicle_relabel", 0,
+                                                     { cpart }, text );
+                    }
+                }
             } else if( owned_by_player ) {
                 do_relabel( here );
             } else {
