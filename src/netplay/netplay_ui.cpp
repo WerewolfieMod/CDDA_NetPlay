@@ -5595,7 +5595,10 @@ static void mp_native_apply_vehicle_json( const snapshot &snap )
         return;
     }
     const tripoint_abs_ms host_veh( snap.veh_ax, snap.veh_ay, snap.veh_az );
-    const tripoint_abs_ms host_viewer( snap.veh_ox, snap.veh_oy, snap.veh_oz );
+    const tripoint_abs_ms host_viewer =
+        ( snap.veh_ox != 0 || snap.veh_oy != 0 || snap.veh_oz != 0 ) ?
+        tripoint_abs_ms( snap.veh_ox, snap.veh_oy, snap.veh_oz ) :
+        tripoint_abs_ms( snap.origin_x, snap.origin_y, snap.origin_z );
     const tripoint_abs_ms mirror_abs =
         get_avatar().pos_abs() + ( host_veh - host_viewer );
     const tripoint_abs_sm vsm = project_to<coords::sm>( mirror_abs );

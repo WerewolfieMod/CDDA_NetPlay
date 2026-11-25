@@ -3750,18 +3750,22 @@ static void client_run( socket_t sock )
             static int mp_veh_ox_cache = 0;
             static int mp_veh_oy_cache = 0;
             static int mp_veh_oz_cache = 0;
-            if( snap.has_vehicle_info ) {
-                if( snap.vehicle_json.empty() ) {
-                    mp_veh_json_cache.clear();
-                } else {
-                    mp_veh_json_cache = snap.vehicle_json;
-                    mp_veh_ax_cache = snap.veh_ax;
-                    mp_veh_ay_cache = snap.veh_ay;
-                    mp_veh_az_cache = snap.veh_az;
-                    mp_veh_ox_cache = snap.origin_x;
-                    mp_veh_oy_cache = snap.origin_y;
-                    mp_veh_oz_cache = snap.origin_z;
-                }
+            if( !snap.vehicle_json.empty() ) {
+                // Authoritative session payload (or a merged cache frame):
+                // remember the session origin that belongs to this JSON.
+                mp_veh_json_cache = snap.vehicle_json;
+                mp_veh_ax_cache = snap.veh_ax;
+                mp_veh_ay_cache = snap.veh_ay;
+                mp_veh_az_cache = snap.veh_az;
+                mp_veh_ox_cache = snap.origin_x;
+                mp_veh_oy_cache = snap.origin_y;
+                mp_veh_oz_cache = snap.origin_z;
+                snap.veh_ox = snap.origin_x;
+                snap.veh_oy = snap.origin_y;
+                snap.veh_oz = snap.origin_z;
+                snap.has_vehicle_info = true;
+            } else if( snap.has_vehicle_info ) {
+                mp_veh_json_cache.clear();
                 snap.veh_ox = snap.origin_x;
                 snap.veh_oy = snap.origin_y;
                 snap.veh_oz = snap.origin_z;
