@@ -165,7 +165,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | P2-1 | Дополнить character mirror: moves/view_offset/avatar-only/state | `netplay_ui.cpp` | P1-1 | sidebar/UI видят те же значения | TODO |
 | P2-2 | Полное map/submap-зеркало: terrain/furniture/traps/fields/memory | client mirror | P2-9 | `map` пригоден для UI | TODO |
 | P2-3 | Полные items: contents/ammo/rot/ownership/color/variant/uid/deltas | item serializer | P2-2 | item UI/actions точны | TODO |
-| P2-4 | Полные vehicles: serialize/deserialize, parts/tools/cargo/crew/labels/doors | `vehicle` JSON | P2-2 | `veh_interact` работает | PARTIAL (snapshot vehicle JSON + 91-part mirror object; `veh_at` cache mismatch) |
+| P2-4 | Полные vehicles: serialize/deserialize, parts/tools/cargo/crew/labels/doors | `vehicle` JSON | P2-2 | `veh_interact` работает | DONE (vehicle JSON mirror, 91 parts, `veh_at=1`; native UI — P3-4) |
 | P2-5 | Creatures: NPC/monster mirror, appearance/equipment/effects/visibility | creature JSON | P2-2 | существа и их UI совпадают | TODO |
 | P2-6 | Calendar/weather: turn/type/intensity/temp/wind | snapshot | — | погода/время/виджеты | TODO |
 | P2-7 | Overmap: known/seen, cities/roads/specials/notes/markers/tracking | overmap | P2-2 | overmap UI пригоден | TODO |
@@ -507,6 +507,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-298 | P2-4 WIP: снапшот несёт полный `vehicle_json` + абсолютную позицию; клиент собирает `vehicle` (91 часть) из пустого прототипа; broadcast-кадры больше не затирают зеркало | host отправляет JSON ~50 КБ; клиент: `vehicle: mirror applied parts=91`; `veh_at` пока 0 |
 | 2026-11-25 | ddamp-v4.0a-299 | P2-4 WIP: кэш vehicle JSON по session-origin, fallback-создание submap, empty-prototype deserialize; добавлена диагностика `veh_at` | автономные прогоны приостановлены по просьбе; сборка проверяется отдельно |
 | 2026-11-25 | ddamp-v4.0a-300 | P2-4: origin для `vehicle_json` всегда берётся из session-кадра/кэша; fallback на `snap.origin`, если `veh_ox/oy/oz` нулевые | сборка успешна; автономный тест не запускался |
+| 2026-11-25 | ddamp-v4.0a-301 | P2-4 подтверждён: клиент собирает реальный `vehicle` из JSON (91 часть) и `veh_at(avatar)` возвращает 1 | `vehicle: mirror applied parts=91 pos=... veh_at=1` |
 
 ### 9.3. Что протестировано
 
@@ -526,14 +527,15 @@ JSON/mapgen:
 | 2026-11-25 | P2-4 | Vehicle JSON mirror (`test_vehicle_refuel` + `DDA_MP_TEST_SPAWN_CAR=1`) | host JSON ~50 КБ; client `vehicle: mirror applied parts=91`; `veh_at` пока 0 (координатный/кэш-дефект) |
 | 2026-11-25 | P2-4 | WIP submap/cache fixes | автономный прогон не выполнялся по просьбе; нужен следующий тест после фикса координат |
 | 2026-11-25 | P2-4 | Vehicle origin fallback + session cache | сборка успешна; ожидается `veh_at=1` после следующего разрешённого прогона |
+| 2026-11-25 | P2-4 | Vehicle JSON mirror (`test_vehicle_refuel` + spawn car) | `vehicle: mirror applied parts=91 pos=3810,3368 z0 veh_at=1`; host/client стабильны |
 
 ### 9.4. Следующие 5 задач
 
-1. P2-4: полное vehicle-зеркало (serialize/deserialize частей, cargo, tools).
-2. P3-4: native `veh_interact` на зеркале.
-3. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
-4. P4-1/P4-6: полировка native sidebar/layout (наложения панелей).
-5. P7-1: валидаторы для control vehicle/fire/NPC.
+1. P3-4: native `veh_interact` на зеркальном vehicle.
+2. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
+3. P4-1/P4-6: полировка native sidebar/layout (наложения панелей).
+4. P7-1: валидаторы для control vehicle/fire/NPC.
+5. P6-1/P6-2: manifest версий модов/данных и handshake.
 
 ---
 
