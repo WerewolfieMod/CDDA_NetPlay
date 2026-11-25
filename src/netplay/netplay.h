@@ -653,6 +653,9 @@ constexpr int EVENT_ZONES = 211;
 /// The client shows it and sends vehicle_menu_select with the generation and
 /// row index; the host rebuilds the same menu and runs that entry's callback.
 constexpr int EVENT_VEHICLE_MENU = 212;
+/// DDA MP v4.0a-287: host engine configuration submenu. Payload JSON
+/// {"generation":N,"rows":[{"text","enabled"},...]}.
+constexpr int EVENT_VEHICLE_ENGINE_MENU = 213;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to

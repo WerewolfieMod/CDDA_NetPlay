@@ -4095,6 +4095,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 netplay::client_send_intent( "vehicle_parts", 0, {} );
             } else if( client_actions[i] == "items" ) {
                 netplay::client_send_client_action( ACTION_PICKUP );
+            } else if( client_actions[i] == "engines" ) {
+                netplay::client_send_intent( "vehicle_engine_menu", 0, {} );
             } else {
                 netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
             }
@@ -4127,6 +4129,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
             netplay::client_send_intent( "vehicle_parts", 0, {} );
         } else if( ca == "items" ) {
             netplay::client_send_client_action( ACTION_PICKUP );
+        } else if( ca == "engines" ) {
+            netplay::client_send_intent( "vehicle_engine_menu", 0, {} );
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
         }
@@ -4134,6 +4138,59 @@ static void mp_run_vehicle_menu( const std::string &payload )
         netplay::client_send_intent( "vehicle_refuel", 0, {} );
     } else if( menu.ret == MP_VEHICLE_MENU_ITEMS ) {
         netplay::client_send_client_action( ACTION_PICKUP );
+    }
+}
+
+/* DDA MP v4.0a-287: engine configuration rows streamed by the host. */
+static void mp_run_vehicle_engine_menu( const std::string &payload )
+{
+    int generation = 0;
+    uilist menu;
+    menu.title = _( "Toggle which?" );
+    try {
+        JsonValue jv = json_loader::from_string( payload );
+        JsonObject jo = jv.get_object();
+        generation = jo.get_int( "generation" );
+        int idx = 0;
+        for( JsonObject e : jo.get_array( "rows" ) ) {
+            menu.addentry( uilist_entry( idx, e.get_bool( "enabled" ), MENU_AUTOASSIGN,
+                                         e.get_string( "text" ) ) );
+            ++idx;
+        }
+    } catch( ... ) {
+        mp_inv_log( "vehicle engine menu: bad payload" );
+        return;
+    }
+    if( const char *engine_test = std::getenv( "DDA_MP_TEST_VEHICLE_ENGINE" );
+        engine_test != nullptr && engine_test[0] != '\0' ) {
+        static bool mp_engine_test_done = false;
+        for( int i = 0; i < static_cast<int>( menu.entries.size() ); ++i ) {
+            mp_inv_log( string_format( "vehicle engine row %d enabled=%d text=%s",
+                                       i, menu.entries[i].enabled ? 1 : 0,
+                                       menu.entries[i].txt.c_str() ) );
+        }
+        if( !mp_engine_test_done ) {
+            for( int i = 0; i < static_cast<int>( menu.entries.size() ); ++i ) {
+                if( menu.entries[i].enabled ) {
+                    mp_engine_test_done = true;
+                    mp_inv_log( string_format( "vehicle engine test toggle idx=%d gen=%d",
+                                               i, generation ) );
+                    netplay::client_send_intent(
+                        "vehicle_engine_toggle", 0, { generation, i } );
+                    return;
+                }
+            }
+        }
+        mp_inv_log( "vehicle engine test done" );
+        return;
+    }
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret >= 0 ) {
+        netplay::client_send_intent( "vehicle_engine_toggle", 0,
+                                     { generation, menu.ret } );
     }
 }
 
@@ -7162,6 +7219,10 @@ void run_view_loop()
                     }
                     if( mp_ev_type == netplay::EVENT_VEHICLE_MENU ) {
                         mp_run_vehicle_menu( mp_ev_text );
+                        continue;
+                    }
+                    if( mp_ev_type == netplay::EVENT_VEHICLE_ENGINE_MENU ) {
+                        mp_run_vehicle_engine_menu( mp_ev_text );
                         continue;
                     }
                     if( mp_ev_type == netplay::EVENT_ZONES ) {

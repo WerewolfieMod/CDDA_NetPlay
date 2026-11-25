@@ -6478,6 +6478,8 @@ static void mp_send_vehicle_menu( int sid, npc &av )
                 client_action = "parts";
             } else if( it._hotkey_action.value() == "GET_ITEMS" ) {
                 client_action = "items";
+            } else if( it._hotkey_action.value() == "CONTROL_ENGINES" ) {
+                client_action = "engines";
             }
         }
         const bool client_handled = !client_action.empty();
@@ -6593,6 +6595,151 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
     if( chosen._keep_menu_open && av->controlling_vehicle ) {
         mp_send_vehicle_menu( sid, *av );
     }
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+}
+
+/* DDA MP v4.0a-287: engine configuration submenu. Mirrors
+ * vehicle::control_engines()'s rows/part toggles, but the rows live on the
+ * client and the host applies each toggle. */
+struct mp_engine_row {
+    int engine = -1;
+    itype_id fuel;
+    std::string text;
+    bool enabled = false;
+};
+
+static bool mp_build_engine_rows( vehicle &veh, std::vector<mp_engine_row> &out )
+{
+    map &here = get_map();
+    for( const int engine_idx : veh.engines ) {
+        vehicle_part &vp = veh.part( engine_idx );
+        if( !vp.info().engine_info.has_value() ) {
+            continue;
+        }
+        for( const itype_id &fuel : vp.info().engine_info->fuel_opts ) {
+            const bool active = vp.enabled && vp.fuel_current() == fuel;
+            const bool has_fuel = veh.is_perpetual_type( vp ) ||
+                                  veh.fuel_left( here, fuel ) > 0;
+            mp_engine_row row;
+            row.engine = engine_idx;
+            row.fuel = fuel;
+            row.text = string_format( "[%s] %s %s", active ? "x" : " ",
+                                      vp.name(), fuel->nname( 1 ) );
+            row.enabled = vp.is_available() && has_fuel;
+            out.push_back( std::move( row ) );
+        }
+    }
+    return !out.empty();
+}
+
+static uint32_t mp_engine_menu_hash( const std::vector<mp_engine_row> &rows )
+{
+    uint32_t h = 2166136261u;
+    for( const mp_engine_row &r : rows ) {
+        for( const unsigned char c : r.text ) {
+            h ^= c;
+            h *= 16777619u;
+        }
+        h ^= r.enabled ? '1' : '0';
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void mp_send_engine_menu( int sid, npc &av )
+{
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    if( !vp ) {
+        netplay::host_send_event_to_sid( sid, netplay::fork_text( "You are not in a vehicle." ),
+                                         static_cast<int>( m_info ) );
+        return;
+    }
+    std::vector<mp_engine_row> rows;
+    if( !mp_build_engine_rows( vp->vehicle(), rows ) ) {
+        netplay::host_send_event_to_sid( sid, netplay::fork_text( "This vehicle has no engines." ),
+                                         static_cast<int>( m_info ) );
+        return;
+    }
+    const uint32_t generation = mp_engine_menu_hash( rows );
+    std::ostringstream os;
+    JsonOut js( os );
+    js.start_object();
+    js.member( "generation", static_cast<int>( generation ) );
+    js.member( "rows" );
+    js.start_array();
+    for( const mp_engine_row &r : rows ) {
+        js.start_object();
+        js.member( "text", r.text );
+        js.member( "enabled", r.enabled );
+        js.end_object();
+    }
+    js.end_array();
+    js.end_object();
+    netplay::host_send_event_to_sid( sid, os.str(), EVENT_VEHICLE_ENGINE_MENU );
+}
+
+static void mp_toggle_engine( int sid, int generation, int index )
+{
+    npc *av = av_session_npc( sid );
+    if( av == nullptr ) {
+        return;
+    }
+    map &here = get_map();
+    g->mp_anchor_map_on( *av, true );
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( !vp ) {
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return;
+    }
+    vehicle &veh = vp->vehicle();
+    std::vector<mp_engine_row> rows;
+    if( !mp_build_engine_rows( veh, rows ) ||
+        static_cast<uint32_t>( generation ) != mp_engine_menu_hash( rows ) ||
+        index < 0 || index >= static_cast<int>( rows.size() ) ) {
+        mp_send_engine_menu( sid, *av );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return;
+    }
+    const mp_engine_row &row = rows[index];
+    vehicle_part &part = veh.part( row.engine );
+    if( part.fuel_current() == row.fuel ) {
+        part.enabled = !part.enabled;
+    } else {
+        part.fuel_set( row.fuel );
+    }
+    const std::size_t msg_before = Messages::generation();
+    const bool engines_were_on = veh.engine_on;
+    for( const int p : veh.engines ) {
+        veh.engine_on = veh.engine_on || veh.part( p ).enabled;
+    }
+    const int safe_vel = veh.safe_velocity( here );
+    if( veh.velocity > safe_vel ) {
+        veh.cruise_velocity = safe_vel;
+    }
+    if( engines_were_on && !veh.engine_on ) {
+        add_msg( _( "You turn off the %s's engines to change their configurations." ),
+                 veh.name );
+    } else if( !av->controlling_vehicle ) {
+        add_msg( _( "You change the %s's engine configuration." ), veh.name );
+    }
+    if( veh.engine_on ) {
+        veh.start_engines( here, av );
+    }
+    veh.refresh();
+    netplay::host_forward_new_messages( sid, msg_before );
+    mp_ctrl_log( string_format( "engine toggle sid=%d gen=%u index=%d engine=%d fuel=%s on=%d",
+                                sid, static_cast<uint32_t>( generation ), index,
+                                row.engine, row.fuel.str(), veh.engine_on ? 1 : 0 ) );
+    av_send_status( sid );
+    av_send_session_picture( sid, av->pos_bub(), av );
+    mp_send_engine_menu( sid, *av );
     if( !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
@@ -7530,6 +7677,21 @@ void host_pump_intents()
         }
         if( in.action == "vehicle_menu_select" && in.args.size() >= 2 ) {
             mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
+            continue;
+        }
+        if( in.action == "vehicle_engine_menu" ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                g->mp_anchor_map_on( *av, true );
+                mp_send_engine_menu( in.sid, *av );
+                if( !netplay::host_avatar_keys_pending() ) {
+                    g->mp_anchor_map_on( get_avatar() );
+                }
+            }
+            continue;
+        }
+        if( in.action == "vehicle_engine_toggle" && in.args.size() >= 2 ) {
+            mp_toggle_engine( in.sid, in.args[0], in.args[1] );
             continue;
         }
         // DDA MP v4.0a-204: damaged vehicle parts list and repair.
