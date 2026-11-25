@@ -7607,6 +7607,139 @@ static bool mp_cmd_workout( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_vehicle_parts( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        g->mp_anchor_map_on( *av, true );
+        if( in.action == "test_vehicle_parts" ) {
+            const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
+            if( spawn != nullptr && spawn[0] != '\0' ) {
+                mp_test_spawn_car( *av, true );
+            }
+        }
+        mp_send_vehicle_parts( in.sid, *av );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_repair( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    if( in.action == "test_vehicle_repair" ) {
+        const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
+        if( spawn != nullptr && spawn[0] != '\0' ) {
+            mp_test_spawn_car( *av, true );
+        }
+    }
+    int idx = in.args.empty() ? -1 : in.args[0];
+    if( in.action == "test_vehicle_repair" ) {
+        const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+        if( vp ) {
+            vehicle &veh = vp->vehicle();
+            for( int i = 0; i < veh.part_count(); ++i ) {
+                if( veh.part( i ).damage() > 0 &&
+                    veh.part( i ).is_repairable() ) {
+                    idx = i;
+                    break;
+                }
+            }
+        }
+    }
+    mp_vehicle_repair( in.sid, *av, idx );
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_refuel( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    if( in.action == "test_vehicle_refuel" ) {
+        const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
+        if( spawn != nullptr && spawn[0] != '\0' ) {
+            mp_test_spawn_car( *av );
+        }
+    }
+    mp_vehicle_refuel( in.sid, *av );
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_pick_style( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr && !in.data.empty() ) {
+        const matype_id style( in.data );
+        if( style.is_valid() && av->martial_arts_data->has_martialart( style ) ) {
+            av->martial_arts_data->set_style( style );
+            av_send_status( in.sid );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_default_ammo( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr && !in.data.empty() ) {
+        for( item *it : av->inv_dump() ) {
+            if( it != nullptr && it->get_var( "mp_uid", std::string() ) == in.data ) {
+                av->ammo_location = item_location( *av, it );
+                av_send_status( in.sid );
+                break;
+            }
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_recraft( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    if( av->lastrecipe.is_null() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "Craft something first." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    const int batch = std::max( 1, av->last_batch );
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    av->make_craft( av->lastrecipe, batch );
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    mp_forward_new_messages( in.sid, msg_before );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -7671,6 +7804,15 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "butcher", mp_cmd_butcher );
         r.emplace( "construct", mp_cmd_construct );
         r.emplace( "workout", mp_cmd_workout );
+        r.emplace( "vehicle_parts", mp_cmd_vehicle_parts );
+        r.emplace( "test_vehicle_parts", mp_cmd_vehicle_parts );
+        r.emplace( "vehicle_repair", mp_cmd_vehicle_repair );
+        r.emplace( "test_vehicle_repair", mp_cmd_vehicle_repair );
+        r.emplace( "vehicle_refuel", mp_cmd_vehicle_refuel );
+        r.emplace( "test_vehicle_refuel", mp_cmd_vehicle_refuel );
+        r.emplace( "pick_style", mp_cmd_pick_style );
+        r.emplace( "default_ammo", mp_cmd_default_ammo );
+        r.emplace( "recraft", mp_cmd_recraft );
         return r;
     }();
     return registry;
@@ -7919,80 +8061,6 @@ void host_pump_intents()
                             std::fclose( f );
                         }
                     }
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-204: damaged vehicle parts list and repair.
-        if( in.action == "vehicle_parts" || in.action == "test_vehicle_parts" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                if( in.action == "test_vehicle_parts" ) {
-                    const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
-                    if( spawn != nullptr && spawn[0] != '\0' ) {
-                        mp_test_spawn_car( *av, true );
-                    }
-                }
-                mp_send_vehicle_parts( in.sid, *av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        if( ( in.action == "vehicle_repair" || in.action == "test_vehicle_repair" ) &&
-            ( in.action == "test_vehicle_repair" || !in.args.empty() ) ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                if( in.action == "test_vehicle_repair" ) {
-                    const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
-                    if( spawn != nullptr && spawn[0] != '\0' ) {
-                        mp_test_spawn_car( *av, true );
-                    }
-                }
-                int idx = in.args.empty() ? -1 : in.args[0];
-                if( in.action == "test_vehicle_repair" ) {
-                    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
-                    if( vp ) {
-                        vehicle &veh = vp->vehicle();
-                        for( int i = 0; i < veh.part_count(); ++i ) {
-                            if( veh.part( i ).damage() > 0 &&
-                                veh.part( i ).is_repairable() ) {
-                                idx = i;
-                                break;
-                            }
-                        }
-                    }
-                }
-                mp_vehicle_repair( in.sid, *av, idx );
-                av_mark_acted( in.sid );
-                av_send_status( in.sid );
-                av_send_session_picture( in.sid, av->pos_bub(), av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-201: refuel from the session avatar's inventory.
-        if( in.action == "vehicle_refuel" || in.action == "test_vehicle_refuel" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                g->mp_anchor_map_on( *av, true );
-                if( in.action == "test_vehicle_refuel" ) {
-                    const char *spawn = std::getenv( "DDA_MP_TEST_SPAWN_CAR" );
-                    if( spawn != nullptr && spawn[0] != '\0' ) {
-                        mp_test_spawn_car( *av );
-                    }
-                }
-                mp_vehicle_refuel( in.sid, *av );
-                av_mark_acted( in.sid );
-                av_send_status( in.sid );
-                av_send_session_picture( in.sid, av->pos_bub(), av );
-                if( !netplay::host_avatar_keys_pending() ) {
-                    g->mp_anchor_map_on( get_avatar() );
                 }
             }
             continue;
@@ -8359,55 +8427,7 @@ void host_pump_intents()
             }
             continue;
         }
-        // DDA MP v4.0a-187: martial style and default ammo chosen on the
-        // client mirror.
-        if( in.action == "pick_style" && !in.data.empty() ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const matype_id style( in.data );
-                if( style.is_valid() && av->martial_arts_data->has_martialart( style ) ) {
-                    av->martial_arts_data->set_style( style );
-                    av_send_status( in.sid );
-                }
-            }
-            continue;
-        }
-        if( in.action == "default_ammo" && !in.data.empty() ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                for( item *it : av->inv_dump() ) {
-                    if( it != nullptr && it->get_var( "mp_uid", std::string() ) == in.data ) {
-                        av->ammo_location = item_location( *av, it );
-                        av_send_status( in.sid );
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-131: repeat the last craft (RECRAFT).
-        if( in.action == "recraft" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                if( av->lastrecipe.is_null() ) {
-                    netplay::host_send_event_to_sid(
-                        in.sid, netplay::fork_text( "Craft something first." ), static_cast<int>( m_info ) );
-                } else {
-                    const int batch = std::max( 1, av->last_batch );
-                    g->mp_anchor_map_on( *av, true );
-                    const std::size_t msg_before = Messages::generation();
-                    av->make_craft( av->lastrecipe, batch );
-                    av_mark_acted( in.sid );
-                    av_send_status( in.sid );
-                    av_send_session_picture( in.sid, av->pos_bub(), av );
-                    mp_forward_new_messages( in.sid, msg_before );
-                    if( !netplay::host_avatar_keys_pending() ) {
-                        g->mp_anchor_map_on( get_avatar() );
-                    }
-                }
-            }
-            continue;
-        }
+
         // DDA MP v4.0a-121: ranged fire. The client picked the target with the
         // stock cursor; the host resolves the shot on the session avatar.
         if( in.action == "fire" && in.args.size() >= 3 ) {
