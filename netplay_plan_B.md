@@ -516,11 +516,11 @@ JSON/mapgen:
 
 ### 9.4. Следующие 5 задач
 
-1. P4-6: убрать чёрный кадр клиента (порядок tile-canvas / curses present).
-2. P0-1/P0-2: финальный аудит свежего мира после правок фикстуры.
-3. P1-1/P1-2: схема команд + registry.
-4. P2-4: полное vehicle-зеркало.
-5. P3-4: native `veh_interact` на зеркале.
+1. P1-2: добить оставшиеся legacy-intent'ы (autoattack/fire/missions/trade/dialogue).
+2. P2-4: полное vehicle-зеркало.
+3. P3-4: native `veh_interact` на зеркале.
+4. P4-1/P4-6: полировка native sidebar/layout (наложения панелей).
+5. P7-1: валидаторы для control vehicle/fire/NPC.
 
 ---
 
