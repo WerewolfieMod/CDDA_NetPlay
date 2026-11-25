@@ -8024,6 +8024,72 @@ static bool mp_cmd_chat( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_talk_npc( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    if( other != nullptr && other != av && !other->is_enemy() &&
+        !mp_is_player_creature( other ) ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "npc talk sid=%d npc=%s dx=%d dy=%d\n",
+                          in.sid, other->get_name().c_str(), in.args[0], in.args[1] );
+            std::fclose( f );
+        }
+        mp_start_dialogue( in.sid, *av, *other );
+    }
+    return true;
+}
+
+static bool mp_cmd_dialogue_choice( const netplay::intent_request &in )
+{
+    const auto dit = mp_dialogues.find( in.sid );
+    if( dit == mp_dialogues.end() ) {
+        return true;
+    }
+    const int idx = in.args.empty() ? -1 : in.args[0];
+    if( idx < 0 || idx >= static_cast<int>( dit->second->responses.size() ) ) {
+        mp_end_dialogue( in.sid, "" );
+        return true;
+    }
+    dialogue &d = *dit->second;
+    talk_response chosen = d.responses[idx];
+    if( chosen.mission_selected != nullptr ) {
+        d.actor( true )->select_mission( chosen.mission_selected );
+    }
+    d.actor( true )->store_chosen_training( chosen.skill, chosen.style,
+                                            chosen.dialogue_spell, chosen.proficiency );
+    const bool success = chosen.trial.roll( d );
+    talk_effect_t const &effects = success ? chosen.success : chosen.failure;
+    const talk_topic next = effects.apply( d );
+    talk_effect_t::update_missions( d );
+    if( d.done || next.id == "TALK_DONE" ) {
+        mp_end_dialogue( in.sid, fork_text( "Conversation ended." ) );
+        return true;
+    }
+    if( next.id == "TALK_NONE" ) {
+        if( !d.topic_stack.empty() ) {
+            d.topic_stack.pop_back();
+        }
+    } else {
+        d.add_topic( next );
+    }
+    if( d.topic_stack.empty() ) {
+        mp_end_dialogue( in.sid, fork_text( "Conversation ended." ) );
+    } else {
+        mp_send_dialogue_state( in.sid );
+    }
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -8105,6 +8171,8 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "autoattack", mp_cmd_autoattack );
         r.emplace( "fire", mp_cmd_fire );
         r.emplace( "chat", mp_cmd_chat );
+        r.emplace( "talk_npc", mp_cmd_talk_npc );
+        r.emplace( "dialogue_choice", mp_cmd_dialogue_choice );
         return r;
     }();
     return registry;
@@ -8439,67 +8507,6 @@ void host_pump_intents()
             }
             continue;
         }
-        // DDA MP v4.0a-189: network NPC dialogue. The client sends the target
-        // offset; the host drives the engine dialogue and streams line/options.
-        if( in.action == "talk_npc" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                if( other != nullptr && other != av && !other->is_enemy() &&
-                    !mp_is_player_creature( other ) ) {
-                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                        std::fprintf( f, "npc talk sid=%d npc=%s dx=%d dy=%d\n",
-                                      in.sid, other->get_name().c_str(), in.args[0], in.args[1] );
-                        std::fclose( f );
-                    }
-                    mp_start_dialogue( in.sid, *av, *other );
-                }
-            }
-            continue;
-        }
-        if( in.action == "dialogue_choice" ) {
-            const auto dit = mp_dialogues.find( in.sid );
-            if( dit == mp_dialogues.end() ) {
-                continue;
-            }
-            const int idx = in.args.empty() ? -1 : in.args[0];
-            if( idx < 0 || idx >= static_cast<int>( dit->second->responses.size() ) ) {
-                mp_end_dialogue( in.sid, "" );
-                continue;
-            }
-            dialogue &d = *dit->second;
-            talk_response chosen = d.responses[idx];
-            if( chosen.mission_selected != nullptr ) {
-                d.actor( true )->select_mission( chosen.mission_selected );
-            }
-            d.actor( true )->store_chosen_training( chosen.skill, chosen.style,
-                                                    chosen.dialogue_spell, chosen.proficiency );
-            const bool success = chosen.trial.roll( d );
-            talk_effect_t const &effects = success ? chosen.success : chosen.failure;
-            const talk_topic next = effects.apply( d );
-            talk_effect_t::update_missions( d );
-            if( d.done || next.id == "TALK_DONE" ) {
-                mp_end_dialogue( in.sid, fork_text( "Conversation ended." ) );
-                continue;
-            }
-            if( next.id == "TALK_NONE" ) {
-                if( !d.topic_stack.empty() ) {
-                    d.topic_stack.pop_back();
-                }
-            } else {
-                d.add_topic( next );
-            }
-            if( d.topic_stack.empty() ) {
-                mp_end_dialogue( in.sid, fork_text( "Conversation ended." ) );
-            } else {
-                mp_send_dialogue_state( in.sid );
-            }
-            continue;
-        }
-
         // DDA MP v4.0a-121: ranged fire. The client picked the target with the
         // stock cursor; the host resolves the shot on the session avatar.
 
