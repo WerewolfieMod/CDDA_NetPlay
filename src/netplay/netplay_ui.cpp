@@ -6476,6 +6476,13 @@ static void mp_run_prompt( const netplay::prompt_request &pr )
     if( pr.type == netplay::prompt_type::query_yn ) {
         ans.canceled = false;
         ans.retval = query_yn( "%s", pr.text ) ? 1 : 0;
+    } else if( pr.type == netplay::prompt_type::string_input ) {
+        string_input_popup popup;
+        popup.title( pr.text ).text( pr.value ).max_length( pr.max_length ).width( 40 );
+        popup.query_string();
+        ans.canceled = popup.canceled();
+        ans.text = popup.text();
+        ans.retval = ans.canceled || ans.text.empty() ? 0 : 1;
     } else {
         uilist menu;
         menu.text = pr.text;
@@ -6902,6 +6909,12 @@ void run_view_loop()
                                   point( std::max( 0, ( TERMX - ( cur_w + 2 ) ) / 2 ),
                                          std::max( 0, ( TERMY - ( cur_h + 2 ) ) / 2 ) ) );
     };
+
+    // DDA MP v4.0a-289: ack stdscr every frame, exactly like main_menu/game do.
+    // tiles_backend_clear_screen bumps the curses render epoch; without a
+    // background_pane the input pump later repaints an empty stdscr over the
+    // tile canvas and presents a black frame between two correct ones.
+    background_pane mp_netplay_background;
 
     while( !voluntary_quit ) {
         input_context ctxt( "NETPLAY_VIEW", keyboard_mode::keycode );

@@ -21,6 +21,9 @@ class main_menu
         main_menu() : ctxt( "MAIN_MENU", keyboard_mode::keychar ) { }
         // Shows the main menu and returns whether a game was started or not
         bool opening_screen();
+        /// DDA MP test hook: create/load a deterministic test world without the
+        /// interactive main menu.  Returns true when the game is ready to tick.
+        static bool test_start_world( const std::string &world_name );
 
         static std::string queued_world_to_load;
         static std::string queued_save_id_to_load;

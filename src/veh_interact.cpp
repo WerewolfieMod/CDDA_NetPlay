@@ -46,6 +46,7 @@
 #include "memory_fast.h"
 #include "messages.h"
 #include "monster.h"
+#include "netplay/netplay.h"
 #include "npc.h"
 #include "output.h"
 #include "overmapbuffer.h"
@@ -165,7 +166,7 @@ void veh_interact::assign_activity( map &here )
 {
     const vehicle_part *pt = sel_vehicle_part;
     const vpart_info *vp = sel_vpart_info;
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
 
     if( sel_cmd == VEHICLE_SHAPE ) {
         if( !parts_here.empty() ) {
@@ -216,7 +217,7 @@ void veh_interact::assign_activity( map &here )
 void orient_part( map &here, vehicle *veh, const vpart_info &vpinfo, int partnum,
                   const std::optional<point_rel_ms> &part_placement )
 {
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     // Stash offset and set it to the location of the part so look_around will
     // start there.
     const tripoint_rel_ms old_view_offset = player_character.view_offset;
@@ -253,6 +254,14 @@ void orient_part( map &here, vehicle *veh, const vpart_info &vpinfo, int partnum
 void veh_interact::run( map &here, vehicle &veh, const point_rel_ms &p )
 {
     veh_interact vehint( here, veh, p );
+    // DDA MP: a host-side vehicle callback runs with get_player_character()
+    // scoped to the remote session's NPC. In that case the examine screen
+    // must live on the client; its choices arrive as ordinary bridged uilist
+    // prompts and the host still owns every game-state change.
+    if( get_player_character_override() != nullptr ) {
+        vehint.netplay_loop( here );
+        return;
+    }
     vehint.do_main_loop( here );
     vehint.assign_activity( here );
 }
@@ -261,6 +270,32 @@ std::optional<vpart_reference> veh_interact::select_part( map &here, const vehic
         const part_selector &sel, const std::string &title )
 {
     std::optional<vpart_reference> res = std::nullopt;
+    // DDA MP: when this runs for a remote session avatar, ask that client with
+    // an ordinary uilist instead of opening the host's overview window.
+    if( get_player_character_override() != nullptr ) {
+        std::vector<int> matches;
+        for( const vpart_reference &vpr : veh.get_all_parts() ) {
+            if( sel( here, vpr.part() ) ) {
+                matches.push_back( vpr.part_index() );
+            }
+        }
+        if( matches.size() == 1 ) {
+            return vpart_reference( const_cast<vehicle &>( veh ), matches.front() );
+        }
+        if( matches.empty() ) {
+            return std::nullopt;
+        }
+        uilist menu;
+        menu.title = title.empty() ? _( "Select part" ) : title;
+        for( int i = 0; i < static_cast<int>( matches.size() ); ++i ) {
+            menu.addentry( i, true, MENU_AUTOASSIGN, veh.part( matches[i] ).name() );
+        }
+        menu.query();
+        if( menu.ret >= 0 && menu.ret < static_cast<int>( matches.size() ) ) {
+            return vpart_reference( const_cast<vehicle &>( veh ), matches[menu.ret] );
+        }
+        return std::nullopt;
+    }
     const auto act = [&]( const map &, const vehicle_part & pt ) {
         res = vpart_reference( const_cast<vehicle &>( veh ), veh.index_of_part( &pt ) );
     };
@@ -625,6 +660,528 @@ void veh_interact::do_main_loop( map &here )
     }
 }
 
+/* DDA MP: the stock examine screen is a set of curses windows and a custom
+ * input loop. A remote session cannot see the host's screen, so this variant
+ * keeps the exact same vehicle/Character helpers and game-state changes but
+ * asks the owning client through ordinary uilist/query_yn prompts (the netplay
+ * prompt bridge intercepts them because get_player_character() is scoped to the
+ * session avatar while the vehicle menu callback runs). */
+void veh_interact::netplay_loop( map &here )
+{
+    Character &you = get_player_character();
+    const bool owned_by_player = veh->handle_potential_theft( you, true );
+    // Several requirement helpers format text into w_msg; allocate the normal
+    // window set even though it is never drawn on the host.
+    create_or_get_ui_adaptor( here );
+
+    enum netplay_cmd : int {
+        CMD_INSTALL = 1000,
+        CMD_REPAIR,
+        CMD_REFILL,
+        CMD_REMOVE,
+        CMD_SIPHON,
+        CMD_UNLOAD,
+        CMD_MEND,
+        CMD_RENAME,
+        CMD_SHAPE,
+        CMD_CREW,
+        CMD_RELABEL,
+        CMD_MOVE,
+        CMD_QUIT
+    };
+
+    const auto reason_text = []( task_reason r ) -> std::string {
+        switch( r ) {
+            case task_reason::CAN_DO:
+                return std::string();
+            case task_reason::INVALID_TARGET:
+                return _( "nothing to do here" );
+            case task_reason::LACK_TOOLS:
+                return _( "missing tools" );
+            case task_reason::NOT_FREE:
+                return _( "part is attached to something else" );
+            case task_reason::LACK_SKILL:
+                return _( "skill too low" );
+            case task_reason::MOVING_VEHICLE:
+                return _( "vehicle is moving" );
+            case task_reason::LOW_MORALE:
+                return _( "morale too low" );
+            case task_reason::LOW_LIGHT:
+                return _( "too dark" );
+            default:
+                return _( "not available" );
+        }
+    };
+
+    bool done = false;
+    while( !done ) {
+        const std::pair<int, int> bat = veh->battery_power_level();
+        int damaged = 0;
+        for( int i = 0; i < veh->part_count(); ++i ) {
+            if( veh->part( i ).damage() > 0 ) {
+                ++damaged;
+            }
+        }
+        std::string text = string_format(
+                               _( "%s\nSpeed: %d mph   Cruise: %d mph\nEngine: %s   Battery: %d/%d kJ\nParts: %d   Damaged: %d" ),
+                               veh->name, veh->velocity / 100, veh->cruise_velocity / 100,
+                               veh->engine_on ? _( "on" ) : _( "off" ),
+                               bat.first, bat.second, veh->part_count(), damaged );
+        for( const std::pair<const itype_id, int> &fuel : veh->fuels_left() ) {
+            if( fuel.second <= 0 ) {
+                continue;
+            }
+            text += "\n" + string_format( _( "Fuel: %s %d" ), item::nname( fuel.first ),
+                                          fuel.second );
+        }
+        text += "\n\n";
+        text += _( "At this tile:" );
+        if( parts_here.empty() ) {
+            text += " " + std::string( _( "nothing" ) );
+        } else {
+            for( const int idx : parts_here ) {
+                const vehicle_part &pt = veh->part( idx );
+                text += "\n  " + pt.name() +
+                        ( pt.is_broken() ? std::string( _( " (broken)" ) ) :
+                          string_format( _( " (damage %d)" ), pt.damage_level() ) );
+            }
+        }
+        text += "\n\n";
+        text += _( "Vehicle parts:" );
+        int shown = 0;
+        for( const vpart_reference &vpr : veh->get_all_parts() ) {
+            const vehicle_part &pt = vpr.part();
+            if( !pt.is_available() ) {
+                continue;
+            }
+            text += "\n  " + pt.name() +
+                    ( pt.is_broken() ? std::string( _( " (broken)" ) ) :
+                      string_format( _( " (damage %d)" ), pt.damage_level() ) );
+            if( ++shown >= 20 ) {
+                text += "\n  ...";
+                break;
+            }
+        }
+
+        uilist menu;
+        menu.title = _( "Examine vehicle" );
+        menu.text = text;
+        const auto add_cmd = [&]( int cmd, vehicle_action mode, const std::string &label ) {
+            const task_reason r = cant_do( here, mode );
+            const bool ok = r == task_reason::CAN_DO;
+            std::string row = label;
+            if( !ok ) {
+                row += " (" + reason_text( r ) + ")";
+            }
+            menu.addentry( cmd, ok, MENU_AUTOASSIGN, row );
+        };
+        add_cmd( CMD_INSTALL, VEHICLE_INSTALL, _( "Install part" ) );
+        add_cmd( CMD_REPAIR, VEHICLE_REPAIR, _( "Repair part" ) );
+        add_cmd( CMD_REFILL, VEHICLE_REFILL, _( "Refill tank" ) );
+        add_cmd( CMD_REMOVE, VEHICLE_REMOVE, _( "Remove part" ) );
+        add_cmd( CMD_SIPHON, VEHICLE_SIPHON, _( "Siphon liquid" ) );
+        add_cmd( CMD_UNLOAD, VEHICLE_UNLOAD, _( "Unload solid fuel" ) );
+        add_cmd( CMD_MEND, VEHICLE_MEND_FAULTS, _( "Mend faults" ) );
+        add_cmd( CMD_SHAPE, VEHICLE_SHAPE, _( "Change part shape" ) );
+        add_cmd( CMD_CREW, VEHICLE_ASSIGN_CREW, _( "Assign crew" ) );
+        add_cmd( CMD_RELABEL, VEHICLE_RELABEL, _( "Relabel part" ) );
+        menu.addentry( CMD_RENAME, owned_by_player, MENU_AUTOASSIGN,
+                       owned_by_player ? _( "Rename vehicle" ) :
+                       _( "Rename vehicle (not owned)" ) );
+        menu.addentry( CMD_MOVE, true, MENU_AUTOASSIGN, _( "Look at another tile" ) );
+        menu.addentry( CMD_QUIT, true, MENU_AUTOASSIGN, _( "Close" ) );
+        menu.query();
+        msg.reset();
+        if( menu.ret < 0 ) {
+            break;
+        }
+        // The stock main loop runs the interactive theft check before every
+        // modifying action. The uilist prompt is bridged to the owning client,
+        // so a remote examine keeps the same ownership rules.
+        const bool modifying = menu.ret == CMD_INSTALL || menu.ret == CMD_REPAIR ||
+                               menu.ret == CMD_REFILL || menu.ret == CMD_REMOVE ||
+                               menu.ret == CMD_SIPHON || menu.ret == CMD_UNLOAD ||
+                               menu.ret == CMD_MEND;
+        if( modifying && !veh->handle_potential_theft( you ) ) {
+            continue;
+        }
+        if( ( menu.ret == CMD_RENAME || menu.ret == CMD_CREW ||
+              menu.ret == CMD_RELABEL ) && !owned_by_player ) {
+            add_msg( m_info, _( "You cannot modify this vehicle as you do not own it." ) );
+            continue;
+        }
+
+        if( menu.ret == CMD_INSTALL ) {
+            std::vector<const vpart_info *> candidates = can_mount;
+            if( candidates.empty() ) {
+                add_msg( m_info, _( "Cannot install any part here." ) );
+                continue;
+            }
+            uilist imenu;
+            imenu.title = _( "Choose new part to install here:" );
+            for( int i = 0; i < static_cast<int>( candidates.size() ); ++i ) {
+                imenu.addentry( i, true, MENU_AUTOASSIGN, candidates[i]->name() );
+            }
+            imenu.query();
+            if( imenu.ret < 0 || imenu.ret >= static_cast<int>( candidates.size() ) ) {
+                continue;
+            }
+            sel_vpart_info = candidates[imenu.ret];
+            if( !update_part_requirements( here ) ) {
+                if( msg.has_value() ) {
+                    add_msg( m_info, "%s", *msg );
+                }
+                continue;
+            }
+            if( veh->would_install_prevent_flyable( *sel_vpart_info, you ) &&
+                !query_yn( _( "Installing this part will mean that this vehicle is no longer "
+                              "flightworthy.  Continue?" ) ) ) {
+                continue;
+            }
+            if( veh->is_foldable() && !sel_vpart_info->folded_volume &&
+                !query_yn( _( "Installing this part will make the vehicle unfoldable. "
+                              "Continue?" ) ) ) {
+                continue;
+            }
+            sel_cmd = VEHICLE_INSTALL;
+            done = true;
+        } else if( menu.ret == CMD_REPAIR ) {
+            std::vector<int> candidates;
+            std::vector<bool> ok;
+            std::vector<std::string> labels;
+            for( const int slot : need_repair ) {
+                const int idx = parts_here[slot];
+                vehicle_part &pt = veh->part( idx );
+                const vpart_info &vp = pt.info();
+                std::string nmsg;
+                bool can = true;
+                if( pt.is_broken() ) {
+                    can = format_reqs( nmsg, vp.install_requirements(), vp.install_skills,
+                                       vp.install_time( you ) );
+                    if( pt.info().has_flag( "NEEDS_JACKING" ) ) {
+                        nmsg += _( "<color_white>Additional requirements:</color>\n" );
+                        const std::pair<bool, std::string> res = calc_lift_requirements( here, pt.info() );
+                        can = can && res.first;
+                        nmsg += res.second;
+                    }
+                    if( pt.has_flag( vp_flag::carried_flag ) ) {
+                        can = false;
+                    }
+                } else {
+                    if( !pt.is_repairable() ) {
+                        can = false;
+                    } else {
+                        const int levels = pt.base.repairable_levels();
+                        can = format_reqs( nmsg, vp.repair_requirements() * levels,
+                                           vp.repair_skills,
+                                           vp.repair_time( you ) * levels );
+                    }
+                }
+                candidates.push_back( idx );
+                ok.push_back( can );
+                labels.push_back( string_format( "%s (%s)", vp.name(),
+                                                 pt.is_broken() ? std::string( _( "broken" ) ) :
+                                                 string_format( _( "damage %d" ), pt.damage_level() ) ) );
+            }
+            if( candidates.empty() ) {
+                add_msg( m_info, _( "There are no parts which can be repaired on this vehicle." ) );
+                continue;
+            }
+            uilist rmenu;
+            rmenu.title = _( "Choose a part here to repair:" );
+            for( int i = 0; i < static_cast<int>( candidates.size() ); ++i ) {
+                rmenu.addentry( i, ok[i], MENU_AUTOASSIGN,
+                                ok[i] ? labels[i] : labels[i] + " (" + _( "requirements not met" ) + ")" );
+            }
+            rmenu.query();
+            if( rmenu.ret < 0 || rmenu.ret >= static_cast<int>( candidates.size() ) ||
+                !ok[rmenu.ret] ) {
+                continue;
+            }
+            vehicle_part &pt = veh->part( candidates[rmenu.ret] );
+            if( veh->would_repair_prevent_flyable( pt, you ) &&
+                !query_yn( _( "Repairing this part will mean that this vehicle is no longer "
+                              "flightworthy.  Continue?" ) ) ) {
+                continue;
+            }
+            sel_vehicle_part = &pt;
+            sel_vpart_info = &pt.info();
+            sel_cmd = VEHICLE_REPAIR;
+            done = true;
+        } else if( menu.ret == CMD_REMOVE ) {
+            std::vector<int> candidates;
+            std::vector<bool> ok;
+            std::vector<std::string> labels;
+            for( const int idx : parts_here ) {
+                vehicle_part &pt = veh->part( idx );
+                bool can = can_remove_part( here, idx, you );
+                msg.reset();
+                candidates.push_back( idx );
+                ok.push_back( can );
+                labels.push_back( string_format( "%s (%s)", pt.name(),
+                                                 pt.is_broken() ? std::string( _( "broken" ) ) :
+                                                 string_format( _( "damage %d" ), pt.damage_level() ) ) );
+            }
+            if( candidates.empty() ) {
+                add_msg( m_info, _( "No parts here." ) );
+                continue;
+            }
+            uilist omenu;
+            omenu.title = _( "Choose a part here to remove:" );
+            for( int i = 0; i < static_cast<int>( candidates.size() ); ++i ) {
+                omenu.addentry( i, ok[i], MENU_AUTOASSIGN,
+                                ok[i] ? labels[i] : labels[i] + " (" + _( "cannot remove" ) + ")" );
+            }
+            omenu.query();
+            if( omenu.ret < 0 || omenu.ret >= static_cast<int>( candidates.size() ) ||
+                !ok[omenu.ret] ) {
+                continue;
+            }
+            vehicle_part &pt = veh->part( candidates[omenu.ret] );
+            if( veh->would_removal_prevent_flyable( pt, you ) &&
+                !query_yn( _( "Removing this part will mean that this vehicle is no longer "
+                              "flightworthy.  Continue?" ) ) ) {
+                continue;
+            }
+            sel_vehicle_part = &pt;
+            sel_vpart_info = &pt.info();
+            sel_cmd = VEHICLE_REMOVE;
+            done = true;
+        } else if( menu.ret == CMD_REFILL ) {
+            std::vector<int> parts;
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.is_available() && can_refill( here, pt ) ) {
+                    parts.push_back( i );
+                }
+            }
+            if( parts.empty() ) {
+                add_msg( m_info, _( "No parts can currently be refilled." ) );
+                continue;
+            }
+            uilist pmenu;
+            pmenu.title = _( "Select part to refill:" );
+            for( int i = 0; i < static_cast<int>( parts.size() ); ++i ) {
+                pmenu.addentry( i, true, MENU_AUTOASSIGN, veh->part( parts[i] ).name() );
+            }
+            pmenu.query();
+            if( pmenu.ret < 0 || pmenu.ret >= static_cast<int>( parts.size() ) ) {
+                continue;
+            }
+            vehicle_part &pt = veh->part( parts[pmenu.ret] );
+            const auto validate = [&]( const item & obj ) {
+                if( pt.is_tank() ) {
+                    if( obj.is_watertight_container() && obj.num_item_stacks() == 1 ) {
+                        return pt.can_reload( obj.only_item() );
+                    }
+                } else if( pt.is_fuel_store() ) {
+                    return pt.can_reload( obj ) || pt.get_base().can_reload_with( obj, true );
+                }
+                return false;
+            };
+            std::vector<item *> items;
+            for( item *it : you.items_with( []( const item & ) {
+            return true;
+            } ) ) {
+                if( it != nullptr && validate( *it ) ) {
+                    items.push_back( it );
+                }
+            }
+            if( items.empty() ) {
+                add_msg( m_info, _( "You have nothing to refill this part with." ) );
+                continue;
+            }
+            uilist imenu;
+            imenu.title = string_format( _( "Refill %s" ), pt.name() );
+            for( int i = 0; i < static_cast<int>( items.size() ); ++i ) {
+                imenu.addentry( i, true, MENU_AUTOASSIGN, items[i]->display_name() );
+            }
+            imenu.query();
+            if( imenu.ret < 0 || imenu.ret >= static_cast<int>( items.size() ) ) {
+                continue;
+            }
+            refill_target = item_location( you, items[imenu.ret] );
+            sel_vehicle_part = &pt;
+            sel_vpart_info = &pt.info();
+            sel_cmd = VEHICLE_REFILL;
+            done = true;
+        } else if( menu.ret == CMD_SIPHON ) {
+            std::vector<int> parts;
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.is_available() && pt.is_tank() && pt.contains_liquid() ) {
+                    parts.push_back( i );
+                }
+            }
+            if( parts.empty() ) {
+                add_msg( m_info, _( "The vehicle has no liquid fuel left to siphon." ) );
+                continue;
+            }
+            uilist pmenu;
+            pmenu.title = _( "Select tank to siphon:" );
+            for( int i = 0; i < static_cast<int>( parts.size() ); ++i ) {
+                pmenu.addentry( i, true, MENU_AUTOASSIGN, veh->part( parts[i] ).name() );
+            }
+            pmenu.query();
+            if( pmenu.ret < 0 || pmenu.ret >= static_cast<int>( parts.size() ) ) {
+                continue;
+            }
+            const int idx = parts[pmenu.ret];
+            item liquid( veh->part( idx ).get_base().only_item() );
+            const int charges = liquid.charges;
+            here.add_item_or_charges( you.pos_bub(), liquid, false );
+            veh->drain( here, idx, charges );
+            add_msg( m_info, _( "You siphon the liquid out of the vehicle." ) );
+            done = true;
+        } else if( menu.ret == CMD_UNLOAD ) {
+            act_vehicle_unload_fuel( here, veh );
+            done = true;
+        } else if( menu.ret == CMD_MEND ) {
+            std::vector<int> parts;
+            const bool toggling = you.has_trait( trait_DEBUG_HS );
+            for( const vpart_reference &vpr : veh->get_all_parts() ) {
+                const vehicle_part &pt = vpr.part();
+                if( !pt.is_available() ) {
+                    continue;
+                }
+                if( toggling ? !pt.faults_potential().empty() : !pt.faults().empty() ) {
+                    parts.push_back( veh->index_of_part( &pt ) );
+                }
+            }
+            if( parts.empty() ) {
+                add_msg( m_info, _( "No faulty parts require mending." ) );
+                continue;
+            }
+            uilist mm;
+            mm.title = _( "Choose a part here to mend:" );
+            for( int i = 0; i < static_cast<int>( parts.size() ); ++i ) {
+                mm.addentry( i, true, MENU_AUTOASSIGN, veh->part( parts[i] ).name() );
+            }
+            mm.query();
+            if( mm.ret < 0 || mm.ret >= static_cast<int>( parts.size() ) ) {
+                continue;
+            }
+            you.mend_item( veh->part_base( parts[mm.ret] ) );
+            veh->refresh();
+        } else if( menu.ret == CMD_RENAME ) {
+            const std::optional<std::string> name = netplay::host_prompt_string(
+                        _( "Enter new vehicle name:" ), veh->name, 60 );
+            if( name.has_value() && !name->empty() ) {
+                veh->name = *name;
+                if( veh->tracking_on ) {
+                    overmap_buffer.remove_vehicle( veh );
+                    overmap_buffer.add_vehicle( veh );
+                }
+            }
+        } else if( menu.ret == CMD_RELABEL ) {
+            if( cpart >= 0 ) {
+                const vpart_position vp( *veh, cpart );
+                const std::optional<std::string> label = netplay::host_prompt_string(
+                            _( "New label:" ), vp.get_label().value_or( "" ), 60 );
+                if( label.has_value() ) {
+                    vp.set_label( *label );
+                }
+            }
+        } else if( menu.ret == CMD_CREW ) {
+            std::vector<int> seats;
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                if( veh->part( i ).is_seat() ) {
+                    seats.push_back( i );
+                }
+            }
+            if( seats.empty() ) {
+                add_msg( m_info, _( "There are no seats on this vehicle." ) );
+                continue;
+            }
+            uilist smenu;
+            smenu.title = _( "Assign crew positions:" );
+            for( int i = 0; i < static_cast<int>( seats.size() ); ++i ) {
+                smenu.addentry( i, true, MENU_AUTOASSIGN, veh->part( seats[i] ).name() );
+            }
+            smenu.query();
+            if( smenu.ret < 0 || smenu.ret >= static_cast<int>( seats.size() ) ) {
+                continue;
+            }
+            vehicle_part &seat = veh->part( seats[smenu.ret] );
+            uilist cmenu;
+            cmenu.text = _( "Select crew member" );
+            if( seat.crew() ) {
+                cmenu.addentry( 0, true, 'c', _( "Clear assignment" ) );
+            }
+            for( const npc *e : g->allies() ) {
+                cmenu.addentry( e->getID().get_value(), true, MENU_AUTOASSIGN, e->get_name() );
+            }
+            cmenu.query();
+            if( cmenu.ret == 0 ) {
+                seat.unset_crew();
+            } else if( cmenu.ret > 0 ) {
+                npc *who = g->critter_by_id<npc>( character_id( cmenu.ret ) );
+                if( who != nullptr ) {
+                    veh->assign_seat( seat, *who );
+                }
+            }
+        } else if( menu.ret == CMD_SHAPE ) {
+            if( cpart < 0 ) {
+                continue;
+            }
+            static const units::angle dirs[8] = {
+                0_degrees, 45_degrees, 90_degrees, 135_degrees,
+                180_degrees, 225_degrees, 270_degrees, 315_degrees
+            };
+            const std::string names[8] = {
+                _( "North" ), _( "Northeast" ), _( "East" ), _( "Southeast" ),
+                _( "South" ), _( "Southwest" ), _( "West" ), _( "Northwest" )
+            };
+            uilist dmenu;
+            dmenu.title = _( "Choose facing direction:" );
+            for( int i = 0; i < 8; ++i ) {
+                dmenu.addentry( i, true, MENU_AUTOASSIGN, names[i] );
+            }
+            dmenu.query();
+            if( dmenu.ret < 0 || dmenu.ret >= 8 ) {
+                continue;
+            }
+            const vpart_reference part_here( *veh, parts_here.empty() ? cpart : parts_here[0] );
+            vehicle_part &displayed = veh->part( veh->part_displayed_at( part_here.mount_pos() ) );
+            displayed.direction = normalize( dirs[dmenu.ret] - veh->face.dir() );
+            veh->refresh();
+        } else if( menu.ret == CMD_MOVE ) {
+            static const point deltas[8] = {
+                point( 0, -1 ), point( 1, -1 ), point( 1, 0 ), point( 1, 1 ),
+                point( 0, 1 ), point( -1, 1 ), point( -1, 0 ), point( -1, -1 )
+            };
+            const std::string names[8] = {
+                _( "North" ), _( "Northeast" ), _( "East" ), _( "Southeast" ),
+                _( "South" ), _( "Southwest" ), _( "West" ), _( "Northwest" )
+            };
+            uilist dmenu;
+            dmenu.title = _( "Move the examine cursor:" );
+            for( int i = 0; i < 8; ++i ) {
+                dmenu.addentry( i, true, MENU_AUTOASSIGN, names[i] );
+            }
+            dmenu.query();
+            if( dmenu.ret >= 0 && dmenu.ret < 8 ) {
+                move_cursor( here, point_rel_ms( deltas[dmenu.ret] ) );
+            }
+        } else if( menu.ret == CMD_QUIT ) {
+            done = true;
+        }
+    }
+
+    if( sel_cmd != VEHICLE_QUIT ) {
+        assign_activity( here );
+        if( sel_cmd == VEHICLE_REFILL ) {
+            static const activity_id ACT_VEHICLE( "ACT_VEHICLE" );
+            you.set_moves( 100 );
+            for( int guard = 0; guard < 10 && you.activity && you.activity.id() == ACT_VEHICLE;
+                 ++guard ) {
+                you.process_activity();
+            }
+            you.set_moves( 0 );
+        }
+    }
+}
+
 void veh_interact::cache_tool_availability()
 {
     map &here = get_map();
@@ -673,7 +1230,7 @@ task_reason veh_interact::cant_do( const map &here, vehicle_action mode )
     bool has_skill = true;
     bool enough_light = true;
     const vehicle_part_range vpr = veh->get_all_parts();
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     switch( mode ) {
         case VEHICLE_INSTALL:
             enough_morale = player_character.has_morale_to_craft();
@@ -882,7 +1439,7 @@ bool veh_interact::update_part_requirements( map &here )
 
     const requirement_data reqs = sel_vpart_info->install_requirements();
 
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     std::string nmsg;
     bool ok = format_reqs( nmsg, reqs, sel_vpart_info->install_skills,
                            sel_vpart_info->install_time( player_character ) );
@@ -994,7 +1551,7 @@ void veh_interact::do_install( map &here )
 
     int &pos = install_info->pos = 0;
     size_t &tab = install_info->tab = 0;
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
 
     std::vector<const vpart_info *> &tab_vparts = install_info->tab_vparts;
 
@@ -1151,7 +1708,7 @@ void veh_interact::do_repair( map &here )
 
     restore_on_out_of_scope prev_hilight_part( highlight_part );
 
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     while( true ) {
         vehicle_part &pt = veh->part( parts_here[need_repair[pos]] );
         const vpart_info &vp = pt.info();
@@ -1268,7 +1825,7 @@ void veh_interact::do_mend( map &here )
     restore_on_out_of_scope prev_title( title );
     title = _( "Choose a part here to mend:" );
 
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     const bool toggling = player_character.has_trait( trait_DEBUG_HS );
     auto sel = [toggling]( const map &, const vehicle_part & pt ) {
         if( toggling ) {
@@ -1862,7 +2419,7 @@ bool veh_interact::can_remove_part( map &here, int idx, const Character &you )
     sel_vehicle_part->info().format_description( nmsg, desc_color, getmaxx( w_msg ) - 4 );
 
     msg = colorize( nmsg, c_light_gray );
-    return ok || get_avatar().has_trait( trait_DEBUG_HS );
+    return ok || get_player_character().has_trait( trait_DEBUG_HS );
 }
 
 void veh_interact::do_remove( map &here )
@@ -1881,7 +2438,7 @@ void veh_interact::do_remove( map &here )
                 remove_info ) );
     remove_info = std::make_unique<remove_info_t>();
 
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     int pos = 0;
     for( size_t i = 0; i < parts_here.size(); i++ ) {
         if( can_remove_part( here, parts_here[ i ], player_character ) ) {
@@ -2098,7 +2655,7 @@ std::pair<bool, std::string> veh_interact::calc_lift_requirements( map &here, co
     bool use_str = false;
     bool ok = true;
     std::string nmsg;
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
 
     if( sel_vpart_info.has_flag( "NEEDS_JACKING" ) ) {
         if( terrain_here.has_flag( ter_furn_flag::TFLAG_LIQUID ) ) {

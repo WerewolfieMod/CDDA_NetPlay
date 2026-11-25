@@ -1,0 +1,32 @@
+[
+  {
+    "type": "overmap_terrain",
+    "id": [ "netplay_test_hub", "netplay_test_garage", "netplay_test_hall", "netplay_test_lab" ],
+    "name": "netplay test facility",
+    "sym": "T",
+    "color": "light_green",
+    "see_cost": "full_high",
+    "flags": [ "NO_ROTATE" ]
+  },
+  {
+    "type": "overmap_special",
+    "id": "netplay_test_facility",
+    "overmaps": [
+      { "point": [ 0, 0, 0 ], "overmap": "netplay_test_hub" },
+      { "point": [ 0, 1, 0 ], "overmap": "netplay_test_garage" },
+      { "point": [ 1, 0, 0 ], "overmap": "netplay_test_hall" },
+      { "point": [ 1, 1, 0 ], "overmap": "netplay_test_lab" }
+    ],
+    "locations": [ "land" ],
+    "rotate": false,
+    "city_distance": [ 0, -1 ],
+    "city_sizes": [ 0, -1 ],
+    "occurrences": [ 8, 8 ]
+  },
+  {
+    "type": "start_location",
+    "id": "sloc_netplay_test",
+    "name": "Netplay Test Facility",
+    "terrain": [ "netplay_test_hub" ]
+  }
+]

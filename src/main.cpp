@@ -31,6 +31,7 @@
 
 #include <flatbuffers/util.h>
 
+#include "avatar.h"
 #include "cached_options.h"
 #include "cata_allocator.h"
 #include "cata_path.h"
@@ -62,6 +63,7 @@
 #include "translations.h"
 #include "type_id.h"
 #include "ui_manager.h"
+#include "worldfactory.h"
 #include "cata_imgui.h"
 #if defined(MACOSX) || defined(__CYGWIN__)
 #   include <unistd.h> // getpid()
@@ -889,6 +891,22 @@ void select_initial_language()
 void run_game_loop( cli_opts &cli )
 {
     main_menu::queued_world_to_load = std::move( cli.world );
+
+    // DDA MP test hook: open (or create) the deterministic test world without
+    // the interactive main menu.  Normal runs never set this env var.
+    if( const char *test_world = std::getenv( "DDA_MP_TEST_WORLD" );
+        test_world != nullptr && test_world[0] != '\0' ) {
+        const std::string world_name = std::string( test_world ) == "1" ?
+                                       "Netplay Test" : std::string( test_world );
+        if( main_menu::test_start_world( world_name ) ) {
+            shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
+            get_event_bus().send<event_type::game_begin>( getVersionString() );
+            while( !g->do_turn() ) {}
+        } else {
+            DebugLog( D_ERROR, DC_ALL ) << "test world failed to start\n";
+        }
+        return;
+    }
 
     while( true ) {
         main_menu menu;

@@ -1114,6 +1114,47 @@ bool main_menu::load_game( std::string const &worldname, save_t const &savegame 
     return false;
 }
 
+bool main_menu::test_start_world( const std::string &world_name )
+{
+    world_generator->set_active_world( nullptr );
+    WORLD *world = world_generator->has_world( world_name ) ?
+                   world_generator->get_world( world_name ) : nullptr;
+    if( world == nullptr ) {
+        const std::vector<mod_id> mods{ mod_id( "dda" ), mod_id( "netplay_test" ) };
+        world = world_generator->make_new_world( world_name, mods );
+    }
+    if( world == nullptr ) {
+        return false;
+    }
+    world_generator->set_active_world( world );
+    try {
+        g->setup();
+    } catch( const std::exception &err ) {
+        DebugLog( D_ERROR, DC_ALL ) << "test world setup failed: " << err.what() << "\n";
+        return false;
+    }
+
+    bool started = false;
+    if( !world->world_saves.empty() ) {
+        started = g->load( world->world_saves.front() );
+    } else {
+        if( !get_avatar().create( character_type::NOW ) ) {
+            return false;
+        }
+        started = g->start_game();
+    }
+    if( !started ) {
+        return false;
+    }
+    // Persist the fixture so subsequent runs use the same character.
+    g->save();
+    if( const char *test_host = std::getenv( "DDA_MP_TEST_HOST" );
+        test_host != nullptr && test_host[0] != '\0' ) {
+        netplay::host_start( netplay::DEFAULT_PORT );
+    }
+    return true;
+}
+
 static std::optional<std::chrono::seconds> get_playtime_from_save( const WORLD *world,
         const save_t &save )
 {

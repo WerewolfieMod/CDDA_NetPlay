@@ -6413,6 +6413,11 @@ static bool mp_vehicle_menu_safe( const veh_menu_item &it )
         "TOGGLE_WATER_PURIFIER", "TOGGLE_SMART_ENGINE_CONTROLLER",
         "TOGGLE_AUTOCLAVE", "TOGGLE_MWS",
         "EXAMINE_VEHICLE_EFFECTS", "USE_NL_BOILER",
+        // DDA MP v4.0a-289: the host examine screen now runs as a client-side
+        // uilist session; these callbacks only need ordinary bridged uilists.
+        "EXAMINE_VEHICLE", "CONTROL_AUTOPILOT",
+        "TURRET_TARGET_MODE", "TURRET_FIRE_MODE", "UNLOAD_TURRET",
+        "FOLD_VEHICLE", "FAUCET_DRINK", "PURIFY_WATER",
     };
     return safe_actions.count( it._hotkey_action.value() ) > 0;
 }
@@ -6504,9 +6509,7 @@ static void mp_send_vehicle_menu( int sid, npc &av )
         const bool locked = it._check_locked && built.locked;
         std::string client_action;
         if( it._hotkey_action.has_value() ) {
-            if( it._hotkey_action.value() == "EXAMINE_VEHICLE" ) {
-                client_action = "parts";
-            } else if( it._hotkey_action.value() == "GET_ITEMS" ) {
+            if( it._hotkey_action.value() == "GET_ITEMS" ) {
                 client_action = "items";
             } else if( it._hotkey_action.value() == "CONTROL_ENGINES" ) {
                 client_action = "engines";

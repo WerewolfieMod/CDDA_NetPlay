@@ -1,0 +1,72 @@
+[
+  {
+    "type": "item_group",
+    "subtype": "distribution",
+    "id": "NC_NETPLAY_TRADE",
+    "entries": [
+      { "item": "jerky", "prob": 100 },
+      { "item": "bandages", "prob": 100 },
+      { "item": "water_clean", "prob": 100, "count": 2 },
+      { "item": "glock_19", "prob": 100 },
+      { "item": "glockmag", "prob": 100, "count": 2 },
+      { "item": "9mm", "prob": 100, "count": 50 },
+      { "item": "backpack", "prob": 100 },
+      { "item": "flashlight", "prob": 100 }
+    ]
+  },
+  {
+    "type": "npc_class",
+    "id": "NC_NETPLAY_TRADER",
+    "name": { "str": "Netplay Trader" },
+    "job_description": "I am the test trader.",
+    "common": false,
+    "shopkeeper_item_group": "NC_NETPLAY_TRADE",
+    "skills": [ { "skill": "ALL", "level": { "constant": 8 } } ]
+  },
+  {
+    "type": "npc_class",
+    "id": "NC_NETPLAY_ALLY",
+    "name": { "str": "Netplay Ally" },
+    "job_description": "I am the test ally.",
+    "common": false,
+    "skills": [ { "skill": "ALL", "level": { "constant": 8 } } ]
+  },
+  {
+    "type": "npc",
+    "id": "netplay_trader",
+    "name_suffix": "Trader",
+    "class": "NC_NETPLAY_TRADER",
+    "attitude": 0,
+    "mission": "NULL",
+    "chat": "TALK_DONE",
+    "faction": "no_faction"
+  },
+  {
+    "type": "npc",
+    "id": "netplay_ally",
+    "name_suffix": "Ally",
+    "class": "NC_NETPLAY_ALLY",
+    "attitude": 0,
+    "mission": "NULL",
+    "chat": "TALK_DONE",
+    "faction": "no_faction"
+  },
+  {
+    "type": "npc",
+    "id": "netplay_mission",
+    "name_suffix": "Quest Giver",
+    "class": "NC_NETPLAY_MISSION",
+    "attitude": 0,
+    "mission": "NULL",
+    "chat": "TALK_DONE",
+    "faction": "no_faction"
+  },
+  {
+    "type": "npc_class",
+    "id": "NC_NETPLAY_MISSION",
+    "name": { "str": "Netplay Mission Giver" },
+    "job_description": "I am the test mission giver.",
+    "common": false,
+    "skills": [ { "skill": "ALL", "level": { "constant": 8 } } ]
+  }
+]

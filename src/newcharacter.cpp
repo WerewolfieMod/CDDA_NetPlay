@@ -790,6 +790,12 @@ bool avatar::create( character_type type, const std::string &tempname )
             //tabs.position.last();
             break;
         case character_type::NOW:
+            // DDA MP test hook: let a test world choose its own scenario so
+            // the test facility profession/start location are deterministic.
+            if( const char *test_scenario = std::getenv( "DDA_MP_TEST_SCENARIO" );
+                test_scenario != nullptr && test_scenario[0] != '\0' ) {
+                set_scenario( &string_id<scenario>( test_scenario ).obj() );
+            }
             //default world, fixed scenario, random name
             randomize( false, true );
             break;

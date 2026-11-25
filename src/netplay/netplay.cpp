@@ -117,6 +117,11 @@ static void put_str( std::vector<char> &buf, const std::string &s )
     put_u16( buf, static_cast<uint16_t>( s.size() ) );
     buf.insert( buf.end(), s.begin(), s.end() );
 }
+static void put_str32( std::vector<char> &buf, const std::string &s )
+{
+    put_u32( buf, static_cast<uint32_t>( s.size() ) );
+    buf.insert( buf.end(), s.begin(), s.end() );
+}
 static void put_str8( std::vector<char> &buf, const std::string &s )
 {
     const size_t n = std::min<size_t>( s.size(), 255 );
@@ -172,6 +177,16 @@ struct reader {
             return 0;
         }
         return static_cast<uint8_t>( data[off++] );
+    }
+    std::string get_str32() {
+        const uint32_t len = get_u32();
+        if( !ok || off + len > size ) {
+            ok = false;
+            return {};
+        }
+        std::string s( data + off, data + off + len );
+        off += len;
+        return s;
     }
     std::string get_str8() {
         const uint8_t len = get_u8();
@@ -1061,6 +1076,7 @@ static void host_session_reader( int sid, socket_t sock )
             ans.canceled = r.get_u8() != 0;
             ans.retval = static_cast<int>( r.get_i32() );
             ans.index = static_cast<int>( r.get_i32() );
+            ans.text = r.get_str8();
             if( r.ok ) {
                 {
                     std::lock_guard<std::mutex> lk( state.prompt_mutex );
@@ -1379,10 +1395,10 @@ static void host_accept_loop()
         r.size = payload.size();
         const uint16_t proto_hi = r.get_u16();
         const std::string name = r.get_str();
-        if( !r.ok || proto_hi != /* NETPLAY_PROTOCOL */ 0x0001 ) {
+        if( !r.ok || proto_hi != /* NETPLAY_PROTOCOL */ 0x0002 ) {
             // deny
             std::vector<char> d;
-            put_str( d, "Protocol mismatch; DDA MP 0.1 expects protocol 1" );
+            put_str( d, "Protocol mismatch; DDA MP 0.1 expects protocol 2" );
             send_all( peer, encode_frame( frame::DENY, d ) );
             close_socket( peer );
             continue;
@@ -1413,7 +1429,7 @@ static void host_accept_loop()
         }
 #endif
         std::vector<char> w;
-        put_u16( w, /* NETPLAY_PROTOCOL */ 0x0001 );
+        put_u16( w, /* NETPLAY_PROTOCOL */ 0x0002 );
         put_u32( w, static_cast<uint32_t>( sid ) );
         // DDA MP fat client: announce the host's active world so the client
         // can load the same mod data before rendering snapshots.
@@ -1795,11 +1811,11 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     std::vector<char> p;
     put_u16( p, static_cast<uint16_t>( snap.width ) );
     put_u16( p, static_cast<uint16_t>( snap.height ) );
-    put_str( p, snap.status_line );
+    put_str32( p, snap.status_line );
     // DDA MP v4.2: host clock/weather for the client's native renderer.
     p.push_back( static_cast<char>( snap.has_time ? 1 : 0 ) );
     put_i32( p, snap.turn );
-    put_str( p, snap.weather );
+    put_str32( p, snap.weather );
     p.push_back( static_cast<char>( snap.avatar_facing ) );
     p.push_back( static_cast<char>( snap.avatar_controlling ? 1 : 0 ) );
     put_i32( p, snap.oxygen );
@@ -1830,7 +1846,7 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
         put_i32( p, cf.ay );
         put_i32( p, cf.az );
         p.push_back( static_cast<char>( cf.facing ) );
-        put_str( p, cf.json );
+        put_str32( p, cf.json );
     }
     for( const cell &c : snap.cells ) {
         put_u32( p, static_cast<uint32_t>( c.glyph ) );
@@ -1905,7 +1921,7 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             p.push_back( static_cast<char>( t.light_b ) );
             p.push_back( static_cast<char>( t.critter_rot ) );
             p.push_back( static_cast<char>( t.critter_badge ) );
-            put_str( p, t.critter_overlays );
+            put_str32( p, t.critter_overlays );
             // v3.9.1: item itype variant (draw_item draws items with
             // itype_variant().id; tilesets resolve "id_var_<variant>").
             put_str8( p, t.item_variant );
@@ -1939,7 +1955,7 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
             p.push_back( static_cast<char>( t.mem_dec_rot ) );
             put_u32( p, t.mem_sym );
             // v4.0a-135: graffiti text.
-            put_str( p, t.graffiti );
+            put_str32( p, t.graffiti );
         }
         // DDA MP v4.0a-4: absolute world origin of the frame's pivot cell,
         // written after the cell loop. The reader's exact-fit ladder decodes
@@ -3003,6 +3019,8 @@ static bool mp_send_prompt_req( int sid, const prompt_request &pr )
     p.push_back( static_cast<char>( pr.type ) );
     put_str8( p, pr.text );
     put_i32( p, pr.selected );
+    put_str8( p, pr.value );
+    put_i32( p, pr.max_length );
     put_u16( p, static_cast<uint16_t>( std::min<size_t>( pr.entries.size(), 65535 ) ) );
     for( const prompt_entry &e : pr.entries ) {
         put_str8( p, e.txt );
@@ -3075,6 +3093,29 @@ std::optional<prompt_answer> host_prompt_uilist( const std::string &text, int se
         state.prompt_has_answer = false;
     }
     return mp_wait_prompt_answer( pr );
+}
+
+std::optional<std::string> host_prompt_string( const std::string &title,
+        const std::string &value, int max_length )
+{
+    if( host_prompt_owner() == 0 || !host_is_running() ) {
+        return std::nullopt;
+    }
+    prompt_request pr;
+    pr.type = prompt_type::string_input;
+    pr.text = title;
+    pr.value = value;
+    pr.max_length = max_length;
+    {
+        std::lock_guard<std::mutex> lk( state.prompt_mutex );
+        pr.id = state.prompt_next_id++;
+        state.prompt_has_answer = false;
+    }
+    const auto ans = mp_wait_prompt_answer( pr );
+    if( !ans || ans->canceled ) {
+        return std::nullopt;
+    }
+    return ans->text;
 }
 
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
@@ -3676,10 +3717,10 @@ static void client_run( socket_t sock )
             snapshot snap;
             snap.width = static_cast<int>( r.get_u16() );
             snap.height = static_cast<int>( r.get_u16() );
-            snap.status_line = r.get_str();
+            snap.status_line = r.get_str32();
             snap.has_time = r.get_u8() != 0;
             snap.turn = r.get_i32();
-            snap.weather = r.get_str();
+            snap.weather = r.get_str32();
             snap.avatar_facing = r.get_u8();
             snap.avatar_controlling = r.get_u8() != 0;
             snap.oxygen = r.get_i32();
@@ -3711,7 +3752,7 @@ static void client_run( socket_t sock )
                 cf.ay = r.get_i32();
                 cf.az = r.get_i32();
                 cf.facing = static_cast<uint8_t>( r.get_u8() );
-                cf.json = r.get_str();
+                cf.json = r.get_str32();
                 snap.creatures.push_back( std::move( cf ) );
             }
             // DDA MP v4.0a-82: validate dimensions in size_t; the u16 fields
@@ -3850,7 +3891,7 @@ static void client_run( socket_t sock )
                                     if( extras >= 13 ) {
                                         t.critter_rot = static_cast<int8_t>( rr.get_u8() );
                                         t.critter_badge = rr.get_u8();
-                                        t.critter_overlays = rr.get_str();
+                                        t.critter_overlays = rr.get_str32();
                                     }
                                     if( extras >= 14 ) {
                                         t.item_variant = rr.get_str8();
@@ -3883,7 +3924,7 @@ static void client_run( socket_t sock )
                                         t.mem_sym = rr.get_u32();
                                     }
                                     if( extras >= 18 ) {
-                                        t.graffiti = rr.get_str();
+                                        t.graffiti = rr.get_str32();
                                     }
                                     out.push_back( std::move( t ) );
                                 }
@@ -4245,6 +4286,8 @@ static void client_run( socket_t sock )
             pr.type = static_cast<prompt_type>( r.get_u8() );
             pr.text = r.get_str8();
             pr.selected = static_cast<int>( r.get_i32() );
+            pr.value = r.get_str8();
+            pr.max_length = static_cast<int>( r.get_i32() );
             const uint16_t n = r.get_u16();
             for( uint16_t i = 0; i < n && r.ok; i++ ) {
                 prompt_entry e;
@@ -4440,7 +4483,7 @@ bool client_connect( const std::string &address_, int port )
 
     // HELLO
     std::vector<char> hello;
-    put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0001 );
+    put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0002 );
     put_str( hello, "player" ); // v1: replace with a configured player name
     if( !client_send_on( sock, frame::HELLO, hello ) ) {
         state.stop_client();
@@ -4589,6 +4632,7 @@ bool client_send_prompt_answer( const prompt_answer &ans )
     p.push_back( static_cast<char>( ans.canceled ? 1 : 0 ) );
     put_i32( p, ans.retval );
     put_i32( p, ans.index );
+    put_str8( p, ans.text );
     return client_send_on( state.client_sock, frame::PROMPT_RES, p );
 }
 

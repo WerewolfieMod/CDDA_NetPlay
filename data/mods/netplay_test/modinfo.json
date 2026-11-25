@@ -1,0 +1,12 @@
+[
+  {
+    "type": "MOD_INFO",
+    "id": "netplay_test",
+    "name": "Netplay Test Facility",
+    "description": "A deterministic test facility for DDA MP host/client action and rendering regression tests.",
+    "authors": [ "DDA MP" ],
+    "maintainers": [ "DDA MP" ],
+    "category": "content",
+    "dependencies": [ "dda" ]
+  }
+]

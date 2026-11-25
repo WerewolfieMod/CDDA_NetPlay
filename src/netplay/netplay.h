@@ -202,8 +202,9 @@ struct overmap_block {
 
 /// DDA MP v4.0a-247: one remote UI prompt.
 enum class prompt_type : uint8_t {
-    query_yn = 0,  ///< text only; answer.retval = 1 yes / 0 no
-    uilist = 1     ///< title + entries; answer.retval/index
+    query_yn = 0,    ///< text only; answer.retval = 1 yes / 0 no
+    uilist = 1,      ///< title + entries; answer.retval/index
+    string_input = 2 ///< title + value; answer.text
 };
 struct prompt_entry {
     std::string txt;
@@ -216,6 +217,9 @@ struct prompt_request {
     prompt_type type = prompt_type::query_yn;
     std::string text;
     int selected = 0;
+    /// string_input: initial value and the maximum accepted length.
+    std::string value;
+    int max_length = 60;
     std::vector<prompt_entry> entries;
 };
 struct prompt_answer {
@@ -223,6 +227,8 @@ struct prompt_answer {
     bool canceled = true;
     int retval = 0;
     int index = 0;
+    /// string_input: the entered text (empty = cancelled/no change).
+    std::string text;
 };
 
 /// DDA MP: one creature in the session avatar's local frame, raw facts for the
@@ -759,6 +765,9 @@ int host_prompt_owner();
 std::optional<bool> host_prompt_query_yn( const std::string &text );
 std::optional<prompt_answer> host_prompt_uilist( const std::string &text, int selected,
                                                  const std::vector<prompt_entry> &entries );
+/// Ask the owning session for a line of text. nullopt = no owner/client gone.
+std::optional<std::string> host_prompt_string( const std::string &title,
+        const std::string &value = std::string(), int max_length = 60 );
 /// DDA MP: send local-frame creature facts for the aim panel.
 bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list );
 /// Client side: latest aim target list.

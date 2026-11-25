@@ -327,6 +327,9 @@ class veh_interact
         void cache_tool_availability();
         void allocate_windows();
         void do_main_loop( map &here );
+        /// DDA MP: the same examine screen driven by the owning client's
+        /// vanilla uilist prompts instead of the host's local curses UI.
+        void netplay_loop( map &here );
 
         void cache_tool_availability_update_lifting( const tripoint_bub_ms &world_cursor_pos );
 

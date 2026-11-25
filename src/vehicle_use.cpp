@@ -3018,7 +3018,9 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         .hotkey( "FOLD_VEHICLE" )
         .on_submit( [this] {
             vehicle_folding_activity_actor folding_act( *this );
-            get_avatar().assign_activity( folding_act );
+            // DDA MP: get_player_character() is the session avatar while a
+            // remote vehicle-menu callback runs; normally it is the host avatar.
+            get_player_character().assign_activity( folding_act );
         } );
     }
 
