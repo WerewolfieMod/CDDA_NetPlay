@@ -18,8 +18,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <list>
 #include <set>
+#include <unordered_map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -7152,18 +7154,69 @@ static void mp_send_zones( int sid )
     }
 }
 
+namespace
+{
+using mp_intent_handler = std::function<bool( const netplay::intent_request & )>;
+
+/// DDA MP v4.0a-290: typed command registry. New actions register here and
+/// are dispatched before the legacy if-chain; the chain shrinks as handlers
+/// move over. The caller already holds the session region/prompt scopes.
+std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
+{
+    static std::unordered_map<std::string, mp_intent_handler> registry = [] {
+        std::unordered_map<std::string, mp_intent_handler> r;
+        r.emplace( "help", []( const netplay::intent_request &in ) {
+            npc *av = av_session_npc( in.sid );
+            if( av != nullptr ) {
+                host_help_nearby( *av );
+                av_send_status( in.sid );
+            }
+            return true;
+        } );
+        // DDA MP v4.0a-290 test command: proves registry dispatch and the
+        // trailing command_id without touching game state.
+        r.emplace( "test.registry", []( const netplay::intent_request &in ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "registry ok sid=%d cmd=%u action=%s\n",
+                              in.sid, in.command_id, in.action.c_str() );
+                std::fclose( f );
+            }
+            netplay::host_send_event_to_sid( in.sid, "registry ok",
+                                             static_cast<int>( m_info ) );
+            return true;
+        } );
+        return r;
+    }();
+    return registry;
+}
+} // namespace
+
 void host_pump_intents()
 {
     host_region_sync();
     netplay::intent_request in;
+    static std::unordered_map<int, uint32_t> mp_last_command_id;
     for( int budget = 0; budget < 8; budget++ ) {
         if( !netplay::host_pop_intent( in ) ) {
             break;
+        }
+        // DDA MP v4.0a-290: drop exact duplicate resends from the same session.
+        if( in.command_id != 0 ) {
+            uint32_t &last = mp_last_command_id[in.sid];
+            if( in.command_id == last ) {
+                continue;
+            }
+            last = in.command_id;
         }
         // DDA MP v4.0a-142: intents are handled in the requesting session's
         // region (the map-bound ones would otherwise run against the host).
         region_scope scope( in.sid );
         mp_prompt_scope mp_ps( in.sid );
+        if( const auto it = mp_intent_registry().find( in.action );
+            it != mp_intent_registry().end() ) {
+            it->second( in );
+            continue;
+        }
         // DDA MP v4.0a-131: crafting recipe chosen in the client's own UI.
         if( ( in.action == "craft" || in.action == "craft.all" ) && !in.data.empty() ) {
             npc *av = av_session_npc( in.sid );
@@ -7879,14 +7932,6 @@ void host_pump_intents()
             continue;
         }
         // DDA MP v4.0a-174: help with another player's long activity.
-        if( in.action == "help" ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                host_help_nearby( *av );
-                av_send_status( in.sid );
-            }
-            continue;
-        }
         // DDA MP v4.0a-191: per-session mission ledger. The client lists the
         // NPC's unassigned missions, accepts one with the index, and can open
         // its own journal at any time.

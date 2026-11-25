@@ -8461,6 +8461,17 @@ void run_view_loop()
                     mp_inv_log( "test: client afk" );
                 }
             }
+            // DDA MP v4.0a-290 test hook: send one generic command through
+            // the intent registry after the first picture.
+            if( const char *test_intent = std::getenv( "DDA_MP_TEST_CLIENT_INTENT" );
+                test_intent != nullptr && test_intent[0] != '\0' ) {
+                static bool mp_test_intent_once = false;
+                if( !mp_test_intent_once && mp_have_picture && mp_native_avatar_ready ) {
+                    mp_test_intent_once = true;
+                    netplay::client_send_intent( test_intent, 0, {} );
+                    mp_inv_log( std::string( "test: intent " ) + test_intent );
+                }
+            }
             // DDA MP test hook: send one engine action from the client after
             // the first picture, so automated runs can exercise the host's
             // per-action message routing (smash emits action messages).

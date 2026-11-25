@@ -148,11 +148,11 @@ B — это не «ещё несколько intent'ов», а архитект
 
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
-| P1-1 | Схема команды: id, args, generation/epoch, actor, target, idempotency | `netplay.h`, schema | — | одна схема для host/client | TODO |
-| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | TODO |
+| P1-1 | Схема команды: id, args, generation/epoch, actor, target, idempotency | `netplay.h`, schema | — | одна схема для host/client | DONE (`command_id`, args, generation, sid) |
+| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | PARTIAL (registry + `help`; legacy chain) |
 | P1-3 | `CommandSink` на клиенте + wrappers | `netplay_ui.cpp` | P1-1 | UI вызывает sink, не пишет напрямую | TODO |
 | P1-4 | ACK/NACK/result/error model; таймауты/retry | protocol | P1-1 | клиент видит успех/ошибку | TODO |
-| P1-5 | Generation/epoch/revision; stale rejection | protocol | P1-1 | устаревшая команда не применяется | TODO |
+| P1-5 | Generation/epoch/revision; stale rejection | protocol | P1-1 | устаревшая команда не применяется | PARTIAL (exact duplicate drop by `command_id`; generation/revision legacy) |
 | P1-6 | Rate limit/backpressure/per-session queue | host | P1-2 | очередь не растёт бесконечно | TODO |
 | P1-7 | Портировать все текущие intent'ы в команды (список из action audit) | `netplay_world.cpp` | P1-2 | legacy intents только shim | TODO |
 | P1-8 | Idempotency/duplicate suppression | protocol | P1-4 | retry не применяет дважды | TODO |
@@ -495,6 +495,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-289 | Host+client auto-run: `--mpclient`, `DDA_MP_TEST_AVATAR=player`, `DDA_MP_TEST_AVATAR_AUTO=1`; клиент получает снапшот и привязывает аватара | TCP `Established`, `avatar op kind=3`, `panels: host layout applied`, `snapapply #1` |
 | 2026-11-25 | ddamp-v4.0a-289 | `background_pane` в `run_view_loop`: `stdscr` ack-ается до tile-canvas; устранён чёрный кадр из input-pump между двумя корректными present'ами | replay и native: `netplay_present_client_*` стабильно ~273 КБ, карта и native-sidebar видны; `drawwin stdscr` больше не каждый кадр |
 | 2026-11-25 | ddamp-v4.0a-289 | Версия netplay-протокола поднята до 2 из-за несовместимого формата снапшота (32-битные длины строк); старый клиент получает явный DENY | host/client одной сборки соединяются; несовместимый клиент отклоняется |
+| 2026-11-25 | ddamp-v4.0a-290 | P1: `intent_request::command_id` (опциональный trailing u32) и точное отбрасывание дублей; первый `CommandRegistry` с обработчиком `help` | сборка; host/client прогон — после пересборки |
 
 ### 9.3. Что протестировано
 

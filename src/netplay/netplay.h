@@ -140,6 +140,9 @@ struct intent_request {
     int generation = 0;
     std::vector<int> args;
     std::string data;
+    /// DDA MP v4.0a-290: client-assigned id for duplicate/idempotency checks.
+    /// Optional on the wire: 0 means a legacy sender that did not provide one.
+    uint32_t command_id = 0;
 };
 
 /// One minimap block: overmap tiles around the avatar, colours precomputed by

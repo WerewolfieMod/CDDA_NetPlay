@@ -1244,6 +1244,11 @@ static void host_session_reader( int sid, socket_t sock )
             if( r.ok && r.off < r.size ) {
                 in.data = r.get_str();
             }
+            // Optional trailing command id (v4.0a-290+); absent on legacy
+            // senders, which leaves the field at its default 0.
+            if( r.ok && r.off + 4 <= r.size ) {
+                in.command_id = r.get_u32();
+            }
             if( r.ok && !in.action.empty() ) {
                 if( in.action == "pickup.tiles" && in.args.size() >= 2 ) {
                     std::lock_guard<std::mutex> lk( state.pickup_tile_mutex );
@@ -3386,6 +3391,10 @@ bool client_send_intent( const std::string &action, int generation,
         put_i32( p, a );
     }
     put_str( p, data );
+    // DDA MP v4.0a-290: optional trailing id so the host can drop exact
+    // duplicates; legacy hosts simply ignore the extra four bytes.
+    static std::atomic<uint32_t> mp_next_command_id{ 1 };
+    put_u32( p, mp_next_command_id.fetch_add( 1 ) );
     return client_send_on( state.client_sock, frame::INTENT, p );
 }
 
