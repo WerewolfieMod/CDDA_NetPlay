@@ -1400,10 +1400,10 @@ static void host_accept_loop()
         r.size = payload.size();
         const uint16_t proto_hi = r.get_u16();
         const std::string name = r.get_str();
-        if( !r.ok || proto_hi != /* NETPLAY_PROTOCOL */ 0x0002 ) {
+        if( !r.ok || proto_hi != /* NETPLAY_PROTOCOL */ 0x0003 ) {
             // deny
             std::vector<char> d;
-            put_str( d, "Protocol mismatch; DDA MP 0.1 expects protocol 2" );
+            put_str( d, "Protocol mismatch; DDA MP 0.1 expects protocol 3" );
             send_all( peer, encode_frame( frame::DENY, d ) );
             close_socket( peer );
             continue;
@@ -1434,7 +1434,7 @@ static void host_accept_loop()
         }
 #endif
         std::vector<char> w;
-        put_u16( w, /* NETPLAY_PROTOCOL */ 0x0002 );
+        put_u16( w, /* NETPLAY_PROTOCOL */ 0x0003 );
         put_u32( w, static_cast<uint32_t>( sid ) );
         // DDA MP fat client: announce the host's active world so the client
         // can load the same mod data before rendering snapshots.
@@ -1821,6 +1821,11 @@ static std::vector<char> encode_snapshot_payload_raw( const snapshot &snap )
     p.push_back( static_cast<char>( snap.has_time ? 1 : 0 ) );
     put_i32( p, snap.turn );
     put_str32( p, snap.weather );
+    put_str32( p, snap.vehicle_json );
+    put_i32( p, snap.veh_ax );
+    put_i32( p, snap.veh_ay );
+    put_i32( p, snap.veh_az );
+    p.push_back( static_cast<char>( snap.has_vehicle_info ? 1 : 0 ) );
     p.push_back( static_cast<char>( snap.avatar_facing ) );
     p.push_back( static_cast<char>( snap.avatar_controlling ? 1 : 0 ) );
     put_i32( p, snap.oxygen );
@@ -3730,6 +3735,46 @@ static void client_run( socket_t sock )
             snap.has_time = r.get_u8() != 0;
             snap.turn = r.get_i32();
             snap.weather = r.get_str32();
+            snap.vehicle_json = r.get_str32();
+            snap.veh_ax = r.get_i32();
+            snap.veh_ay = r.get_i32();
+            snap.veh_az = r.get_i32();
+            snap.has_vehicle_info = r.get_u8() != 0;
+            // The host may broadcast a watcher frame right after the session
+            // frame. Keep the last authoritative vehicle payload so that a
+            // broadcast cannot blank the client mirror before it is applied.
+            static std::string mp_veh_json_cache;
+            static int mp_veh_ax_cache = 0;
+            static int mp_veh_ay_cache = 0;
+            static int mp_veh_az_cache = 0;
+            static int mp_veh_ox_cache = 0;
+            static int mp_veh_oy_cache = 0;
+            static int mp_veh_oz_cache = 0;
+            if( snap.has_vehicle_info ) {
+                if( snap.vehicle_json.empty() ) {
+                    mp_veh_json_cache.clear();
+                } else {
+                    mp_veh_json_cache = snap.vehicle_json;
+                    mp_veh_ax_cache = snap.veh_ax;
+                    mp_veh_ay_cache = snap.veh_ay;
+                    mp_veh_az_cache = snap.veh_az;
+                    mp_veh_ox_cache = snap.origin_x;
+                    mp_veh_oy_cache = snap.origin_y;
+                    mp_veh_oz_cache = snap.origin_z;
+                }
+                snap.veh_ox = snap.origin_x;
+                snap.veh_oy = snap.origin_y;
+                snap.veh_oz = snap.origin_z;
+            } else if( !mp_veh_json_cache.empty() ) {
+                snap.vehicle_json = mp_veh_json_cache;
+                snap.veh_ax = mp_veh_ax_cache;
+                snap.veh_ay = mp_veh_ay_cache;
+                snap.veh_az = mp_veh_az_cache;
+                snap.veh_ox = mp_veh_ox_cache;
+                snap.veh_oy = mp_veh_oy_cache;
+                snap.veh_oz = mp_veh_oz_cache;
+                snap.has_vehicle_info = true;
+            }
             snap.avatar_facing = r.get_u8();
             snap.avatar_controlling = r.get_u8() != 0;
             snap.oxygen = r.get_i32();
@@ -4492,7 +4537,7 @@ bool client_connect( const std::string &address_, int port )
 
     // HELLO
     std::vector<char> hello;
-    put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0002 );
+    put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0003 );
     put_str( hello, "player" ); // v1: replace with a configured player name
     if( !client_send_on( sock, frame::HELLO, hello ) ) {
         state.stop_client();

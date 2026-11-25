@@ -60,6 +60,7 @@
 #include "overmap_ui.h"    // client-side sky/time window
 
 #include "submap.h"      // synthetic client-side map bubble
+#include "vehicle.h"     // mirrored host vehicle for native veh_interact
 #include "lightmap.h"    // lit_level (client light overlay)
 #include "mtype.h"
 #include "input_context.h"
@@ -5559,6 +5560,104 @@ static void mp_native_apply_minimap_visibility()
     }
 }
 
+/* DDA MP v4.0a-298: rebuild a real vehicle object in the mirror map from the
+ * host JSON. The streamed vehicle_parts frames remain the renderer fallback
+ * for distant/memorized vehicles; this object exists so native veh_interact
+ * can inspect parts, cargo and tools with the same engine code as SP. */
+static vehicle *mp_mirror_vehicle = nullptr;
+static tripoint_abs_sm mp_mirror_vehicle_sm;
+
+static void mp_clear_mirror_vehicle()
+{
+    if( mp_mirror_vehicle == nullptr ) {
+        return;
+    }
+    if( submap *sm = MAPBUFFER.lookup_submap( mp_mirror_vehicle_sm ) ) {
+        auto &vehs = sm->vehicles;
+        vehs.erase( std::remove_if( vehs.begin(), vehs.end(),
+        []( const std::unique_ptr<vehicle> &v ) {
+            return v.get() == mp_mirror_vehicle;
+        } ), vehs.end() );
+    }
+    mp_mirror_vehicle = nullptr;
+    get_map().clear_vehicle_level_caches();
+}
+
+static void mp_native_apply_vehicle_json( const snapshot &snap )
+{
+    if( !snap.has_vehicle_info ) {
+        return;  // broadcast frame: never clear the session's vehicle mirror
+    }
+    static std::string mp_applied_vehicle_json;
+    if( snap.vehicle_json.empty() ) {
+        mp_applied_vehicle_json.clear();
+        mp_clear_mirror_vehicle();
+        return;
+    }
+    const tripoint_abs_ms host_veh( snap.veh_ax, snap.veh_ay, snap.veh_az );
+    const tripoint_abs_ms host_viewer( snap.veh_ox, snap.veh_oy, snap.veh_oz );
+    const tripoint_abs_ms mirror_abs =
+        get_avatar().pos_abs() + ( host_veh - host_viewer );
+    const tripoint_abs_sm vsm = project_to<coords::sm>( mirror_abs );
+    const tripoint_abs_ms sm_abs = project_to<coords::ms>( vsm );
+    const point_sm_ms mirror_pos = rebase_sm( ( mirror_abs - sm_abs ).xy() );
+
+    const bool mp_need_json = snap.vehicle_json != mp_applied_vehicle_json;
+    if( mp_need_json ) {
+        mp_clear_mirror_vehicle();
+        try {
+            JsonValue jv = json_loader::from_string( snap.vehicle_json );
+            // Empty prototype: the serialized vehicle already carries its
+            // type and parts. Constructing from a real prototype first would
+            // leave stale fake-part indices after deserialize_parts() clears
+            // the parts vector.
+            std::unique_ptr<vehicle> veh = std::make_unique<vehicle>( vproto_id() );
+            veh->deserialize( jv.get_object() );
+            veh->sm_pos = vsm;
+            veh->pos = mirror_pos;
+            submap *sm = MAPBUFFER.lookup_submap( vsm );
+            if( sm == nullptr ) {
+                // The vehicle can be just outside the bubble's cached submaps
+                // after a re-anchor; create an empty one so the object can be
+                // attached and cached for veh_at.
+                static const ter_id t_open_air( "t_open_air" );
+                auto empty = std::make_unique<submap>();
+                for( int mx = 0; mx < SEEX; mx++ ) {
+                    for( int my = 0; my < SEEY; my++ ) {
+                        empty->set_ter( point_sm_ms( mx, my ), t_open_air );
+                    }
+                }
+                MAPBUFFER.add_submap( vsm, empty );
+                sm = MAPBUFFER.lookup_submap( vsm );
+            }
+            if( sm == nullptr ) {
+                mp_inv_log( "vehicle: mirror submap create failed" );
+                return;
+            }
+            sm->vehicles.push_back( std::move( veh ) );
+            mp_mirror_vehicle = sm->vehicles.back().get();
+            mp_mirror_vehicle_sm = vsm;
+            mp_applied_vehicle_json = snap.vehicle_json;
+            get_map().clear_vehicle_level_caches();
+            get_map().add_vehicle_to_cache( mp_mirror_vehicle );
+            mp_inv_log( string_format(
+                            "vehicle: mirror applied parts=%d pos=%d,%d z%d veh_at=%d",
+                            mp_mirror_vehicle->part_count(),
+                            mirror_abs.x(), mirror_abs.y(), mirror_abs.z(),
+                            get_map().veh_at( get_avatar().pos_bub() ).has_value() ? 1 : 0 ) );
+        } catch( const std::exception &err ) {
+            mp_inv_log( std::string( "vehicle: mirror JSON error " ) + err.what() );
+        }
+    } else if( mp_mirror_vehicle != nullptr ) {
+        // Same JSON, but the avatar may have moved: keep the mirror vehicle
+        // anchored to its streamed offset and refresh the veh_at cache.
+        mp_mirror_vehicle->sm_pos = vsm;
+        mp_mirror_vehicle->pos = mirror_pos;
+        get_map().clear_vehicle_level_caches();
+        get_map().add_vehicle_to_cache( mp_mirror_vehicle );
+    }
+}
+
 static void mp_native_apply_snapshot( const snapshot &snap )
 {
     const tripoint_abs_ms center_abs( snap.origin_x, snap.origin_y, snap.origin_z );
@@ -5578,6 +5677,7 @@ static void mp_native_apply_snapshot( const snapshot &snap )
     get_avatar().controlling_vehicle = snap.avatar_controlling;
     get_avatar().oxygen = snap.oxygen;
     get_avatar().netplay_oxygen_max = snap.oxygen_max;
+    mp_native_apply_vehicle_json( snap );
     if( netplay::mp_diag_enabled() ) {
         static int mp_oxy_log = 0;
         if( mp_oxy_log < 5 ) {

@@ -425,6 +425,22 @@ struct snapshot {
     /// DDA MP v4.0a-263: the host's vehicle sidebar values while the avatar is
     /// in a vehicle. The client mirror has no vehicle object, so the stock
     /// vehicle widgets/panels would stay empty without these.
+    /// DDA MP v4.0a-298: full JSON of the vehicle under the session avatar.
+    /// The client rebuilds a real vehicle in its mirror map so native
+    /// veh_interact can inspect parts, cargo and tools instead of a menu stub.
+    std::string vehicle_json;
+    int veh_ax = 0;
+    int veh_ay = 0;
+    int veh_az = 0;
+    /// True when this frame was built for a bound session avatar and therefore
+    /// carries authoritative vehicle presence (even "no vehicle"). Broadcast
+    /// frames leave it false so they cannot clear a valid client mirror.
+    bool has_vehicle_info = false;
+    /// Session-frame origin that belongs to vehicle_json (client-side cache;
+    /// broadcast frames reuse it so they cannot erase the mirror).
+    int veh_ox = 0;
+    int veh_oy = 0;
+    int veh_oz = 0;
     bool has_vehicle_status = false;
     std::string veh_azimuth;
     std::string veh_cruise;

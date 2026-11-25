@@ -1030,6 +1030,23 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
         out.oxygen = mp_oxy->oxygen;
         out.oxygen_max = mp_oxy->get_oxygen_max();
     }
+    // DDA MP v4.0a-298: ship the full vehicle under the avatar so the client
+    // can rebuild it as a real object for native veh_interact.
+    out.vehicle_json.clear();
+    out.veh_ax = out.veh_ay = out.veh_az = 0;
+    out.has_vehicle_info = viewer != nullptr;
+    if( viewer != nullptr ) {
+        if( const optional_vpart_position mp_veh = here.veh_at( viewer->pos_bub() ) ) {
+            std::ostringstream mp_vos;
+            JsonOut mp_vjo( mp_vos );
+            mp_veh->vehicle().serialize( mp_vjo );
+            out.vehicle_json = mp_vos.str();
+            const tripoint_abs_ms mp_vabs = mp_veh->vehicle().pos_abs();
+            out.veh_ax = mp_vabs.x();
+            out.veh_ay = mp_vabs.y();
+            out.veh_az = mp_vabs.z();
+        }
+    }
     // DDA MP v4.0a-263: host-side vehicle sidebar values. The client mirror
     // has no vehicle object, so the stock vehicle widgets would stay empty.
     out.has_vehicle_status = false;
@@ -7619,6 +7636,9 @@ static bool mp_cmd_vehicle_parts( const netplay::intent_request &in )
             }
         }
         mp_send_vehicle_parts( in.sid, *av );
+        // DDA MP v4.0a-298: push a fresh picture so the client receives the
+        // full vehicle JSON (native veh_interact mirror) immediately.
+        av_send_session_picture( in.sid, av->pos_bub(), av );
         if( !netplay::host_avatar_keys_pending() ) {
             g->mp_anchor_map_on( get_avatar() );
         }

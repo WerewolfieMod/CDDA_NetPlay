@@ -165,7 +165,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | P2-1 | Дополнить character mirror: moves/view_offset/avatar-only/state | `netplay_ui.cpp` | P1-1 | sidebar/UI видят те же значения | TODO |
 | P2-2 | Полное map/submap-зеркало: terrain/furniture/traps/fields/memory | client mirror | P2-9 | `map` пригоден для UI | TODO |
 | P2-3 | Полные items: contents/ammo/rot/ownership/color/variant/uid/deltas | item serializer | P2-2 | item UI/actions точны | TODO |
-| P2-4 | Полные vehicles: serialize/deserialize, parts/tools/cargo/crew/labels/doors | `vehicle` JSON | P2-2 | `veh_interact` работает | TODO |
+| P2-4 | Полные vehicles: serialize/deserialize, parts/tools/cargo/crew/labels/doors | `vehicle` JSON | P2-2 | `veh_interact` работает | PARTIAL (snapshot vehicle JSON + 91-part mirror object; `veh_at` cache mismatch) |
 | P2-5 | Creatures: NPC/monster mirror, appearance/equipment/effects/visibility | creature JSON | P2-2 | существа и их UI совпадают | TODO |
 | P2-6 | Calendar/weather: turn/type/intensity/temp/wind | snapshot | — | погода/время/виджеты | TODO |
 | P2-7 | Overmap: known/seen, cities/roads/specials/notes/markers/tracking | overmap | P2-2 | overmap UI пригоден | TODO |
@@ -504,6 +504,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-295 | P1-2: в registry перенесены autoattack, fire, chat | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-296 | P1-2: в registry перенесены talk_npc и dialogue_choice | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-297 | P1-2 завершён: в registry перенесены миссии (offers/accept/turnin-list/turnin) и торговля (list/buy/sell); legacy-цепочка пуста | host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
+| 2026-11-25 | ddamp-v4.0a-298 | P2-4 WIP: снапшот несёт полный `vehicle_json` + абсолютную позицию; клиент собирает `vehicle` (91 часть) из пустого прототипа; broadcast-кадры больше не затирают зеркало | host отправляет JSON ~50 КБ; клиент: `vehicle: mirror applied parts=91`; `veh_at` пока 0 |
 
 ### 9.3. Что протестировано
 
@@ -520,6 +521,7 @@ JSON/mapgen:
 | 2026-11-25 | P1-2 | Registry batch: autoattack, fire, chat | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P1-2 | Registry batch: talk_npc, dialogue_choice | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P1-2 | Registry complete: missions, trade, fallback-only legacy chain | сборка; host/client: `registry ok`, `rx snap tiles=1568` |
+| 2026-11-25 | P2-4 | Vehicle JSON mirror (`test_vehicle_refuel` + `DDA_MP_TEST_SPAWN_CAR=1`) | host JSON ~50 КБ; client `vehicle: mirror applied parts=91`; `veh_at` пока 0 (координатный/кэш-дефект) |
 
 ### 9.4. Следующие 5 задач
 
