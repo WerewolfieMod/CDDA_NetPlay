@@ -495,7 +495,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-289 | Host+client auto-run: `--mpclient`, `DDA_MP_TEST_AVATAR=player`, `DDA_MP_TEST_AVATAR_AUTO=1`; клиент получает снапшот и привязывает аватара | TCP `Established`, `avatar op kind=3`, `panels: host layout applied`, `snapapply #1` |
 | 2026-11-25 | ddamp-v4.0a-289 | `background_pane` в `run_view_loop`: `stdscr` ack-ается до tile-canvas; устранён чёрный кадр из input-pump между двумя корректными present'ами | replay и native: `netplay_present_client_*` стабильно ~273 КБ, карта и native-sidebar видны; `drawwin stdscr` больше не каждый кадр |
 | 2026-11-25 | ddamp-v4.0a-289 | Версия netplay-протокола поднята до 2 из-за несовместимого формата снапшота (32-битные длины строк); старый клиент получает явный DENY | host/client одной сборки соединяются; несовместимый клиент отклоняется |
-| 2026-11-25 | ddamp-v4.0a-290 | P1: `intent_request::command_id` (опциональный trailing u32) и точное отбрасывание дублей; первый `CommandRegistry` с обработчиком `help` | сборка; host/client прогон — после пересборки |
+| 2026-11-25 | ddamp-v4.0a-290 | P1: `intent_request::command_id` (опциональный trailing u32) и точное отбрасывание дублей; первый `CommandRegistry` с обработчиками `help`/`test.registry` | host/client: `intent tx test.registry` → `registry ok sid=1 cmd=1 action=test.registry`; `rx snap tiles=1568` |
 
 ### 9.3. Что протестировано
 
@@ -504,6 +504,7 @@ JSON/mapgen:
 | 2026-11-25 | P0-1 | Создание мира `Netplay Test` (`DDA_MP_TEST_WORLD`), сценарий `netplay_test_scenario`, профессия `netplay_tester` | мир и персонаж сохраняются; старт в `netplay_test_hub`; 3 NPC в зале; 6/6 машин; двери совмещены; `rotate:false`; JSON-ошибок нет |
 | 2026-11-25 | P0-2 | Host+client: host слушает `24224`, клиент `--mpclient 127.0.0.1:24224` + `DDA_MP_TEST_AVATAR_AUTO=1` | TCP established; аватар привязан (`avatar op kind=3`), `rx snap tiles=1568`, `snapapply #1`; стабильный кадр карты |
 | 2026-11-25 | P4-6 | Replay/native renderer клиента после `background_pane` | native: карта + панели, `render geom`, `snapapply`; `present_client_*` ~273 КБ без чёрных кадров |
+| 2026-11-25 | P1-1/P1-2 | `command_id` + registry: `DDA_MP_TEST_CLIENT_INTENT=test.registry` | `intent tx test.registry`; host `registry ok sid=1 cmd=1 action=test.registry`; client `test: intent test.registry` |
 
 ### 9.4. Следующие 5 задач
 
