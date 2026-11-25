@@ -8090,6 +8090,323 @@ static bool mp_cmd_dialogue_choice( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_mission_offers( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    if( other != nullptr && other != av && !other->is_enemy() &&
+        !mp_is_player_creature( other ) ) {
+        if( const char *test_mission = std::getenv( "DDA_MP_TEST_NPC_MISSION" );
+            test_mission != nullptr && test_mission[0] != '\0' &&
+            other->chatbin.missions.empty() ) {
+            mission *m = mission::reserve_random( ORIGIN_ANY_NPC,
+                                                  other->pos_abs_omt(),
+                                                  other->getID() );
+            if( m != nullptr ) {
+                other->chatbin.missions.push_back( m );
+            }
+        }
+        other->chatbin.check_missions();
+        mp_send_mission_offers( in.sid, *other );
+    } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "missions request sid=%d dx=%d dy=%d result=no_npc\n",
+                      in.sid, in.args[0], in.args[1] );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_mission_accept( const netplay::intent_request &in )
+{
+    if( in.args.size() < 3 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    const int idx = in.args[2];
+    if( other != nullptr && other != av && idx >= 0 &&
+        idx < static_cast<int>( other->chatbin.missions.size() ) ) {
+        mission *m = other->chatbin.missions[idx];
+        if( m != nullptr && !m->is_assigned() ) {
+            {
+                mp_mission_player_scope mp_as_player( *av );
+                m->assign( *av );
+            }
+            other->chatbin.missions.erase( other->chatbin.missions.begin() + idx );
+            other->chatbin.missions_assigned.push_back( m );
+            mp_session_missions[in.sid].push_back( m );
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "mission accept sid=%d npc=%s mission=%s result=ok\n",
+                              in.sid, other->get_name().c_str(), m->name().c_str() );
+                std::fclose( f );
+            }
+            netplay::host_send_event_fmt_to_sid(
+                in.sid, "Mission accepted: %s",
+                { "\x02N" + m->mission_id().str() },
+                static_cast<int>( m_good ) );
+        }
+    } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "mission accept sid=%d dx=%d dy=%d idx=%d result=no_npc\n",
+                      in.sid, in.args[0], in.args[1], idx );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_mission_turnin_list( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    if( other != nullptr && other != av && !other->is_enemy() ) {
+        mp_send_mission_turnins( in.sid, *av, *other );
+    }
+    return true;
+}
+
+static bool mp_cmd_mission_turnin( const netplay::intent_request &in )
+{
+    if( in.args.size() < 3 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    const int uid = in.args[2];
+    if( netplay::mp_diag_enabled() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+            std::fprintf( f, "turnin req sid=%d av=%d other=%d uid=%d\n",
+                          in.sid, av != nullptr ? 1 : 0,
+                          other != nullptr ? 1 : 0, uid );
+            std::fclose( f );
+        }
+    }
+    if( other == nullptr || other == av ) {
+        return true;
+    }
+    for( mission *m : mp_session_missions[in.sid] ) {
+        const bool found = m != nullptr && m->get_id() == uid &&
+                           m->get_assigned_player_id() == av->getID();
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "turnin cand sid=%d id=%d found=%d assigned=%d\n",
+                              in.sid, m != nullptr ? m->get_id() : -1,
+                              found ? 1 : 0,
+                              m != nullptr && m->is_assigned() ? 1 : 0 );
+                std::fclose( f );
+            }
+        }
+        if( !found ) {
+            continue;
+        }
+        const auto assigned = std::find( other->chatbin.missions_assigned.begin(),
+                                         other->chatbin.missions_assigned.end(), m );
+        if( assigned == other->chatbin.missions_assigned.end() ||
+            !mp_mission_ready_to_turn_in( m, *av, *other ) ) {
+            if( netplay::mp_diag_enabled() ) {
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "turnin reject sid=%d uid=%d assigned=%d ready=%d\n",
+                                  in.sid, uid,
+                                  assigned != other->chatbin.missions_assigned.end() ? 1 : 0,
+                                  mp_mission_ready_to_turn_in( m, *av, *other ) ? 1 : 0 );
+                    std::fclose( f );
+                }
+            }
+            break;
+        }
+        if( netplay::mp_diag_enabled() ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "turnin wrap sid=%d uid=%d\n", in.sid, uid );
+                std::fclose( f );
+            }
+        }
+        {
+            mp_quiet_remote_data quiet;
+            mp_mission_player_scope mp_as_player( *av );
+            m->wrap_up( *av );
+        }
+        other->chatbin.missions_assigned.erase( assigned );
+        other->op_of_u.owed += m->get_value();
+        netplay::host_send_event_fmt_to_sid(
+            in.sid, "Mission completed: %s",
+            { "\x02N" + m->mission_id().str() },
+            static_cast<int>( m_good ) );
+        if( m->has_generic_rewards() && m->get_value() > 0 ) {
+            mp_trade_credit[in.sid] += m->get_value();
+            netplay::host_send_event_to_sid(
+                in.sid,
+                string_format( fork_text( "Reward credit: %s" ),
+                               format_money( m->get_value() ) ),
+                static_cast<int>( m_good ) );
+        }
+        mp_send_mission_journal( in.sid );
+        break;
+    }
+    return true;
+}
+
+static bool mp_cmd_trade_list( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    const int mode = in.args.size() >= 3 ? in.args[2] : 0;
+    if( other != nullptr && other != av && !other->is_enemy() ) {
+        if( const char *test_cash = std::getenv( "DDA_MP_TEST_NPC_CASH" );
+            test_cash != nullptr && test_cash[0] != '\0' ) {
+            other->cash = std::max( other->cash, std::atoi( test_cash ) );
+        }
+        mp_send_trade_list( in.sid, *av, *other, mode == 1 ? 1 : 0 );
+    }
+    return true;
+}
+
+static bool mp_cmd_trade( const netplay::intent_request &in )
+{
+    if( in.args.size() < 3 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = av->pos_bub() +
+                              tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    Creature *cr = get_creature_tracker().creature_at( p );
+    npc *other = dynamic_cast<npc *>( cr );
+    const int idx = in.args[2];
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+        std::fprintf( f, "trade request sid=%d action=%s dx=%d dy=%d idx=%d "
+                      "npc=%s npc_id=%d cached_id=%d items=%d\n",
+                      in.sid, in.action.c_str(), in.args[0], in.args[1], idx,
+                      other != nullptr ? other->get_name().c_str() : "none",
+                      other != nullptr ? other->getID().get_value() : -1,
+                      mp_trade_npc_id[in.sid],
+                      static_cast<int>( mp_trade_items[in.sid].size() ) );
+        std::fclose( f );
+    }
+    if( other == nullptr || other == av ||
+        mp_trade_npc_id[in.sid] != other->getID().get_value() ||
+        idx < 0 || idx >= static_cast<int>( mp_trade_items[in.sid].size() ) ) {
+        return true;
+    }
+    const mp_trade_entry entry = mp_trade_items[in.sid][idx];
+    const int max_amount = entry.charge ? entry.count : 1;
+    const int amount = std::clamp(
+                           in.args.size() >= 4 ? in.args[3] : 1, 1, max_amount );
+    if( in.action == "trade_buy" ) {
+        const int price = entry.charge
+                          ? npc_trading::adjusted_price( entry.it, amount, *av, *other )
+                          : entry.price;
+        const int credit_used = std::min( price, mp_trade_credit[in.sid] );
+        const int pay = price - credit_used;
+        if( pay > 0 && av->cash < pay ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "trade buy sid=%d price=%d pay=%d credit=%d cash=%d result=no_money\n",
+                              in.sid, price, pay, credit_used, av->cash );
+                std::fclose( f );
+            }
+            netplay::host_send_event_to_sid(
+                in.sid, fork_text( "You don't have enough money." ),
+                static_cast<int>( m_bad ) );
+        } else {
+            item gift;
+            if( !mp_take_item_part( *other, entry.it, amount, gift ) ) {
+                netplay::host_send_event_to_sid(
+                    in.sid, fork_text( "That item moved. Reopen the trade." ),
+                    static_cast<int>( m_bad ) );
+            } else {
+                av->i_add_or_drop( gift );
+                mp_trade_credit[in.sid] -= credit_used;
+                av->cash -= pay;
+                other->cash += pay;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "trade buy sid=%d price=%d pay=%d credit=%d cash=%d result=ok\n",
+                                  in.sid, price, pay, credit_used, av->cash );
+                    std::fclose( f );
+                }
+                netplay::host_send_event_fmt_to_sid(
+                    in.sid, "You buy %s for %s.",
+                    { "\x02I" + gift.typeId().str(), format_money( price ) },
+                    static_cast<int>( m_good ) );
+            }
+        }
+        mp_send_trade_list( in.sid, *av, *other, 0 );
+    } else {
+        const int price = entry.charge
+                          ? npc_trading::adjusted_price( entry.it, amount, *other, *av )
+                          : entry.price;
+        if( price > 0 && other->cash < price ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "trade sell sid=%d price=%d npc_cash=%d cash=%d result=no_money\n",
+                              in.sid, price, other->cash, av->cash );
+                std::fclose( f );
+            }
+            netplay::host_send_event_to_sid(
+                in.sid, fork_text( "The trader doesn't have enough money." ),
+                static_cast<int>( m_bad ) );
+        } else {
+            item gift;
+            if( !mp_take_item_part( *av, entry.it, amount, gift ) ) {
+                netplay::host_send_event_to_sid(
+                    in.sid, fork_text( "That item moved. Reopen the trade." ),
+                    static_cast<int>( m_bad ) );
+            } else {
+                other->i_add( gift );
+                av->cash += price;
+                other->cash -= price;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                    std::fprintf( f, "trade sell sid=%d price=%d npc_cash=%d cash=%d result=ok\n",
+                                  in.sid, price, other->cash, av->cash );
+                    std::fclose( f );
+                }
+                netplay::host_send_event_fmt_to_sid(
+                    in.sid, "You sell %s for %s.",
+                    { "\x02I" + gift.typeId().str(), format_money( price ) },
+                    static_cast<int>( m_good ) );
+            }
+        }
+        mp_send_trade_list( in.sid, *av, *other, 1 );
+    }
+    return true;
+}
+
 /// DDA MP v4.0a-290: typed command registry. New actions register here and
 /// are dispatched before the legacy if-chain; the chain shrinks as handlers
 /// move over. The caller already holds the session region/prompt scopes.
@@ -8173,6 +8490,13 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "chat", mp_cmd_chat );
         r.emplace( "talk_npc", mp_cmd_talk_npc );
         r.emplace( "dialogue_choice", mp_cmd_dialogue_choice );
+        r.emplace( "mission_offers", mp_cmd_mission_offers );
+        r.emplace( "mission_accept", mp_cmd_mission_accept );
+        r.emplace( "mission_turnin_list", mp_cmd_mission_turnin_list );
+        r.emplace( "mission_turnin", mp_cmd_mission_turnin );
+        r.emplace( "trade_list", mp_cmd_trade_list );
+        r.emplace( "trade_buy", mp_cmd_trade );
+        r.emplace( "trade_sell", mp_cmd_trade );
         return r;
     }();
     return registry;
@@ -8206,310 +8530,8 @@ void host_pump_intents()
             continue;
         }
 
-        // DDA MP v4.0a-212: autoattack from the client. avatar_action::autoattack()
-        // only takes an avatar, so the host repeats its target selection with
-        // Character-level calls.
-        // DDA MP v4.0a-174: help with another player's long activity.
-        // DDA MP v4.0a-191: per-session mission ledger. The client lists the
-        // NPC's unassigned missions, accepts one with the index, and can open
-        // its own journal at any time.
-        if( in.action == "mission_offers" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                if( other != nullptr && other != av && !other->is_enemy() &&
-                    !mp_is_player_creature( other ) ) {
-                    if( const char *test_mission = std::getenv( "DDA_MP_TEST_NPC_MISSION" );
-                        test_mission != nullptr && test_mission[0] != '\0' &&
-                        other->chatbin.missions.empty() ) {
-                        mission *m = mission::reserve_random( ORIGIN_ANY_NPC,
-                                                              other->pos_abs_omt(),
-                                                              other->getID() );
-                        if( m != nullptr ) {
-                            other->chatbin.missions.push_back( m );
-                        }
-                    }
-                    other->chatbin.check_missions();
-                    mp_send_mission_offers( in.sid, *other );
-                } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "missions request sid=%d dx=%d dy=%d result=no_npc\n",
-                                  in.sid, in.args[0], in.args[1] );
-                    std::fclose( f );
-                }
-            }
-            continue;
-        }
-        if( in.action == "mission_accept" && in.args.size() >= 3 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                const int idx = in.args[2];
-                if( other != nullptr && other != av && idx >= 0 &&
-                    idx < static_cast<int>( other->chatbin.missions.size() ) ) {
-                    mission *m = other->chatbin.missions[idx];
-                    if( m != nullptr && !m->is_assigned() ) {
-                        {
-                            // DDA MP v4.0a-217: start effects must run as the
-                            // session avatar, like the end effects below.
-                            mp_mission_player_scope mp_as_player( *av );
-                            m->assign( *av );
-                        }
-                        other->chatbin.missions.erase( other->chatbin.missions.begin() + idx );
-                        other->chatbin.missions_assigned.push_back( m );
-                        mp_session_missions[in.sid].push_back( m );
-                        if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                            std::fprintf( f, "mission accept sid=%d npc=%s mission=%s result=ok\n",
-                                          in.sid, other->get_name().c_str(), m->name().c_str() );
-                            std::fclose( f );
-                        }
-                        netplay::host_send_event_fmt_to_sid(
-                            in.sid, "Mission accepted: %s",
-                            { "\x02N" + m->mission_id().str() },
-                            static_cast<int>( m_good ) );
-                    }
-                } else if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "mission accept sid=%d dx=%d dy=%d idx=%d result=no_npc\n",
-                                  in.sid, in.args[0], in.args[1], idx );
-                    std::fclose( f );
-                }
-            }
-            continue;
-        }
-        if( in.action == "mission_turnin_list" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                if( other != nullptr && other != av && !other->is_enemy() ) {
-                    mp_send_mission_turnins( in.sid, *av, *other );
-                }
-            }
-            continue;
-        }
-        if( in.action == "mission_turnin" && in.args.size() >= 3 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                const int uid = in.args[2];
-                if( netplay::mp_diag_enabled() ) {
-                    if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                        std::fprintf( f, "turnin req sid=%d av=%d other=%d uid=%d\n",
-                                      in.sid, av != nullptr ? 1 : 0,
-                                      other != nullptr ? 1 : 0, uid );
-                        std::fclose( f );
-                    }
-                }
-                if( other != nullptr && other != av ) {
-                    for( mission *m : mp_session_missions[in.sid] ) {
-                        const bool found = m != nullptr && m->get_id() == uid &&
-                                           m->get_assigned_player_id() == av->getID();
-                        if( netplay::mp_diag_enabled() ) {
-                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                std::fprintf( f, "turnin cand sid=%d id=%d found=%d assigned=%d\n",
-                                              in.sid, m != nullptr ? m->get_id() : -1,
-                                              found ? 1 : 0,
-                                              m != nullptr && m->is_assigned() ? 1 : 0 );
-                                std::fclose( f );
-                            }
-                        }
-                        if( !found ) {
-                            continue;
-                        }
-                        const auto assigned = std::find( other->chatbin.missions_assigned.begin(),
-                                                         other->chatbin.missions_assigned.end(), m );
-                        if( assigned == other->chatbin.missions_assigned.end() ||
-                            !mp_mission_ready_to_turn_in( m, *av, *other ) ) {
-                            if( netplay::mp_diag_enabled() ) {
-                                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                    std::fprintf( f, "turnin reject sid=%d uid=%d assigned=%d ready=%d\n",
-                                                  in.sid, uid,
-                                                  assigned != other->chatbin.missions_assigned.end() ? 1 : 0,
-                                                  mp_mission_ready_to_turn_in( m, *av, *other ) ? 1 : 0 );
-                                    std::fclose( f );
-                                }
-                            }
-                            break;
-                        }
-                        if( netplay::mp_diag_enabled() ) {
-                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                std::fprintf( f, "turnin wrap sid=%d uid=%d\n", in.sid, uid );
-                                std::fclose( f );
-                            }
-                        }
-                        {
-                            // Mission end effects are engine content and may
-                            // debugmsg (e.g. a missing turn-in item); a modal
-                            // here would freeze every session. They must also
-                            // act on this session's avatar, not the host.
-                            mp_quiet_remote_data quiet;
-                            mp_mission_player_scope mp_as_player( *av );
-                            m->wrap_up( *av );
-                        }
-                        other->chatbin.missions_assigned.erase( assigned );
-                        // DDA MP v4.0a-206: mirror talk_function::mission_reward:
-                        // the NPC owes the player the mission value.
-                        other->op_of_u.owed += m->get_value();
-                        netplay::host_send_event_fmt_to_sid(
-                            in.sid, "Mission completed: %s",
-                            { "\x02N" + m->mission_id().str() },
-                            static_cast<int>( m_good ) );
-                        if( m->has_generic_rewards() && m->get_value() > 0 ) {
-                            mp_trade_credit[in.sid] += m->get_value();
-                            netplay::host_send_event_to_sid(
-                                in.sid,
-                                string_format( fork_text( "Reward credit: %s" ),
-                                               format_money( m->get_value() ) ),
-                                static_cast<int>( m_good ) );
-                        }
-                        mp_send_mission_journal( in.sid );
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-193: custom barter. Lists are built by the host with
-        // engine pricing; the client only sees names/prices and item indices.
-        if( in.action == "trade_list" && in.args.size() >= 2 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                const int mode = in.args.size() >= 3 ? in.args[2] : 0;
-                if( other != nullptr && other != av && !other->is_enemy() ) {
-                    if( const char *test_cash = std::getenv( "DDA_MP_TEST_NPC_CASH" );
-                        test_cash != nullptr && test_cash[0] != '\0' ) {
-                        other->cash = std::max( other->cash, std::atoi( test_cash ) );
-                    }
-                    mp_send_trade_list( in.sid, *av, *other, mode == 1 ? 1 : 0 );
-                }
-            }
-            continue;
-        }
-        if( ( in.action == "trade_buy" || in.action == "trade_sell" ) &&
-            in.args.size() >= 3 ) {
-            npc *av = av_session_npc( in.sid );
-            if( av != nullptr ) {
-                const tripoint_bub_ms p = av->pos_bub() +
-                                          tripoint_rel_ms( in.args[0], in.args[1], 0 );
-                Creature *cr = get_creature_tracker().creature_at( p );
-                npc *other = dynamic_cast<npc *>( cr );
-                const int idx = in.args[2];
-                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                    std::fprintf( f, "trade request sid=%d action=%s dx=%d dy=%d idx=%d "
-                                  "npc=%s npc_id=%d cached_id=%d items=%d\n",
-                                  in.sid, in.action.c_str(), in.args[0], in.args[1], idx,
-                                  other != nullptr ? other->get_name().c_str() : "none",
-                                  other != nullptr ? other->getID().get_value() : -1,
-                                  mp_trade_npc_id[in.sid],
-                                  static_cast<int>( mp_trade_items[in.sid].size() ) );
-                    std::fclose( f );
-                }
-                if( other != nullptr && other != av &&
-                    mp_trade_npc_id[in.sid] == other->getID().get_value() &&
-                    idx >= 0 && idx < static_cast<int>( mp_trade_items[in.sid].size() ) ) {
-                    const mp_trade_entry entry = mp_trade_items[in.sid][idx];
-                    const int max_amount = entry.charge ? entry.count : 1;
-                    const int amount = std::clamp(
-                                           in.args.size() >= 4 ? in.args[3] : 1, 1, max_amount );
-                    if( in.action == "trade_buy" ) {
-                        const int price = entry.charge
-                                          ? npc_trading::adjusted_price( entry.it, amount, *av, *other )
-                                          : entry.price;
-                        const int credit_used = std::min( price, mp_trade_credit[in.sid] );
-                        const int pay = price - credit_used;
-                        if( pay > 0 && av->cash < pay ) {
-                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                std::fprintf( f, "trade buy sid=%d price=%d pay=%d credit=%d cash=%d result=no_money\n",
-                                              in.sid, price, pay, credit_used, av->cash );
-                                std::fclose( f );
-                            }
-                            netplay::host_send_event_to_sid(
-                                in.sid, fork_text( "You don't have enough money." ),
-                                static_cast<int>( m_bad ) );
-                        } else {
-                            item gift;
-                            if( !mp_take_item_part( *other, entry.it, amount, gift ) ) {
-                                netplay::host_send_event_to_sid(
-                                    in.sid, fork_text( "That item moved. Reopen the trade." ),
-                                    static_cast<int>( m_bad ) );
-                            } else {
-                                av->i_add_or_drop( gift );
-                                mp_trade_credit[in.sid] -= credit_used;
-                                // The mission credit is session-wide; owe
-                                // state belongs to the NPC that gave the
-                                // mission, so do not decrement another
-                                // trader's opinion here.
-                                av->cash -= pay;
-                                other->cash += pay;
-                                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                    std::fprintf( f, "trade buy sid=%d price=%d pay=%d credit=%d cash=%d result=ok\n",
-                                                  in.sid, price, pay, credit_used, av->cash );
-                                    std::fclose( f );
-                                }
-                                netplay::host_send_event_fmt_to_sid(
-                                    in.sid, "You buy %s for %s.",
-                                    { "\x02I" + gift.typeId().str(), format_money( price ) },
-                                    static_cast<int>( m_good ) );
-                            }
-                        }
-                        mp_send_trade_list( in.sid, *av, *other, 0 );
-                    } else {
-                        const int price = entry.charge
-                                          ? npc_trading::adjusted_price( entry.it, amount, *other, *av )
-                                          : entry.price;
-                        if( price > 0 && other->cash < price ) {
-                            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                std::fprintf( f, "trade sell sid=%d price=%d npc_cash=%d cash=%d result=no_money\n",
-                                              in.sid, price, other->cash, av->cash );
-                                std::fclose( f );
-                            }
-                            netplay::host_send_event_to_sid(
-                                in.sid, fork_text( "The trader doesn't have enough money." ),
-                                static_cast<int>( m_bad ) );
-                        } else {
-                            item gift;
-                            if( !mp_take_item_part( *av, entry.it, amount, gift ) ) {
-                                netplay::host_send_event_to_sid(
-                                    in.sid, fork_text( "That item moved. Reopen the trade." ),
-                                    static_cast<int>( m_bad ) );
-                            } else {
-                                other->i_add( gift );
-                                av->cash += price;
-                                other->cash -= price;
-                                if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                                    std::fprintf( f, "trade sell sid=%d price=%d npc_cash=%d cash=%d result=ok\n",
-                                                  in.sid, price, other->cash, av->cash );
-                                    std::fclose( f );
-                                }
-                                netplay::host_send_event_fmt_to_sid(
-                                    in.sid, "You sell %s for %s.",
-                                    { "\x02I" + gift.typeId().str(), format_money( price ) },
-                                    static_cast<int>( m_good ) );
-                            }
-                        }
-                        mp_send_trade_list( in.sid, *av, *other, 1 );
-                    }
-                }
-            }
-            continue;
-        }
-        // DDA MP v4.0a-121: ranged fire. The client picked the target with the
-        // stock cursor; the host resolves the shot on the session avatar.
-
+        // DDA MP v4.0a-297: every known intent is registered above; this is
+        // the unknown-action fallback.
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
             std::fprintf( f, "intent unhandled sid=%d action=%s args=%d\n",
                           in.sid, in.action.c_str(), static_cast<int>( in.args.size() ) );

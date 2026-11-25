@@ -149,7 +149,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
 | P1-1 | Схема команды: id, args, generation/epoch, actor, target, idempotency | `netplay.h`, schema | — | одна схема для host/client | DONE (`command_id`, args, generation, sid) |
-| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | PARTIAL (registry: help, vehicle, suicide, sort_armor, movement_mode, zones, grab, haul, smash, reach_attack, use_winch, butcher, construct, workout, pick_style, default_ammo, recraft, craft, spells, mission_journal, autoattack, fire, chat, talk_npc, dialogue_choice; остальные legacy: missions/trade) |
+| P1-2 | `CommandRegistry` на хосте; замена ручной цепочки `host_pump_intents` | `netplay_world.cpp` | P1-1 | новые действия регистрируются без `if` | DONE (все известные intent'ы в registry; fallback только для неизвестных) |
 | P1-3 | `CommandSink` на клиенте + wrappers | `netplay_ui.cpp` | P1-1 | UI вызывает sink, не пишет напрямую | TODO |
 | P1-4 | ACK/NACK/result/error model; таймауты/retry | protocol | P1-1 | клиент видит успех/ошибку | TODO |
 | P1-5 | Generation/epoch/revision; stale rejection | protocol | P1-1 | устаревшая команда не применяется | PARTIAL (exact duplicate drop by `command_id`; generation/revision legacy) |
@@ -502,6 +502,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-294 | P1-2: в registry перенесены craft/craft.all, test_spell_cast, cast_spell, mission_journal | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-295 | P1-2: в registry перенесены autoattack, fire, chat | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-296 | P1-2: в registry перенесены talk_npc и dialogue_choice | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
+| 2026-11-25 | ddamp-v4.0a-297 | P1-2 завершён: в registry перенесены миссии (offers/accept/turnin-list/turnin) и торговля (list/buy/sell); legacy-цепочка пуста | host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 
 ### 9.3. Что протестировано
 
@@ -517,6 +518,7 @@ JSON/mapgen:
 | 2026-11-25 | P1-2 | Registry batch: craft, spells, mission_journal | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P1-2 | Registry batch: autoattack, fire, chat | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P1-2 | Registry batch: talk_npc, dialogue_choice | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
+| 2026-11-25 | P1-2 | Registry complete: missions, trade, fallback-only legacy chain | сборка; host/client: `registry ok`, `rx snap tiles=1568` |
 
 ### 9.4. Следующие 5 задач
 
