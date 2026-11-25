@@ -485,13 +485,13 @@ JSON/mapgen:
 
 | Дата | Коммит | Изменение | Тесты |
 |---|---|---|---|
-| 2026-11-25 | — | Создан план B; baseline по аудитам | not tested (план) |
-| 2026-11-25 | — | Полигон `netplay_test`: сценарий/профессия/стартовая локация, 4 OMT, NPC-шаблоны; исправлены JSON (`skills.level`, `items`/`item`, `charges`); мир `Netplay Test` создаётся и сохраняется | мод грузится без JSON-ошибок; персонаж и 3 NPC созданы; карты сгенерированы |
-| 2026-11-25 | — | Фикстура: 6-я машина гаража больше не въезжает в стену; дверь лаборатории совмещена с дверью гаража; `rotate:false` у overmap_special | подтверждено на свежем мире: 6/6 машин, `t_reb_cage` нет, двери `(23,11)`↔`(0,11)` совпадают, стартовый special без поворота |
-| 2026-11-25 | — | Protocol fix: крупные строки снапшота (`status`, `weather`, creature JSON, `critter_overlays`, `graffiti`) переведены на 32-битную длину; причина — переполнение `uint16_t` на JSON аватара >65 КБ | `rx snap #1 tiles=1568` вместо `tiles=0`; `canvas=1`; tile-секция парсится |
-| 2026-11-25 | — | Host+client auto-run: `--mpclient`, `DDA_MP_TEST_AVATAR=player`, `DDA_MP_TEST_AVATAR_AUTO=1`; клиент получает снапшот и привязывает аватара | TCP `Established`, `avatar op kind=3`, `panels: host layout applied`, `snapapply #1` |
-| 2026-11-25 | — | `background_pane` в `run_view_loop`: `stdscr` ack-ается до tile-canvas; устранён чёрный кадр из input-pump между двумя корректными present'ами | replay и native: `netplay_present_client_*` стабильно ~273 КБ, карта и native-sidebar видны; `drawwin stdscr` больше не каждый кадр |
-| 2026-11-25 | — | Версия netplay-протокола поднята до 2 из-за несовместимого формата снапшота (32-битные длины строк); старый клиент получает явный DENY | host/client одной сборки соединяются; несовместимый клиент отклоняется |
+| 2026-11-25 | ddamp-v4.0a-289 | Создан план B; baseline по аудитам | not tested (план) |
+| 2026-11-25 | ddamp-v4.0a-289 | Полигон `netplay_test`: сценарий/профессия/стартовая локация, 4 OMT, NPC-шаблоны; исправлены JSON (`skills.level`, `items`/`item`, `charges`); мир `Netplay Test` создаётся и сохраняется | мод грузится без JSON-ошибок; персонаж и 3 NPC созданы; карты сгенерированы |
+| 2026-11-25 | ddamp-v4.0a-289 | Фикстура: 6-я машина гаража больше не въезжает в стену; дверь лаборатории совмещена с дверью гаража; `rotate:false` у overmap_special | подтверждено на свежем мире: 6/6 машин, `t_reb_cage` нет, двери `(23,11)`↔`(0,11)` совпадают, стартовый special без поворота |
+| 2026-11-25 | ddamp-v4.0a-289 | Protocol fix: крупные строки снапшота (`status`, `weather`, creature JSON, `critter_overlays`, `graffiti`) переведены на 32-битную длину; причина — переполнение `uint16_t` на JSON аватара >65 КБ | `rx snap #1 tiles=1568` вместо `tiles=0`; `canvas=1`; tile-секция парсится |
+| 2026-11-25 | ddamp-v4.0a-289 | Host+client auto-run: `--mpclient`, `DDA_MP_TEST_AVATAR=player`, `DDA_MP_TEST_AVATAR_AUTO=1`; клиент получает снапшот и привязывает аватара | TCP `Established`, `avatar op kind=3`, `panels: host layout applied`, `snapapply #1` |
+| 2026-11-25 | ddamp-v4.0a-289 | `background_pane` в `run_view_loop`: `stdscr` ack-ается до tile-canvas; устранён чёрный кадр из input-pump между двумя корректными present'ами | replay и native: `netplay_present_client_*` стабильно ~273 КБ, карта и native-sidebar видны; `drawwin stdscr` больше не каждый кадр |
+| 2026-11-25 | ddamp-v4.0a-289 | Версия netplay-протокола поднята до 2 из-за несовместимого формата снапшота (32-битные длины строк); старый клиент получает явный DENY | host/client одной сборки соединяются; несовместимый клиент отклоняется |
 
 ### 9.3. Что протестировано
 
