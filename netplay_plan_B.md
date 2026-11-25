@@ -505,6 +505,7 @@ JSON/mapgen:
 | 2026-11-25 | ddamp-v4.0a-296 | P1-2: в registry перенесены talk_npc и dialogue_choice | сборка; host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-297 | P1-2 завершён: в registry перенесены миссии (offers/accept/turnin-list/turnin) и торговля (list/buy/sell); legacy-цепочка пуста | host/client с `test.registry` — `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | ddamp-v4.0a-298 | P2-4 WIP: снапшот несёт полный `vehicle_json` + абсолютную позицию; клиент собирает `vehicle` (91 часть) из пустого прототипа; broadcast-кадры больше не затирают зеркало | host отправляет JSON ~50 КБ; клиент: `vehicle: mirror applied parts=91`; `veh_at` пока 0 |
+| 2026-11-25 | ddamp-v4.0a-299 | P2-4 WIP: кэш vehicle JSON по session-origin, fallback-создание submap, empty-prototype deserialize; добавлена диагностика `veh_at` | автономные прогоны приостановлены по просьбе; сборка проверяется отдельно |
 
 ### 9.3. Что протестировано
 
@@ -522,6 +523,7 @@ JSON/mapgen:
 | 2026-11-25 | P1-2 | Registry batch: talk_npc, dialogue_choice | сборка успешна; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P1-2 | Registry complete: missions, trade, fallback-only legacy chain | сборка; host/client: `registry ok`, `rx snap tiles=1568` |
 | 2026-11-25 | P2-4 | Vehicle JSON mirror (`test_vehicle_refuel` + `DDA_MP_TEST_SPAWN_CAR=1`) | host JSON ~50 КБ; client `vehicle: mirror applied parts=91`; `veh_at` пока 0 (координатный/кэш-дефект) |
+| 2026-11-25 | P2-4 | WIP submap/cache fixes | автономный прогон не выполнялся по просьбе; нужен следующий тест после фикса координат |
 
 ### 9.4. Следующие 5 задач
 
