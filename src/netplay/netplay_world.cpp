@@ -2484,6 +2484,7 @@ static void av_mark_acted( int sid )
  * the client, and the NPC loader resets `moves` to 100 on every load вЂ” the
  * engine pool alone therefore let a client walk without limit. */
 static std::map<int, int> av_move_pool;
+static std::map<int, std::size_t> av_start_engine_msg;
 /* DDA MP v4.0a-7: session is holding an action that cannot pay until the next
  * world turn вЂ” do not retry (and re-hint) it every pump cycle. */
 static std::map<int, bool> av_waiting_for_turn;
@@ -4796,6 +4797,22 @@ void host_pump_client_actions()
         return;
     }
     host_region_sync();
+    // DDA MP v4.0a-310: the stock engine-start activity finishes outside the
+    // command handler; forward its messages once the activity is gone.
+    for( auto it = av_start_engine_msg.begin(); it != av_start_engine_msg.end(); ) {
+        npc *mp_av = av_session_npc( it->first );
+        static const activity_id mp_act_start_engines( "ACT_START_ENGINES" );
+        if( mp_av != nullptr && mp_av->activity &&
+            mp_av->activity.id() == mp_act_start_engines ) {
+            ++it;
+            continue;
+        }
+        if( mp_av != nullptr ) {
+            netplay::host_forward_new_messages( it->first, it->second );
+            av_send_status( it->first );
+        }
+        it = av_start_engine_msg.erase( it );
+    }
     // DDA MP v4.0a-80: return the reality bubble to the host player after this
     // pump moved it onto a session avatar (a pending movement burst keeps its
     // own anchor because this flag stays clear).
@@ -5193,31 +5210,49 @@ void host_pump_client_actions()
                 }
                 av->setpos( here, *controls_pos, false );
                 here.board_vehicle( *controls_pos, av );
-                bool mp_engine_ok = mp_veh.engine_on;
-                if( !mp_engine_ok ) {
-                    // DDA MP v4.0a-261: start immediately for the session
-                    // avatar (stock activity looks the vehicle up from the
-                    // host player position and cannot find a remote one).
-                    mp_engine_ok = mp_veh.start_engines_direct( here, *av );
+                bool mp_engine_starting = false;
+                if( !mp_veh.engine_on ) {
+                    // DDA MP v4.0a-310: use the stock engine-start activity
+                    // (start time/conditions). Its finish already looks the
+                    // vehicle up from the acting character, not the host avatar.
+                    av_start_engine_msg[sid] = Messages::generation();
+                    mp_veh.start_engines( here, av, true );
+                    mp_engine_starting = av->controlling_vehicle;
+                    if( !mp_engine_starting ) {
+                        // No engine: start_engines returned before taking control.
+                        av->controlling_vehicle = false;
+                        av_start_engine_msg.erase( sid );
+                        changed = true;
+                        break;
+                    }
+                    if( std::getenv( "DDA_MP_TEST_GOLF" ) != nullptr ||
+                        std::getenv( "DDA_MP_TEST_HOTWIRE" ) != nullptr ) {
+                        // Test shortcut: finish the start activity immediately.
+                        for( int guard = 0; guard < 10 && av->activity; ++guard ) {
+                            av->set_moves( av->activity.moves_left + 100 );
+                            av->process_activity();
+                        }
+                        netplay::host_forward_new_messages(
+                            sid, av_start_engine_msg[sid] );
+                        av_start_engine_msg.erase( sid );
+                    }
+                } else {
+                    av->controlling_vehicle = true;
                 }
-                if( !mp_engine_ok ) {
-                    netplay::host_send_event_fmt_to_sid(
-                        sid, "The %s's engine fails to start.", { mp_veh.name },
-                        static_cast<int>( m_bad ) );
-                    av->controlling_vehicle = false;
-                    changed = true;
-                    break;
-                }
-                av->controlling_vehicle = true;
                 mp_ctrl_log( string_format(
-                                 "ctrl sid=%d take pos=%d,%d veh=%d,%d in=%d drv=%d engine=%d",
+                                 "ctrl sid=%d take pos=%d,%d veh=%d,%d in=%d drv=%d engine=%d starting=%d",
                                  sid, av->pos_bub().x(), av->pos_bub().y(),
                                  mp_veh.pos_abs().x(), mp_veh.pos_abs().y(),
                                  av->in_vehicle ? 1 : 0, av->controlling_vehicle ? 1 : 0,
-                                 mp_veh.engine_on ? 1 : 0 ) );
-                netplay::host_send_event_fmt_to_sid(
-                    sid, "You take control of the %s.", { mp_veh.name },
-                    static_cast<int>( m_info ) );
+                                 mp_veh.engine_on ? 1 : 0, mp_engine_starting ? 1 : 0 ) );
+                // start_engines() already queued "You take control..." through
+                // the session character; only the engine-already-on path needs
+                // the explicit event here.
+                if( !mp_engine_starting ) {
+                    netplay::host_send_event_fmt_to_sid(
+                        sid, "You take control of the %s.", { mp_veh.name },
+                        static_cast<int>( m_info ) );
+                }
                 // DDA MP v4.0a-267: mirror the tail of game::control_vehicle:
                 // the driver sees the vehicle live instead of through memory,
                 // and no autopilot/follow mode may fight the stick.
