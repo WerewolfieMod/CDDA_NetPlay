@@ -1,0 +1,30 @@
+[
+  {
+    "id": "mp_test_tool",
+    "type": "ITEM",
+    "subtypes": [ "TOOL" ],
+    "name": { "str": "netplay test tool" },
+    "description": "A diagnostic tool that prints one message when used.  Netplay integration tests hook it to a vehicle tool station.",
+    "symbol": ";",
+    "color": "yellow",
+    "weight": "100 g",
+    "volume": "100 ml",
+    "use_action": {
+      "type": "transform",
+      "msg": "You use the netplay test tool.",
+      "target": "mp_test_tool_used"
+    }
+  },
+  {
+    "id": "mp_test_tool_used",
+    "type": "ITEM",
+    "copy-from": "mp_test_tool",
+    "name": { "str": "netplay test tool (used)" },
+    "description": "The diagnostic tool has been used once.",
+    "use_action": {
+      "type": "transform",
+      "msg": "You reset the netplay test tool.",
+      "target": "mp_test_tool"
+    }
+  }
+]

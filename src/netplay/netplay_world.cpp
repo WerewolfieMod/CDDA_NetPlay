@@ -1222,6 +1222,10 @@ static std::map<int, std::vector<av_pick_row>> av_pick_nodes;
 static std::map<int, int> av_pick_gen;
 /* DDA MP v4.0a-97: generation of the pending "which tile?" question per session. */
 static std::map<int, int> av_pick_tile_gen;
+/* DDA MP v4.0a-318: tile offset the session's vehicle interact menu was built
+ * at, relative to the session avatar. {} means the avatar's own tile. Vehicle
+ * menu rows (examine/workbench/faucet/tool) return to this tile. */
+static std::map<int, point> av_vehicle_menu_off;
 
 /* the living avatar npc a session is bound to, or nullptr */
 static npc *av_session_npc( int sid )
@@ -6701,6 +6705,7 @@ static uint32_t mp_vehicle_menu_hash( const std::vector<veh_menu_item> &items )
         add( it._text );
         add( it._desc );
         add( it._hotkey_action.value_or( "" ) );
+        add( it._client_action.value_or( "" ) );
         add( it._hotkey_char.has_value() ? std::string( 1, it._hotkey_char.value() ) :
              std::string() );
         add( it._enabled ? "1" : "0" );
@@ -6710,17 +6715,18 @@ static uint32_t mp_vehicle_menu_hash( const std::vector<veh_menu_item> &items )
     return h;
 }
 
-static bool mp_build_vehicle_menu( npc &av, mp_vehicle_menu_data &out )
+static bool mp_build_vehicle_menu( npc &av, mp_vehicle_menu_data &out,
+                                   const tripoint_bub_ms &p )
 {
     map &here = get_map();
-    const optional_vpart_position vp = here.veh_at( av.pos_bub() );
+    const optional_vpart_position vp = here.veh_at( p );
     if( !vp ) {
         return false;
     }
     veh_menu menu( vp->vehicle(), _( "Select an action" ) );
     try {
         mp_player_character_scope scope( av );
-        vp->vehicle().build_interact_menu( menu, &here, av.pos_bub(), false );
+        vp->vehicle().build_interact_menu( menu, &here, p, false );
     } catch( ... ) {
         return false;
     }
@@ -6731,10 +6737,19 @@ static bool mp_build_vehicle_menu( npc &av, mp_vehicle_menu_data &out )
     return true;
 }
 
-static void mp_send_vehicle_menu( int sid, npc &av )
+static tripoint_bub_ms mp_vehicle_menu_target( int sid, npc &av )
+{
+    const auto it = av_vehicle_menu_off.find( sid );
+    if( it == av_vehicle_menu_off.end() ) {
+        return av.pos_bub();
+    }
+    return av.pos_bub() + tripoint_rel_ms( it->second.x, it->second.y, 0 );
+}
+
+static void mp_send_vehicle_menu_at( int sid, npc &av, const tripoint_bub_ms &p )
 {
     mp_vehicle_menu_data built;
-    if( !mp_build_vehicle_menu( av, built ) ) {
+    if( !mp_build_vehicle_menu( av, built, p ) ) {
         netplay::host_send_event_to_sid( sid, netplay::fork_text( "You are not in a vehicle." ),
                                          static_cast<int>( m_info ) );
         return;
@@ -6748,8 +6763,8 @@ static void mp_send_vehicle_menu( int sid, npc &av )
     for( const veh_menu_item &it : built.items ) {
         const bool safe = mp_vehicle_menu_safe( it );
         const bool locked = it._check_locked && built.locked;
-        std::string client_action;
-        if( it._hotkey_action.has_value() ) {
+        std::string client_action = it._client_action.value_or( "" );
+        if( client_action.empty() && it._hotkey_action.has_value() ) {
             if( it._hotkey_action.value() == "GET_ITEMS" ) {
                 client_action = "items";
             } else if( it._hotkey_action.value() == "CONTROL_ENGINES" ) {
@@ -6831,6 +6846,11 @@ static void mp_send_vehicle_menu( int sid, npc &av )
     netplay::host_send_event_to_sid( sid, os.str(), EVENT_VEHICLE_MENU );
 }
 
+static void mp_send_vehicle_menu( int sid, npc &av )
+{
+    mp_send_vehicle_menu_at( sid, av, mp_vehicle_menu_target( sid, av ) );
+}
+
 static void mp_execute_vehicle_menu( int sid, int generation, int index )
 {
     npc *av = av_session_npc( sid );
@@ -6839,8 +6859,9 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
     }
     map &here = get_map();
     g->mp_anchor_map_on( *av, true );
+    const tripoint_bub_ms mp_menu_pos = mp_vehicle_menu_target( sid, *av );
     mp_vehicle_menu_data built;
-    if( !mp_build_vehicle_menu( *av, built ) ) {
+    if( !mp_build_vehicle_menu( *av, built, mp_menu_pos ) ) {
         netplay::host_send_event_to_sid( sid, netplay::fork_text( "You are not in a vehicle." ),
                                          static_cast<int>( m_info ) );
         if( !netplay::host_avatar_keys_pending() ) {
@@ -6903,7 +6924,7 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
     }
     netplay::host_forward_new_messages( sid, msg_before );
     if( !g->swapping_dimensions ) {
-        if( const optional_vpart_position vp = here.veh_at( av->pos_bub() ) ) {
+        if( const optional_vpart_position vp = here.veh_at( mp_menu_pos ) ) {
             vp->vehicle().refresh();
         }
         here.invalidate_visibility_cache();
@@ -6918,7 +6939,7 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
         }
     }
     int mp_veh_vel = 0;
-    if( const optional_vpart_position vp = here.veh_at( av->pos_bub() ) ) {
+    if( const optional_vpart_position vp = here.veh_at( mp_menu_pos ) ) {
         mp_veh_vel = vp->vehicle().velocity;
     }
     mp_ctrl_log( string_format( "menu done sid=%d action=%s vel=%d moves=%d->%d keep=%d",
@@ -7249,6 +7270,8 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         return;
     }
     const bool mp_workbench_test = std::getenv( "DDA_MP_TEST_WORKBENCH" ) != nullptr;
+    const bool mp_veh_tool_test = std::getenv( "DDA_MP_TEST_VEH_TOOL" ) != nullptr;
+    const bool mp_cart_test = mp_workbench_test || mp_veh_tool_test;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
     };
@@ -7259,7 +7282,7 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         if( !here.inbounds( p ) || here.veh_at( p ) ) {
             continue;
         }
-        veh = here.add_vehicle( vproto_id( mp_workbench_test ? "golf_cart" : "car" ),
+        veh = here.add_vehicle( vproto_id( mp_cart_test ? "golf_cart" : "car" ),
                                 p, 0_degrees,
                                 0, damaged ? veh_spawn_status::DEFAULT_LIGHT_DMG
                                 : veh_spawn_status::PRISTINE, false, true );
@@ -7275,18 +7298,20 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     }
     if( veh != nullptr ) {
         av.setpos( here, spawn, false );
-        if( mp_workbench_test ) {
-            // Free a center mount by removing its seat, then install a
-            // workbench there and stand on it.
+        if( mp_cart_test ) {
+            // Free a center mount by removing its seat, install the test
+            // station there and keep the avatar on the vehicle origin so the
+            // vehicle JSON mirror is streamed.
             for( int i = 0; i < veh->part_count(); ++i ) {
                 vehicle_part &pt = veh->part( i );
                 if( pt.is_battery() ) {
                     pt.ammo_set( itype_id( "battery" ), 1000 );
                 }
             }
-            const vpart_info &mp_wb_info = vpart_id( "workbench" ).obj();
-            int wb_idx = -1;
-            point_rel_ms wb_mount( 0, 0 );
+            const vpart_id mp_station_id( mp_workbench_test ? "workbench" : "mp_tool_station" );
+            const vpart_info &mp_station_info = mp_station_id.obj();
+            int station_idx = -1;
+            point_rel_ms station_mount( 0, 0 );
             for( const point &off : { point( 0, 1 ), point( 0, 0 ) } ) {
                 const point_rel_ms mount( off.x, off.y );
                 for( int i = veh->part_count() - 1; i >= 0; --i ) {
@@ -7296,19 +7321,28 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     }
                 }
                 veh->part_removal_cleanup( here );
-                if( veh->can_mount( mount, mp_wb_info ).success() ) {
-                    wb_idx = veh->install_part( here, mount, vpart_id( "workbench" ) );
-                    if( wb_idx >= 0 ) {
-                        wb_mount = mount;
+                if( veh->can_mount( mount, mp_station_info ).success() ) {
+                    station_idx = veh->install_part( here, mount, mp_station_id );
+                    if( station_idx >= 0 ) {
+                        station_mount = mount;
                         break;
                     }
                 }
             }
-            if( wb_idx >= 0 ) {
-                av.setpos( here, veh->bub_part_pos( here, veh->part( wb_idx ) ), false );
+            if( station_idx >= 0 ) {
+                if( mp_veh_tool_test ) {
+                    item test_tool( itype_id( "mp_test_tool" ) );
+                    test_tool.invlet = 'T';
+                    veh->attach_tool( station_idx, test_tool );
+                }
+                // Keep the avatar on the vehicle origin (the mirror is
+                // streamed for the vehicle under it); the station is the
+                // adjacent tile the client examine prefers.
+                av.setpos( here, veh->bub_part_pos( here, veh->part( 0 ) ), false );
                 if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-                    std::fprintf( f, "test workbench part=%d mount=%d,%d\n",
-                                  wb_idx, wb_mount.x(), wb_mount.y() );
+                    std::fprintf( f, "test station part=%d mount=%d,%d tool=%s\n",
+                                  station_idx, station_mount.x(), station_mount.y(),
+                                  mp_veh_tool_test ? "mp_test_tool" : "workbench" );
                     std::fclose( f );
                 }
             }
@@ -7639,6 +7673,7 @@ static bool mp_cmd_vehicle_menu( const netplay::intent_request &in )
                 in.sid, netplay::fork_text( "You are not driving." ),
                 static_cast<int>( m_info ) );
         } else {
+            av_vehicle_menu_off[in.sid] = point( 0, 0 );
             mp_send_vehicle_menu( in.sid, *av );
         }
         if( !netplay::host_avatar_keys_pending() ) {
@@ -7652,13 +7687,88 @@ static bool mp_cmd_vehicle_menu_here( const netplay::intent_request &in )
 {
     // DDA MP v4.0a-315: open the host interact menu at the avatar's tile even
     // when it is not driving (workbench, faucet, doors, ...).
+    // DDA MP v4.0a-318: optional dx,dy target a reachable adjacent vehicle tile
+    // (tool station, kitchen unit), matching vanilla examine.
     npc *av = av_session_npc( in.sid );
     if( av != nullptr ) {
-        g->mp_anchor_map_on( *av, true );
-        mp_send_vehicle_menu( in.sid, *av );
-        if( !netplay::host_avatar_keys_pending() ) {
-            g->mp_anchor_map_on( get_avatar() );
+        const point off = in.args.size() >= 2 ? point( in.args[0], in.args[1] ) : point( 0, 0 );
+        const tripoint_bub_ms p =
+            av->pos_bub() + tripoint_rel_ms( off.x, off.y, 0 );
+        map &here = get_map();
+        if( !here.inbounds( p ) || !here.veh_at( p ) ) {
+            av_vehicle_menu_off.erase( in.sid );
+            netplay::host_send_event_to_sid(
+                in.sid, netplay::fork_text( "There is no vehicle there." ),
+                static_cast<int>( m_info ) );
+        } else {
+            av_vehicle_menu_off[in.sid] = off;
+            g->mp_anchor_map_on( *av, true );
+            mp_send_vehicle_menu_at( in.sid, *av, p );
+            if( !netplay::host_avatar_keys_pending() ) {
+                g->mp_anchor_map_on( get_avatar() );
+            }
         }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_use_tool( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-318: "Use <tool>" on a VEH_TOOLS station. The host builds
+    // the pseudo tool, charges it from the vehicle battery/tank and invokes
+    // the stock iuse on the session avatar.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms p = mp_vehicle_menu_target( in.sid, *av );
+    const optional_vpart_position vp = here.veh_at( p );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no vehicle there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    const itype_id tool( in.data );
+    if( !tool.is_valid() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "Unknown tool." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    const int moves_before = av->get_moves();
+    bool ok = false;
+    try {
+        mp_quiet_remote_data quiet;
+        mp_player_character_scope scope( *av );
+        ok = vehicle::use_vehicle_tool( vp->vehicle(), &here, vp->pos_bub( here ), tool );
+    } catch( const std::exception &e ) {
+        mp_ctrl_log( string_format( "vehicle tool failed: %s", e.what() ) );
+    } catch( ... ) {
+        mp_ctrl_log( "vehicle tool failed" );
+    }
+    mp_ctrl_log( string_format( "vehicle tool sid=%d tool=%s pos=%d,%d ok=%d",
+                                in.sid, tool.str(), p.x(), p.y(), ok ? 1 : 0 ) );
+    if( !ok ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You can't use that tool right now." ),
+            static_cast<int>( m_info ) );
+    }
+    netplay::host_forward_new_messages( in.sid, msg_before );
+    const int moves_after = av->get_moves();
+    if( moves_after < moves_before ) {
+        av_move_pool[in.sid] = std::max( 0, moves_after );
+        av->set_moves( av_move_pool[in.sid] );
+        if( av_move_pool[in.sid] <= 0 ) {
+            av_mark_acted( in.sid );
+        }
+    }
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
     }
     return true;
 }
@@ -7846,7 +7956,9 @@ static bool mp_cmd_vehicle_faucet_fill( const netplay::intent_request &in )
     if( av == nullptr || in.data.empty() ) {
         return true;
     }
-    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    // DDA MP v4.0a-318: the menu may be open on an adjacent vehicle tile.
+    const optional_vpart_position vp =
+        get_map().veh_at( mp_vehicle_menu_target( in.sid, *av ) );
     if( !vp ) {
         return true;
     }
@@ -7923,7 +8035,11 @@ static bool mp_cmd_vehicle_lockpick( const netplay::intent_request &in )
     }
     g->mp_anchor_map_on( *av, true );
     const std::size_t msg_before = Messages::generation();
-    iexamine::locked_object_pickable( *av, av->pos_bub() );
+    tripoint_bub_ms mp_lock_pos = mp_vehicle_menu_target( in.sid, *av );
+    if( !get_map().veh_at( mp_lock_pos ) ) {
+        mp_lock_pos = av->pos_bub();
+    }
+    iexamine::locked_object_pickable( *av, mp_lock_pos );
     mp_forward_new_messages( in.sid, msg_before );
     av_send_status( in.sid );
     av_send_session_picture( in.sid, av->pos_bub(), av );
@@ -9448,6 +9564,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         }
         r.emplace( "vehicle_menu", mp_cmd_vehicle_menu );
         r.emplace( "vehicle_menu_here", mp_cmd_vehicle_menu_here );
+        r.emplace( "vehicle_use_tool", mp_cmd_vehicle_use_tool );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

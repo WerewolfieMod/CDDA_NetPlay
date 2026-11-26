@@ -2737,6 +2737,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         menu.add( string_format( _( "Use %s" ), tool_type->nname( 1 ) ) )
         .enable( enabled )
         .hotkey( hk )
+        .client_action( "use_tool:" + tool_type.str() )
         .skip_locked_check( tool_ammo.is_null() || tool_ammo->ammo->type != ammo_battery )
         .on_submit( [this, vppos, tool_type, here] { use_vehicle_tool( *this, here, vppos, tool_type ); } );
     }

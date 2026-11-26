@@ -1989,6 +1989,8 @@ class vehicle
         * @return amount of ammo in the `pseudo_magazine` or 0
         */
         int prepare_tool( map &here, item &tool ) const;
+        /// DDA MP v4.0a-318: attach a tool item to a VEH_TOOLS station part.
+        void attach_tool( int part_index, item tool );
         static bool use_vehicle_tool( vehicle &veh, map *here, const tripoint_bub_ms &vp_pos,
                                       const itype_id &tool_type,
                                       bool no_invoke = false );

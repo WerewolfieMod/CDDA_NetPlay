@@ -4111,15 +4111,64 @@ static std::string mp_pick_liquid_container( const itype_id &liquid_type )
     return uids[menu.ret];
 }
 
+/* DDA MP v4.0a-318: the vehicle tile the client examine acted on. Driving
+ * examines the current tile (vanilla); otherwise the first adjacent vehicle
+ * tile, the same order ACTION_EXAMINE uses for vehicle_menu_here. */
+static std::optional<tripoint_bub_ms> mp_vehicle_menu_tile()
+{
+    map &here = get_map();
+    const tripoint_bub_ms base = get_avatar().pos_bub();
+    if( get_avatar().controlling_vehicle ) {
+        if( here.veh_at( base ) ) {
+            return base;
+        }
+        return std::nullopt;
+    }
+    static const point offsets[] = {
+        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+    };
+    std::optional<tripoint_bub_ms> first_vehicle;
+    for( const point &off : offsets ) {
+        const tripoint_bub_ms p( base + tripoint_rel_ms( off.x, off.y, 0 ) );
+        if( !here.inbounds( p ) ) {
+            continue;
+        }
+        const optional_vpart_position vp = here.veh_at( p );
+        if( !vp ) {
+            continue;
+        }
+        // Prefer a workstation/faucet-style tile over an arbitrary frame,
+        // since the netplay client has no direction prompt here.
+        if( vp->avail_part_with_feature( "VEH_TOOLS" ) ||
+            vp->avail_part_with_feature( "WORKBENCH" ) ) {
+            return p;
+        }
+        if( !first_vehicle ) {
+            first_vehicle = p;
+        }
+    }
+    if( first_vehicle ) {
+        return first_vehicle;
+    }
+    // Fallback for a vehicle part that is not a boardable tile underfoot.
+    if( here.veh_at( base ) ) {
+        return base;
+    }
+    return std::nullopt;
+}
+
 /* DDA MP v4.0a-315: native workbench menu on the client. Crafting still goes
  * through the existing craft/recraft intents to the host. */
 static void mp_run_workbench()
 {
     std::string wp_name = _( "workbench" );
-    if( const optional_vpart_position vp = get_map().veh_at( get_avatar().pos_bub() ) ) {
-        const int idx = vp->vehicle().avail_part_with_feature( vp->mount_pos(), "WORKBENCH" );
-        if( idx >= 0 ) {
-            wp_name = vp->vehicle().part( idx ).name();
+    if( const std::optional<tripoint_bub_ms> wp_pos = mp_vehicle_menu_tile() ) {
+        if( const optional_vpart_position vp = get_map().veh_at( *wp_pos ) ) {
+            const int idx = vp->vehicle().avail_part_with_feature( vp->mount_pos(), "WORKBENCH" );
+            if( idx >= 0 ) {
+                wp_name = vp->vehicle().part( idx ).name();
+            }
         }
     }
     uilist menu;
@@ -4246,7 +4295,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
         }
         const std::string &wanted = targets[mp_test_pick];
         for( int i = 0; i < static_cast<int>( actions.size() ); ++i ) {
-            if( actions[i] != wanted || !menu.entries[i].enabled ) {
+            if( ( actions[i] != wanted && client_actions[i] != wanted ) ||
+                !menu.entries[i].enabled ) {
                 continue;
             }
             ++mp_test_pick;
@@ -4268,14 +4318,19 @@ static void mp_run_vehicle_menu( const std::string &payload )
             } else if( client_actions[i] == "workbench" ) {
                 mp_run_workbench();
             } else if( client_actions[i] == "examine_vehicle" ) {
-                if( const optional_vpart_position mp_vp =
-                        get_map().veh_at( get_avatar().pos_bub() ) ) {
-                    mp_inv_log( "action: examine_vehicle -> native" );
-                    g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
-                    mp_inv_log( "action: examine_vehicle closed" );
+                if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
+                    if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
+                        mp_inv_log( "action: examine_vehicle -> native" );
+                        g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                        mp_inv_log( "action: examine_vehicle closed" );
+                    }
                 } else {
                     mp_inv_log( "action: examine_vehicle no vehicle" );
                 }
+            } else if( client_actions[i].rfind( "use_tool:", 0 ) == 0 ) {
+                const std::string mp_tool = client_actions[i].substr( 9 );
+                netplay::client_send_intent( "vehicle_use_tool", 0, {}, mp_tool );
+                mp_inv_log( "action: use_tool " + mp_tool );
             } else {
                 netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
             }
@@ -4316,14 +4371,19 @@ static void mp_run_vehicle_menu( const std::string &payload )
         } else if( ca == "workbench" ) {
             mp_run_workbench();
         } else if( ca == "examine_vehicle" ) {
-            if( const optional_vpart_position mp_vp =
-                    get_map().veh_at( get_avatar().pos_bub() ) ) {
-                mp_inv_log( "action: examine_vehicle -> native" );
-                g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
-                mp_inv_log( "action: examine_vehicle closed" );
+            if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
+                if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
+                    mp_inv_log( "action: examine_vehicle -> native" );
+                    g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                    mp_inv_log( "action: examine_vehicle closed" );
+                }
             } else {
                 mp_inv_log( "action: examine_vehicle no vehicle" );
             }
+        } else if( ca.rfind( "use_tool:", 0 ) == 0 ) {
+            const std::string mp_tool = ca.substr( 9 );
+            netplay::client_send_intent( "vehicle_use_tool", 0, {}, mp_tool );
+            mp_inv_log( "action: use_tool " + mp_tool );
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
         }
@@ -4688,14 +4748,20 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             static const bool mp_direct_veh_interact =
                 std::getenv( "DDA_MP_DIRECT_VEH_INTERACT" ) != nullptr;
             if( mp_native_avatar_ready ) {
-                if( const optional_vpart_position mp_vp =
-                        get_map().veh_at( get_avatar().pos_bub() ) ) {
+                if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
                     if( mp_direct_veh_interact ) {
-                        mp_inv_log( "action: native veh_interact (direct)" );
-                        g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                        if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
+                            mp_inv_log( "action: native veh_interact (direct)" );
+                            g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                        }
                     } else {
-                        mp_inv_log( "action: vehicle_menu_here" );
-                        netplay::client_send_intent( "vehicle_menu_here", 0, {} );
+                        const tripoint_bub_ms mp_base = get_avatar().pos_bub();
+                        netplay::client_send_intent(
+                            "vehicle_menu_here", 0,
+                            { mp_veh_pos->x() - mp_base.x(), mp_veh_pos->y() - mp_base.y() } );
+                        mp_inv_log( string_format( "action: vehicle_menu_here %d,%d",
+                                                   mp_veh_pos->x() - mp_base.x(),
+                                                   mp_veh_pos->y() - mp_base.y() ) );
                     }
                     break;
                 }
@@ -9043,13 +9109,39 @@ void run_view_loop()
                                 std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() - mp_wb_t0 ).count();
                             if( mp_wb_phase == 1 && mp_wb_ms > 2500 ) {
-                                netplay::client_send_intent( "vehicle_menu_here", 0, {} );
-                                mp_inv_log( "test: workbench menu request" );
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: workbench examine" );
                                 ++mp_wb_phase;
                                 sent = false;
                             } else if( mp_wb_phase == 2 && mp_wb_ms > 6000 ) {
                                 mp_inv_log( "test: workbench done" );
                                 ++mp_wb_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "vehicle_tool_test" ) {
+                        static int mp_tool_phase = 0;
+                        static auto mp_tool_t0 = std::chrono::steady_clock::now();
+                        if( mp_tool_phase == 0 ) {
+                            mp_tool_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: vehicle tool spawn" );
+                            ++mp_tool_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_tool_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_tool_t0 ).count();
+                            if( mp_tool_phase == 1 && mp_tool_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: vehicle tool examine" );
+                                ++mp_tool_phase;
+                                sent = false;
+                            } else if( mp_tool_phase == 2 && mp_tool_ms > 8000 ) {
+                                mp_inv_log( "test: vehicle tool done" );
+                                ++mp_tool_phase;
                                 sent = true;
                             } else {
                                 sent = false;

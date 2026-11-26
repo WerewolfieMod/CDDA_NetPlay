@@ -311,6 +311,12 @@ veh_menu_item &veh_menu_item::hotkey_auto()
     return *this;
 }
 
+veh_menu_item &veh_menu_item::client_action( const std::string &action )
+{
+    this->_client_action = action;
+    return *this;
+}
+
 veh_menu_item &veh_menu_item::on_submit( const std::function<void()> &on_submit )
 {
     this->_on_submit = on_submit;

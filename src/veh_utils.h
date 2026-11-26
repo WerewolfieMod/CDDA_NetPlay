@@ -67,6 +67,10 @@ struct veh_menu_item {
     bool _keep_menu_open = false;
     std::optional<char> _hotkey_char = std::nullopt;
     std::optional<std::string> _hotkey_action = std::nullopt;
+    // DDA MP v4.0a-318: rows whose host-side callback cannot run on the host
+    // (tool activation, map cursor) can name the client command instead. The
+    // netplay bridge forwards it verbatim; SP ignores it.
+    std::optional<std::string> _client_action = std::nullopt;
     std::function<void()> _on_submit;
     std::function<void()> _on_select;
 
@@ -82,6 +86,7 @@ struct veh_menu_item {
     veh_menu_item &hotkey( char hotkey_char );
     veh_menu_item &hotkey( const std::string &action );
     veh_menu_item &hotkey_auto();
+    veh_menu_item &client_action( const std::string &action );
     veh_menu_item &on_submit( const std::function<void()> &on_submit );
     veh_menu_item &on_select( const std::function<void()> &on_select );
     veh_menu_item &keep_menu_open( bool keep_menu_open = true );

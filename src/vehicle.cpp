@@ -6576,6 +6576,13 @@ std::vector<item> &vehicle::get_tools( vehicle_part &vp )
     return vp.tools;
 }
 
+void vehicle::attach_tool( int part_index, item tool )
+{
+    if( part_index >= 0 && part_index < part_count() ) {
+        parts[part_index].tools.push_back( std::move( tool ) );
+    }
+}
+
 const std::vector<item> &vehicle::get_tools( const vehicle_part &vp ) const
 {
     return vp.tools;

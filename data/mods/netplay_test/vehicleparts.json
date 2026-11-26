@@ -1,0 +1,10 @@
+[
+  {
+    "type": "vehicle_part",
+    "id": "mp_tool_station",
+    "copy-from": "veh_tools_workshop",
+    "name": { "str": "netplay tool station" },
+    "description": "A test tool station that only accepts the netplay diagnostic tool.",
+    "allowed_tools": [ "mp_test_tool" ]
+  }
+]
