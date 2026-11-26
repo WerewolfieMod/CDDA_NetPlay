@@ -7546,11 +7546,31 @@ static bool mp_cmd_vehicle_siphon( const netplay::intent_request &in )
         item liquid( base.legacy_front() );
         const int charges = liquid.charges;
         if( charges > 0 ) {
-            // handle_npc_liquid takes the item by value and always handles the
-            // whole amount (containers, then a spill), so the tank drains fully.
-            liquid_handler::handle_npc_liquid( liquid, *av );
-            drained = charges;
-            veh.drain( get_map(), idx, drained );
+            if( !in.data.empty() ) {
+                // DDA MP v4.0a-307: the client picked a container; transfer
+                // into that exact item and leave the remainder in the tank.
+                item_location cont = av_find_by_uid( *av, in.data );
+                if( !cont || !cont->is_watertight_container() ) {
+                    netplay::host_send_event_to_sid(
+                        in.sid, netplay::fork_text( "That container moved." ),
+                        static_cast<int>( m_info ) );
+                } else {
+                    const int cap = cont->get_remaining_capacity_for_liquid( liquid, false );
+                    if( cap > 0 ) {
+                        drained = cont->fill_with( liquid, std::min( cap, charges ) );
+                        if( drained > 0 ) {
+                            veh.drain( get_map(), idx, drained );
+                        }
+                    }
+                }
+            } else {
+                // No container selected: fill nearby containers, then spill.
+                // handle_npc_liquid takes the item by value and always handles
+                // the whole amount, so the tank drains fully.
+                liquid_handler::handle_npc_liquid( liquid, *av );
+                drained = charges;
+                veh.drain( get_map(), idx, drained );
+            }
         }
     }
     av_mark_acted( in.sid );
@@ -7558,8 +7578,8 @@ static bool mp_cmd_vehicle_siphon( const netplay::intent_request &in )
     av_send_session_picture( in.sid, av->pos_bub(), av );
     if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
         std::fprintf( f,
-                      "vehicle siphon sid=%d part=%d drained=%d tank=%d base_empty=%d base_charges=%d type=%s\n",
-                      in.sid, idx, drained, pt.is_tank() ? 1 : 0,
+                      "vehicle siphon sid=%d part=%d drained=%d via_uid=%d tank=%d base_empty=%d base_charges=%d type=%s\n",
+                      in.sid, idx, drained, in.data.empty() ? 0 : 1, pt.is_tank() ? 1 : 0,
                       base.empty() ? 1 : 0, base_charges, base.typeId().str().c_str() );
         std::fclose( f );
     }

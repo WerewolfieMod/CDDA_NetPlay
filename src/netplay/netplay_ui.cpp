@@ -8957,7 +8957,33 @@ void run_view_loop()
                                         }
                                     }
                                     if( tank >= 0 ) {
-                                        netplay::client_send_intent( "vehicle_siphon", 0, { tank } );
+                                        // DDA MP v4.0a-308: exercise the
+                                        // container-uid siphon path with the
+                                        // first suitable carried container.
+                                        std::string mp_siphon_uid;
+                                        const item &mp_siphon_base =
+                                            mp_veh.part( tank ).get_base();
+                                        if( !mp_siphon_base.empty() ) {
+                                            item mp_siphon_liquid(
+                                                mp_siphon_base.legacy_front() );
+                                            get_avatar().visit_items(
+                                            [&]( const item_location &il ) {
+                                                if( !il || !il->is_watertight_container() ) {
+                                                    return VisitResponse::NEXT;
+                                                }
+                                                const std::string uid = il->get_var(
+                                                                            "mp_uid", std::string() );
+                                                if( !uid.empty() &&
+                                                    il->get_remaining_capacity_for_liquid(
+                                                        mp_siphon_liquid, false ) > 0 ) {
+                                                    mp_siphon_uid = uid;
+                                                    return VisitResponse::ABORT;
+                                                }
+                                                return VisitResponse::NEXT;
+                                            } );
+                                        }
+                                        netplay::client_send_intent( "vehicle_siphon", 0,
+                                                                     { tank }, mp_siphon_uid );
                                     }
                                     ++mp_suite_step;
                                 }

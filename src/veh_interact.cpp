@@ -74,6 +74,7 @@
 #include "veh_utils.h"
 #include "vehicle.h"
 #include "vehicle_selector.h"
+#include "visitable.h"
 #include "vpart_position.h"
 #include "vpart_range.h"
 
@@ -2658,8 +2659,40 @@ void veh_interact::do_siphon( map &here )
 
     auto act = [&]( map & here, const vehicle_part & pt ) {
         if( mp_client_mirror_vehicle() ) {
+            const item &mp_base = pt.get_base();
+            std::vector<std::string> mp_container_uids;
+            std::string mp_chosen_uid;
+            if( !mp_base.empty() ) {
+                item mp_liquid( mp_base.legacy_front() );
+                uilist mp_menu;
+                mp_menu.text = _( "Siphon into:" );
+                get_avatar().visit_items( [&]( const item_location &il ) {
+                    if( !il || !il->is_watertight_container() ) {
+                        return VisitResponse::NEXT;
+                    }
+                    const int cap = il->get_remaining_capacity_for_liquid( mp_liquid, false );
+                    const std::string uid = il->get_var( "mp_uid", std::string() );
+                    if( cap <= 0 || uid.empty() ) {
+                        return VisitResponse::NEXT;
+                    }
+                    mp_container_uids.push_back( uid );
+                    mp_menu.addentry( static_cast<int>( mp_container_uids.size() ) - 1,
+                                      true, -1,
+                                      string_format( "%s (%d)", il->tname(), cap ) );
+                    return VisitResponse::NEXT;
+                } );
+                const int mp_spill = static_cast<int>( mp_container_uids.size() );
+                mp_menu.addentry( mp_spill, true, 'g', _( "Spill on the ground" ) );
+                mp_menu.query();
+                if( mp_menu.ret < 0 ) {
+                    return;
+                }
+                if( mp_menu.ret < mp_spill ) {
+                    mp_chosen_uid = mp_container_uids[mp_menu.ret];
+                }
+            }
             netplay::client_send_intent( "vehicle_siphon", 0,
-                                         { veh->index_of_part( &pt ) } );
+                                         { veh->index_of_part( &pt ) }, mp_chosen_uid );
             return;
         }
         on_out_of_scope restore_ui( [&]() {
