@@ -181,8 +181,8 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-1 | `SessionWorld`/`GameView` или mirror-game mode | client | P2 | UI читает зеркало | TODO |
 | P3-2 | Перехват мутаций (activities/map/vehicle/item/character/dialogue/EOC) | client | P3-1/P1 | UI не меняет мир напрямую | TODO |
 | P3-3 | Перевести native inventory/@/craft/pickup на command bus | client | P1/P3-2 | actions идут через registry | PARTIAL |
-| P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI по умолчанию; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew идут через command bus; legacy-мост за `DDA_MP_LEGACY_VEH_INTERACT`) |
-| P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | PARTIAL |
+| P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI; `e` открывает `interact_with`-меню, `EXAMINE_VEHICLE` — нативный `veh_interact`; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew через command bus; `DDA_MP_DIRECT_VEH_INTERACT` — прямой экран) |
+| P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | PARTIAL (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK; smart engine/turret/tool/EOC disabled) |
 | P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (auto-target) |
 | P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | TODO |
 | P3-8 | Native item menu (`inventory_item_menu`) | `game_inventory` | P2-3 | заменить `mp_client_item_menu` | PARTIAL |
@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-314`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup, range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK работает pick-only. Пункты 1.1/1.3 закрыты переходом на native `veh_interact`; 1.2 остаётся частично (P3-5): smart engine, turret aim/reload, use tool, workbench, EOC.
+Статус на `ddamp-v4.0a-315`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup, range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` открывает `interact_with`-меню, оттуда нативный `veh_interact` и workbench. Пункты 1.1/1.3 закрыты; 1.2 остаётся частично: smart engine, turret aim/reload, use tool, EOC.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -523,6 +523,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-312 | P3-5: faucet fill — клиентский выбор контейнера (`faucet_fill` client action) + intent `vehicle_faucet_fill`; тестовый сценарий `DDA_MP_TEST_FAUCET` (отдельный водяной бак, faucet part, пустая бутылка) | `vehicle menu row ... FAUCET_FILL enabled=1`; `vehicle faucet fill sid=1 part=80 filled=2`; клиент: `You fill the ... with water` |
 | 2026-11-26 | ddamp-v4.0a-313 | Аудит §7: bridged-меню `^` передаёт полный `input_event` (type/sequence/modifiers), клиент восстанавливает его в `uilist_entry.hotkey` | faucet suite: `key=101 evkey=101 evtype=2` (и все строки совпали); `FAUCET_FILL` и fill без регрессий |
 | 2026-11-26 | ddamp-v4.0a-314 | P3-5: LOCKPICK переведён на pick-only intent `vehicle_lockpick` (`locked_object_pickable`); host-side pry-ветка `iuse::crowbar`/`choose_adjacent_highlight` больше не вызывается из меню | сборка; faucet-регрессия (`filled=2`); отдельный locked-door сценарий пока не прогонялся |
+| 2026-11-26 | ddamp-v4.0a-315 | P3-5: `e` на машине теперь открывает `interact_with`-меню (как в ванили); `EXAMINE_VEHICLE` → нативный `veh_interact` на клиенте; `USE_WORKBENCH` → нативное меню крафта; новый intent `vehicle_menu_here` | workbench suite: `test workbench part=24 mount=0,1`; `USE_WORKBENCH` row enabled; клиент: 4 пункта меню (3 активны) |
 
 ### 9.3. Что протестировано
 
@@ -559,10 +560,11 @@ JSON/mapgen:
 | 2026-11-26 | P3-5 | Faucet fill через меню (`DDA_MP_TEST_FAUCET`) | `vehicle menu row ... FAUCET_FILL enabled=1`; `vehicle faucet fill sid=1 part=80 filled=2`; client `You fill the ... with water` |
 | 2026-11-26 | P3-5 | Полный `input_event` в bridged vehicle menu | все строки: `key == evkey`, `evtype=2`; `FAUCET_FILL` и fill без регрессий |
 | 2026-11-26 | P3-5 | LOCKPICK pick-only intent | сборка; faucet-регрессия без изменений; locked-door сценарий не автоматизирован |
+| 2026-11-26 | P3-5 | `e` → interact_with menu, native examine/workbench | workbench suite: `test workbench part=24 mount=0,1`; `USE_WORKBENCH` row enabled; client menu rows 0-2 enabled, row 3 disabled |
 
 ### 9.4. Следующие 5 задач
 
-1. P3-5: remaining `^` rows — smart controller, turret aim/reload, use tool, workbench, EOC.
+1. P3-5: remaining `^` rows — smart controller, turret aim/reload, use tool, EOC.
 2. Runtime-тест planter/washing machine/dishwasher на машине с этими деталями.
 3. Deterministic pickup damage-twin assertion in the audit test (choose the damaged row by content).
 4. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.

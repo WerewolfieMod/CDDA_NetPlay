@@ -4099,6 +4099,46 @@ static std::string mp_pick_liquid_container( const itype_id &liquid_type )
     return uids[menu.ret];
 }
 
+/* DDA MP v4.0a-315: native workbench menu on the client. Crafting still goes
+ * through the existing craft/recraft intents to the host. */
+static void mp_run_workbench()
+{
+    std::string wp_name = _( "workbench" );
+    if( const optional_vpart_position vp = get_map().veh_at( get_avatar().pos_bub() ) ) {
+        const int idx = vp->vehicle().avail_part_with_feature( vp->mount_pos(), "WORKBENCH" );
+        if( idx >= 0 ) {
+            wp_name = vp->vehicle().part( idx ).name();
+        }
+    }
+    uilist menu;
+    menu.text = string_format( pgettext( "furniture", "What to do at the %s?" ), wp_name );
+    menu.addentry( 0, true, '1', _( "Craft items" ) );
+    menu.addentry( 1, true, '2', _( "Recraft last recipe" ) );
+    menu.addentry( 2, true, '3', _( "Craft as long as possible" ) );
+    menu.addentry( 3, false, '4', _( "Work on craft or disassembly" ) );
+    if( const char *test_wb = std::getenv( "DDA_MP_TEST_WORKBENCH" );
+        test_wb != nullptr && test_wb[0] != '\0' ) {
+        mp_inv_log( string_format( "workbench menu: %s", menu.text.c_str() ) );
+        for( int i = 0; i < static_cast<int>( menu.entries.size() ); ++i ) {
+            mp_inv_log( string_format( "workbench menu row %d enabled=%d text=%s",
+                                       i, menu.entries[i].enabled ? 1 : 0,
+                                       menu.entries[i].txt.c_str() ) );
+        }
+        return;
+    }
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        menu.query();
+    }
+    if( menu.ret == 0 ) {
+        mp_run_client_craft( false );
+    } else if( menu.ret == 1 ) {
+        netplay::client_send_intent( "recraft", 0, {}, std::string() );
+    } else if( menu.ret == 2 ) {
+        mp_run_client_craft( true );
+    }
+}
+
 /* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
  * labels/descriptions/flags of its own build_interact_menu() and runs the
  * selected row for this session avatar. Entries that need a host-side modal
@@ -4212,6 +4252,13 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 }
             } else if( client_actions[i] == "lockpick" ) {
                 netplay::client_send_intent( "vehicle_lockpick", 0, {} );
+            } else if( client_actions[i] == "workbench" ) {
+                mp_run_workbench();
+            } else if( client_actions[i] == "examine_vehicle" ) {
+                if( const optional_vpart_position mp_vp =
+                        get_map().veh_at( get_avatar().pos_bub() ) ) {
+                    g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                }
             } else {
                 netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
             }
@@ -4249,6 +4296,13 @@ static void mp_run_vehicle_menu( const std::string &payload )
             }
         } else if( ca == "lockpick" ) {
             netplay::client_send_intent( "vehicle_lockpick", 0, {} );
+        } else if( ca == "workbench" ) {
+            mp_run_workbench();
+        } else if( ca == "examine_vehicle" ) {
+            if( const optional_vpart_position mp_vp =
+                    get_map().veh_at( get_avatar().pos_bub() ) ) {
+                g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+            }
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
         }
@@ -4606,17 +4660,22 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_view_dz = 0;
             break;
         case ACTION_EXAMINE: {
-            // DDA MP v4.0a-306: every vehicle action now goes through the
-            // command bus, so the native screen is the default. Set
-            // DDA_MP_LEGACY_VEH_INTERACT=1 to fall back to the old remote
-            // uilist bridge (diagnostics only).
-            static const bool mp_legacy_veh_interact =
-                std::getenv( "DDA_MP_LEGACY_VEH_INTERACT" ) != nullptr;
-            if( mp_native_avatar_ready && !mp_legacy_veh_interact ) {
+            // DDA MP v4.0a-315: vanilla examine on a vehicle tile opens
+            // interact_with. Stream that menu; "Examine vehicle" then opens the
+            // native veh_interact on the mirror. DDA_MP_DIRECT_VEH_INTERACT
+            // keeps the old direct parts screen for diagnostics.
+            static const bool mp_direct_veh_interact =
+                std::getenv( "DDA_MP_DIRECT_VEH_INTERACT" ) != nullptr;
+            if( mp_native_avatar_ready ) {
                 if( const optional_vpart_position mp_vp =
                         get_map().veh_at( get_avatar().pos_bub() ) ) {
-                    mp_inv_log( "action: native veh_interact" );
-                    g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                    if( mp_direct_veh_interact ) {
+                        mp_inv_log( "action: native veh_interact (direct)" );
+                        g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                    } else {
+                        mp_inv_log( "action: vehicle_menu_here" );
+                        netplay::client_send_intent( "vehicle_menu_here", 0, {} );
+                    }
                     break;
                 }
             }
@@ -8944,6 +9003,32 @@ void run_view_loop()
                             } else if( mp_faucet_phase == 3 && mp_faucet_ms > 8500 ) {
                                 mp_inv_log( "test: faucet done" );
                                 ++mp_faucet_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "workbench_test" ) {
+                        static int mp_wb_phase = 0;
+                        static auto mp_wb_t0 = std::chrono::steady_clock::now();
+                        if( mp_wb_phase == 0 ) {
+                            mp_wb_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: workbench spawn" );
+                            ++mp_wb_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_wb_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_wb_t0 ).count();
+                            if( mp_wb_phase == 1 && mp_wb_ms > 2500 ) {
+                                netplay::client_send_intent( "vehicle_menu_here", 0, {} );
+                                mp_inv_log( "test: workbench menu request" );
+                                ++mp_wb_phase;
+                                sent = false;
+                            } else if( mp_wb_phase == 2 && mp_wb_ms > 6000 ) {
+                                mp_inv_log( "test: workbench done" );
+                                ++mp_wb_phase;
                                 sent = true;
                             } else {
                                 sent = false;

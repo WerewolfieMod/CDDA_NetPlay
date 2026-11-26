@@ -6643,9 +6643,9 @@ static bool mp_vehicle_menu_safe( const veh_menu_item &it )
         "TOGGLE_AUTOCLAVE", "TOGGLE_MWS",
         "TOGGLE_WASHING_MACHINE", "TOGGLE_DISHWASHER",
         "EXAMINE_VEHICLE_EFFECTS", "USE_NL_BOILER",
-        // DDA MP v4.0a-289: the host examine screen now runs as a client-side
-        // uilist session; these callbacks only need ordinary bridged uilists.
-        "EXAMINE_VEHICLE", "CONTROL_AUTOPILOT",
+        // DDA MP v4.0a-315: EXAMINE_VEHICLE is now a client action (native
+        // veh_interact on the mirror), so the host callback is not safe.
+        "CONTROL_AUTOPILOT",
         "TURRET_TARGET_MODE", "TURRET_FIRE_MODE", "UNLOAD_TURRET",
         "FOLD_VEHICLE", "FAUCET_DRINK", "PURIFY_WATER",
         // DDA MP v4.0a-311: query_seed uilist + bridged query_int; the callback
@@ -6750,6 +6750,10 @@ static void mp_send_vehicle_menu( int sid, npc &av )
                 client_action = "faucet_fill";
             } else if( it._hotkey_action.value() == "LOCKPICK" ) {
                 client_action = "lockpick";
+            } else if( it._hotkey_action.value() == "USE_WORKBENCH" ) {
+                client_action = "workbench";
+            } else if( it._hotkey_action.value() == "EXAMINE_VEHICLE" ) {
+                client_action = "examine_vehicle";
             }
         }
         const bool client_handled = !client_action.empty();
@@ -7236,6 +7240,7 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     if( here.veh_at( av.pos_bub() ) ) {
         return;
     }
+    const bool mp_workbench_test = std::getenv( "DDA_MP_TEST_WORKBENCH" ) != nullptr;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
     };
@@ -7246,7 +7251,8 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         if( !here.inbounds( p ) || here.veh_at( p ) ) {
             continue;
         }
-        veh = here.add_vehicle( vproto_id( "car" ), p, 0_degrees,
+        veh = here.add_vehicle( vproto_id( mp_workbench_test ? "golf_cart" : "car" ),
+                                p, 0_degrees,
                                 0, damaged ? veh_spawn_status::DEFAULT_LIGHT_DMG
                                 : veh_spawn_status::PRISTINE, false, true );
         if( veh != nullptr ) {
@@ -7261,6 +7267,44 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     }
     if( veh != nullptr ) {
         av.setpos( here, spawn, false );
+        if( mp_workbench_test ) {
+            // Free a center mount by removing its seat, then install a
+            // workbench there and stand on it.
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.is_battery() ) {
+                    pt.ammo_set( itype_id( "battery" ), 1000 );
+                }
+            }
+            const vpart_info &mp_wb_info = vpart_id( "workbench" ).obj();
+            int wb_idx = -1;
+            point_rel_ms wb_mount( 0, 0 );
+            for( const point &off : { point( 0, 1 ), point( 0, 0 ) } ) {
+                const point_rel_ms mount( off.x, off.y );
+                for( int i = veh->part_count() - 1; i >= 0; --i ) {
+                    vehicle_part &pt = veh->part( i );
+                    if( pt.mount == mount && pt.is_seat() ) {
+                        veh->remove_part( pt );
+                    }
+                }
+                veh->part_removal_cleanup( here );
+                if( veh->can_mount( mount, mp_wb_info ).success() ) {
+                    wb_idx = veh->install_part( here, mount, vpart_id( "workbench" ) );
+                    if( wb_idx >= 0 ) {
+                        wb_mount = mount;
+                        break;
+                    }
+                }
+            }
+            if( wb_idx >= 0 ) {
+                av.setpos( here, veh->bub_part_pos( here, veh->part( wb_idx ) ), false );
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test workbench part=%d mount=%d,%d\n",
+                                  wb_idx, wb_mount.x(), wb_mount.y() );
+                    std::fclose( f );
+                }
+            }
+        }
         // The test avatar has only worn clothes; give it a backpack so the
         // fuel container is not dropped on the ground.
         av.wear_item( item( itype_id( "backpack" ) ), false );
@@ -7589,6 +7633,21 @@ static bool mp_cmd_vehicle_menu( const netplay::intent_request &in )
         } else {
             mp_send_vehicle_menu( in.sid, *av );
         }
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_menu_here( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-315: open the host interact menu at the avatar's tile even
+    // when it is not driving (workbench, faucet, doors, ...).
+    npc *av = av_session_npc( in.sid );
+    if( av != nullptr ) {
+        g->mp_anchor_map_on( *av, true );
+        mp_send_vehicle_menu( in.sid, *av );
         if( !netplay::host_avatar_keys_pending() ) {
             g->mp_anchor_map_on( get_avatar() );
         }
@@ -9380,6 +9439,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
             r.emplace( id, mp_cmd_vehicle_control );
         }
         r.emplace( "vehicle_menu", mp_cmd_vehicle_menu );
+        r.emplace( "vehicle_menu_here", mp_cmd_vehicle_menu_here );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
