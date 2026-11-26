@@ -1932,13 +1932,25 @@ static void mp_run_pickup( const std::string &text )
         // stable uid without opening the selector.
         if( const char *auto_pick = std::getenv( "DDA_MP_TEST_PICKUP_AUTO" );
             auto_pick != nullptr && auto_pick[0] != '\0' ) {
-            const int choose = static_cast<int>( pkt.entries.size() ) - 1;
+            // Prefer the damaged twin so the test proves uid addressing, not
+            // just "first item of this type".
+            int choose = -1;
+            for( int i = 0; i < static_cast<int>( pkt.entries.size() ); ++i ) {
+                if( pkt.entries[i].damage > 0 ) {
+                    choose = i;
+                    break;
+                }
+            }
+            if( choose < 0 ) {
+                choose = static_cast<int>( pkt.entries.size() ) - 1;
+            }
             if( choose >= 0 && !pkt.entries[choose].uid.empty() ) {
                 netplay::client_send_pickup_action(
                     pkt.header.generation, { choose }, 0,
                     { pkt.entries[choose].uid } );
-                mp_inv_log( string_format( "pickup: auto uid row=%d uid=%s",
-                                           choose, pkt.entries[choose].uid.c_str() ) );
+                mp_inv_log( string_format( "pickup: auto uid row=%d uid=%s dmg=%d",
+                                           choose, pkt.entries[choose].uid.c_str(),
+                                           pkt.entries[choose].damage ) );
             }
             return;
         }

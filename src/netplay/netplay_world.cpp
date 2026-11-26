@@ -2119,15 +2119,18 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
             map &here = get_map();
             const tripoint_bub_ms p = npc_ptr->pos_bub();
             if( mp_pick ) {
-                item rock_a( itype_id( "rock" ) );
-                item rock_b( itype_id( "rock" ) );
+                // A non-charge item: charge-count items (rocks, rags) ignore
+                // damage and merge into one stack, so they cannot prove
+                // damage-based uid addressing.
+                item twin_a( itype_id( "screwdriver" ) );
+                item twin_b( itype_id( "screwdriver" ) );
                 // Different vars keep the twins from stacking, so the listing
                 // really has two same-type rows with different uids/damage.
-                rock_a.set_var( "test_twin", "a" );
-                rock_b.set_var( "test_twin", "b" );
-                rock_b.set_damage( 1 );
-                here.add_item_or_charges( p, rock_a, false );
-                here.add_item_or_charges( p, rock_b, false );
+                twin_a.set_var( "test_twin", "a" );
+                twin_b.set_var( "test_twin", "b" );
+                twin_b.set_damage( 1 );
+                here.add_item_or_charges( p, twin_a, false );
+                here.add_item_or_charges( p, twin_b, false );
             }
             if( mp_fire ) {
                 item gun( itype_id( "glock_19" ) );
@@ -4671,6 +4674,11 @@ static void mp_send_pickup_listing( int sid, npc &av,
         std::fprintf( f, "pickup list sid=%d pos=%d,%d rows=%d gen=%d\n",
                       sid, pos.x(), pos.y(),
                       static_cast<int>( pkt.entries.size() ), pkt.header.generation );
+        for( int i = 0; i < static_cast<int>( pkt.entries.size() ); ++i ) {
+            const netplay::inv_entry_view &e = pkt.entries[i];
+            std::fprintf( f, "pickup list row %d id=%s dmg=%d uid=%s\n",
+                          i, e.id.c_str(), e.damage, e.uid.c_str() );
+        }
         std::fclose( f );
     }
     netplay::host_send_pickup_to_sid( sid, netplay::serialize_inv_packet( pkt ) );
