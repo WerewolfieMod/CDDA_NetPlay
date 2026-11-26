@@ -6620,6 +6620,19 @@ static void mp_run_prompt( const netplay::prompt_request &pr )
 {
     netplay::prompt_answer ans;
     ans.id = pr.id;
+    // DDA MP v4.0a-311 test hook: answer a bridged integer prompt without a
+    // human at the client.
+    if( pr.type == netplay::prompt_type::query_int ) {
+        if( const char *test_int = std::getenv( "DDA_MP_TEST_PROMPT_INT" );
+            test_int != nullptr && test_int[0] != '\0' ) {
+            ans.canceled = false;
+            ans.text = test_int;
+            ans.retval = 0;
+            netplay::client_send_prompt_answer( ans );
+            mp_inv_log( std::string( "prompt: auto int " ) + test_int );
+            return;
+        }
+    }
     if( pr.type == netplay::prompt_type::query_yn ) {
         ans.canceled = false;
         ans.retval = query_yn( "%s", pr.text ) ? 1 : 0;
@@ -6630,6 +6643,13 @@ static void mp_run_prompt( const netplay::prompt_request &pr )
         ans.canceled = popup.canceled();
         ans.text = popup.text();
         ans.retval = ans.canceled || ans.text.empty() ? 0 : 1;
+    } else if( pr.type == netplay::prompt_type::query_int ) {
+        string_input_popup popup;
+        popup.title( pr.text ).text( pr.value ).only_digits( true ).width( 40 );
+        popup.query_string();
+        ans.canceled = popup.canceled();
+        ans.text = popup.text();
+        ans.retval = 0;
     } else {
         uilist menu;
         menu.text = pr.text;
@@ -8773,6 +8793,9 @@ void run_view_loop()
                         netplay::client_send_intent( "talk_npc", 0, { 10, 10 } );
                         netplay::client_send_client_action( ACTION_PICKUP );
                         mp_inv_log( "test: audit validators" );
+                    } else if( action_name == "int_prompt" ) {
+                        netplay::client_send_intent( "test_int_prompt", 0, {} );
+                        mp_inv_log( "test: int prompt" );
                     } else if( action_name == "hotwire" ) {
                         static int mp_hot_phase = 0;
                         static auto mp_hot_t0 = std::chrono::steady_clock::now();

@@ -1496,7 +1496,7 @@ void vehicle::use_autoclave( map &here, int p )
 void vehicle::use_washing_machine( map &here, int p )
 {
     vehicle_part &vp = parts[p];
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     // Get all the items that can be used as detergent
     const temp_crafting_inventory &inv = player_character.crafting_inventory();
     std::vector<const item *> detergents = inv.items_with( [inv]( const item & it ) {
@@ -1582,7 +1582,7 @@ void vehicle::use_washing_machine( map &here, int p )
 void vehicle::use_dishwasher( map &here, int p )
 {
     vehicle_part &vp = parts[p];
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     bool detergent_is_enough = player_character.crafting_inventory().has_amount( itype_detergent, 5 );
     vehicle_stack items = get_items( vp );
     bool filthy_items = std::all_of( items.begin(), items.end(), []( const item & i ) {

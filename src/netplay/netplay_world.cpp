@@ -6637,12 +6637,16 @@ static bool mp_vehicle_menu_safe( const veh_menu_item &it )
         "TOGGLE_REAPER", "TOGGLE_PLANTER", "TOGGLE_SCOOP",
         "TOGGLE_WATER_PURIFIER", "TOGGLE_SMART_ENGINE_CONTROLLER",
         "TOGGLE_AUTOCLAVE", "TOGGLE_MWS",
+        "TOGGLE_WASHING_MACHINE", "TOGGLE_DISHWASHER",
         "EXAMINE_VEHICLE_EFFECTS", "USE_NL_BOILER",
         // DDA MP v4.0a-289: the host examine screen now runs as a client-side
         // uilist session; these callbacks only need ordinary bridged uilists.
         "EXAMINE_VEHICLE", "CONTROL_AUTOPILOT",
         "TURRET_TARGET_MODE", "TURRET_FIRE_MODE", "UNLOAD_TURRET",
         "FOLD_VEHICLE", "FAUCET_DRINK", "PURIFY_WATER",
+        // DDA MP v4.0a-311: query_seed uilist + bridged query_int; the callback
+        // uses the scoped session character.
+        "USE_PLANTER",
     };
     return safe_actions.count( it._hotkey_action.value() ) > 0;
 }
@@ -8465,6 +8469,22 @@ static bool mp_cmd_craft( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_int_prompt( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-311 test: exercise the bridged query_int round trip.
+    int value = 42;
+    const bool ok = query_int( value, true, netplay::fork_text( "Test integer:" ) );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test int prompt sid=%d ok=%d value=%d\n",
+                      in.sid, ok ? 1 : 0, value );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "int prompt ok=%d value=%d", ok ? 1 : 0, value ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_test_spell_cast( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -9250,6 +9270,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "craft", mp_cmd_craft );
         r.emplace( "craft.all", mp_cmd_craft );
         r.emplace( "test_spell_cast", mp_cmd_test_spell_cast );
+        r.emplace( "test_int_prompt", mp_cmd_test_int_prompt );
         r.emplace( "cast_spell", mp_cmd_cast_spell );
         r.emplace( "mission_journal", mp_cmd_mission_journal );
         r.emplace( "autoattack", mp_cmd_autoattack );

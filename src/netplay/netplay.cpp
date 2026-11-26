@@ -3132,6 +3132,32 @@ std::optional<std::string> host_prompt_string( const std::string &title,
     return ans->text;
 }
 
+std::optional<int> host_prompt_int( const std::string &text, int value, bool show_default )
+{
+    if( host_prompt_owner() == 0 || !host_is_running() ) {
+        return std::nullopt;
+    }
+    prompt_request pr;
+    pr.type = prompt_type::query_int;
+    pr.text = text;
+    pr.value = show_default ? std::to_string( value ) : std::string();
+    pr.max_length = 20;
+    {
+        std::lock_guard<std::mutex> lk( state.prompt_mutex );
+        pr.id = state.prompt_next_id++;
+        state.prompt_has_answer = false;
+    }
+    const auto ans = mp_wait_prompt_answer( pr );
+    if( !ans || ans->canceled || ans->text.empty() ) {
+        return std::nullopt;
+    }
+    try {
+        return std::stoi( ans->text );
+    } catch( ... ) {
+        return std::nullopt;
+    }
+}
+
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )
 {
     std::lock_guard<std::mutex> lk( state.sessions_mutex );

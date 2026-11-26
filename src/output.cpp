@@ -910,6 +910,15 @@ query_ynq_result query_ynq( const std::string &text )
 
 bool query_int( int &result, bool show_default, const std::string &text )
 {
+    if( netplay::host_prompt_owner() != 0 ) {
+        const std::optional<int> answer =
+            netplay::host_prompt_int( text, result, show_default );
+        if( !answer ) {
+            return false;
+        }
+        result = *answer;
+        return true;
+    }
     string_input_popup popup;
     popup.title( text );
     popup.text( show_default ? std::to_string( result ) : "" ).only_digits( true );

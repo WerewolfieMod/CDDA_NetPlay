@@ -207,7 +207,8 @@ struct overmap_block {
 enum class prompt_type : uint8_t {
     query_yn = 0,    ///< text only; answer.retval = 1 yes / 0 no
     uilist = 1,      ///< title + entries; answer.retval/index
-    string_input = 2 ///< title + value; answer.text
+    string_input = 2, ///< title + value; answer.text
+    query_int = 3    ///< title + value; answer.text parsed as int
 };
 struct prompt_entry {
     std::string txt;
@@ -787,6 +788,10 @@ std::optional<prompt_answer> host_prompt_uilist( const std::string &text, int se
 /// Ask the owning session for a line of text. nullopt = no owner/client gone.
 std::optional<std::string> host_prompt_string( const std::string &title,
         const std::string &value = std::string(), int max_length = 60 );
+/// DDA MP v4.0a-311: ask the owning session for an integer. nullopt = no
+/// owner/client gone or the prompt was canceled.
+std::optional<int> host_prompt_int( const std::string &text, int value,
+                                    bool show_default );
 /// DDA MP: send local-frame creature facts for the aim panel.
 bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list );
 /// Client side: latest aim target list.
