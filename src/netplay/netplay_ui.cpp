@@ -61,6 +61,7 @@
 
 #include "submap.h"      // synthetic client-side map bubble
 #include "vehicle.h"     // mirrored host vehicle for native veh_interact
+#include "smart_controller_ui.h" // client-side smart controller settings
 #include "lightmap.h"    // lit_level (client light overlay)
 #include "mtype.h"
 #include "input_context.h"
@@ -4200,6 +4201,59 @@ static void mp_run_workbench()
     }
 }
 
+/* DDA MP v4.0a-319: native smart controller settings on the client. The host
+ * applies the enabled flag to every SMART_ENGINE_CONTROLLER part and stores the
+ * battery thresholds in the vehicle config. */
+static void mp_send_smart_engine( bool enabled, int lo, int hi )
+{
+    netplay::client_send_intent( "vehicle_smart_engine", 0,
+                                 { enabled ? 1 : 0, lo, hi } );
+    mp_inv_log( string_format( "action: smart_engine enabled=%d lo=%d hi=%d",
+                               enabled ? 1 : 0, lo, hi ) );
+}
+
+static void mp_run_smart_engine()
+{
+    const std::optional<tripoint_bub_ms> se_pos = mp_vehicle_menu_tile();
+    if( !se_pos ) {
+        mp_inv_log( "smart_engine: no vehicle" );
+        return;
+    }
+    const optional_vpart_position se_vp = get_map().veh_at( *se_pos );
+    if( !se_vp ) {
+        mp_inv_log( "smart_engine: no vehicle part" );
+        return;
+    }
+    vehicle &se_veh = se_vp->vehicle();
+    bool se_enabled = false;
+    for( int i = 0; i < se_veh.part_count(); ++i ) {
+        if( se_veh.part( i ).info().has_flag( "SMART_ENGINE_CONTROLLER" ) ) {
+            se_enabled = se_veh.part( i ).enabled;
+            break;
+        }
+    }
+    int se_lo = 25;
+    int se_hi = 90;
+    if( se_veh.smart_controller_cfg ) {
+        se_lo = se_veh.smart_controller_cfg->battery_lo;
+        se_hi = se_veh.smart_controller_cfg->battery_hi;
+    }
+    if( const char *test_se = std::getenv( "DDA_MP_TEST_SMART_ENGINE" );
+        test_se != nullptr && test_se[0] != '\0' ) {
+        // Deterministic settings for the automated run; the native UI is
+        // exercised by the screenshot/manual check.
+        mp_send_smart_engine( true, 10, 70 );
+        return;
+    }
+    {
+        ui_adaptor blocker( ui_adaptor::disable_uis_below{} );
+        smart_controller_settings se_settings( se_enabled, se_lo, se_hi );
+        smart_controller_ui settings( se_settings );
+        settings.control();
+    }
+    mp_send_smart_engine( se_enabled, se_lo, se_hi );
+}
+
 /* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
  * labels/descriptions/flags of its own build_interact_menu() and runs the
  * selected row for this session avatar. Entries that need a host-side modal
@@ -4317,6 +4371,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 netplay::client_send_intent( "vehicle_lockpick", 0, {} );
             } else if( client_actions[i] == "workbench" ) {
                 mp_run_workbench();
+            } else if( client_actions[i] == "smart_engine" ) {
+                mp_run_smart_engine();
             } else if( client_actions[i] == "examine_vehicle" ) {
                 if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
                     if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
@@ -4370,6 +4426,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
             netplay::client_send_intent( "vehicle_lockpick", 0, {} );
         } else if( ca == "workbench" ) {
             mp_run_workbench();
+        } else if( ca == "smart_engine" ) {
+            mp_run_smart_engine();
         } else if( ca == "examine_vehicle" ) {
             if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
                 if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
@@ -9142,6 +9200,37 @@ void run_view_loop()
                             } else if( mp_tool_phase == 2 && mp_tool_ms > 8000 ) {
                                 mp_inv_log( "test: vehicle tool done" );
                                 ++mp_tool_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "smart_engine_test" ) {
+                        static int mp_se_phase = 0;
+                        static auto mp_se_t0 = std::chrono::steady_clock::now();
+                        if( mp_se_phase == 0 ) {
+                            mp_se_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: smart engine spawn" );
+                            ++mp_se_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_se_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_se_t0 ).count();
+                            if( mp_se_phase == 1 && mp_se_ms > 2500 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: smart engine control" );
+                                ++mp_se_phase;
+                                sent = false;
+                            } else if( mp_se_phase == 2 && mp_se_ms > 5000 ) {
+                                netplay::client_send_intent( "vehicle_menu", 0, {} );
+                                mp_inv_log( "test: smart engine menu request" );
+                                ++mp_se_phase;
+                                sent = false;
+                            } else if( mp_se_phase == 3 && mp_se_ms > 9000 ) {
+                                mp_inv_log( "test: smart engine done" );
+                                ++mp_se_phase;
                                 sent = true;
                             } else {
                                 sent = false;

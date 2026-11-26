@@ -7271,6 +7271,7 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     }
     const bool mp_workbench_test = std::getenv( "DDA_MP_TEST_WORKBENCH" ) != nullptr;
     const bool mp_veh_tool_test = std::getenv( "DDA_MP_TEST_VEH_TOOL" ) != nullptr;
+    const bool mp_smart_test = std::getenv( "DDA_MP_TEST_SMART_ENGINE" ) != nullptr;
     const bool mp_cart_test = mp_workbench_test || mp_veh_tool_test;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
@@ -7345,6 +7346,45 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                                   mp_veh_tool_test ? "mp_test_tool" : "workbench" );
                     std::fclose( f );
                 }
+            }
+        }
+        if( mp_smart_test ) {
+            // Smart controller test: normal car (controls+dashboard at the
+            // origin), install the controller there and stand on controls.
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                if( veh->part( i ).is_battery() ) {
+                    veh->part( i ).ammo_set( itype_id( "battery" ), 1000 );
+                }
+            }
+            point_rel_ms smart_mount( 0, 0 );
+            tripoint_bub_ms ctrl_pos = veh->bub_part_pos( here, veh->part( 0 ) );
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                const vehicle_part &pt = veh->part( i );
+                if( pt.info().has_flag( "CONTROLS" ) ) {
+                    smart_mount = pt.mount;
+                    ctrl_pos = veh->bub_part_pos( here, pt );
+                    break;
+                }
+            }
+            int smart_idx = -1;
+            const vpart_info &smart_info = vpart_id( "smart_engine_controller" ).obj();
+            for( const point &off : { point( 0, 0 ), point( 0, 1 ), point( 0, -1 ) } ) {
+                const point_rel_ms mount( smart_mount.x() + off.x, smart_mount.y() + off.y );
+                if( veh->can_mount( mount, smart_info ).success() ) {
+                    smart_idx = veh->install_part( here, mount,
+                                                   vpart_id( "smart_engine_controller" ) );
+                    if( smart_idx >= 0 ) {
+                        break;
+                    }
+                }
+            }
+            if( smart_idx >= 0 ) {
+                av.setpos( here, ctrl_pos, false );
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "test smart engine part=%d pos=%d,%d\n",
+                              smart_idx, ctrl_pos.x(), ctrl_pos.y() );
+                std::fclose( f );
             }
         }
         // The test avatar has only worn clothes; give it a backpack so the
@@ -7770,6 +7810,49 @@ static bool mp_cmd_vehicle_use_tool( const netplay::intent_request &in )
     if( !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
+    return true;
+}
+
+static bool mp_cmd_vehicle_smart_engine( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-319: the client edited smart controller thresholds; apply
+    // them to the authoritative vehicle and enable every controller part.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const tripoint_bub_ms p = mp_vehicle_menu_target( in.sid, *av );
+    const optional_vpart_position vp = get_map().veh_at( p );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no vehicle there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    if( !veh.smart_controller_cfg ) {
+        veh.smart_controller_cfg = smart_controller_config();
+    }
+    const bool enabled = !in.args.empty() && in.args[0] != 0;
+    int lo = in.args.size() > 1 ? in.args[1] : veh.smart_controller_cfg->battery_lo;
+    int hi = in.args.size() > 2 ? in.args[2] : veh.smart_controller_cfg->battery_hi;
+    lo = std::clamp( lo, 5, 90 );
+    hi = std::clamp( hi, lo + 5, 100 );
+    veh.smart_controller_cfg->battery_lo = lo;
+    veh.smart_controller_cfg->battery_hi = hi;
+    int controllers = 0;
+    for( int i = 0; i < veh.part_count(); ++i ) {
+        vehicle_part &pt = veh.part( i );
+        if( pt.info().has_flag( "SMART_ENGINE_CONTROLLER" ) ) {
+            pt.enabled = enabled;
+            ++controllers;
+        }
+    }
+    mp_ctrl_log( string_format(
+                     "vehicle smart engine sid=%d enabled=%d lo=%d hi=%d parts=%d",
+                     in.sid, enabled ? 1 : 0, lo, hi, controllers ) );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
     return true;
 }
 
@@ -9565,6 +9648,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_menu", mp_cmd_vehicle_menu );
         r.emplace( "vehicle_menu_here", mp_cmd_vehicle_menu_here );
         r.emplace( "vehicle_use_tool", mp_cmd_vehicle_use_tool );
+        r.emplace( "vehicle_smart_engine", mp_cmd_vehicle_smart_engine );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

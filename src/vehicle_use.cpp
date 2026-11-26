@@ -2567,6 +2567,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
     if( has_electronic_controls && has_part( "SMART_ENGINE_CONTROLLER" ) ) {
         menu.add( _( "Smart controller settings" ) )
         .hotkey( "CONTROL_SMART_ENGINE" )
+        .client_action( "smart_engine" )
         .on_submit( [this] {
             if( !smart_controller_cfg )
             {
