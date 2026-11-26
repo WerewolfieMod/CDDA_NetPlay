@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-324`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. Меню передаёт точную клетку (`target_dx/dy`); adjacent examine по-прежнему требует, чтобы машина была зеркалирована. Долг: клиент зеркалит только машину под аватаром, поэтому examine машины снаружи (без посадки) всё ещё уходит на host — нужен стрим ближайших машин или direction prompt. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC (ваниль отбрасывает такие сообщения). Planter: query_seed UI остаётся только build-tested.
+Статус на `ddamp-v4.0a-325`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. Соседняя машина теперь стримится по запросу host-скана и доступна для native-экранов; направление всё ещё выбирается эвристикой (станции/первая соседняя клетка), без direction prompt. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC (ваниль отбрасывает такие сообщения). Planter: query_seed UI остаётся только build-tested.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -533,6 +533,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-322 | P3-5: EOC activation — строка `Activate <part>` стала client action `activate_eoc:<part_index>`; host запускает `activatable_eoc` через `dialogue` с talker сессионного аватара. Тестовый EOC-модуль в `netplay_test` | eoc suite: `test eoc part=79`; row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
 | 2026-11-26 | ddamp-v4.0a-323 | P3-5 closeout: массовый и автоматический turret aim. `Aim turrets manually` стреляет всеми manual-турелями в выбранную клетку; `Aim automatic turrets` ставит target автоматическим (нужен `TURRET_CONTROLS`). Все строки верхнего меню теперь safe или client actions | all-manual: `mode=1 turrets=1 shots=4 ammo=6`; auto: `turret aim auto ... targeted=1 enabled=1 power_disabled=0` (тестовая машина с `controls_turret`) |
 | 2026-11-26 | ddamp-v4.0a-324 | Runtime-тест washing machine/dishwasher: тестовый `mp_utility_cart` (2×2) с баком, батареей, машинами, грязной вещью/посудой и детергентом; host-интент `test_vehicle_utility` вызывает оба callback на сессионном аватаре | `test utility pos=...`; host `test utility sid=1 wm=11/1 dw=10/1`; клиент получил оба сообщения о заливке/детергенте |
+| 2026-11-26 | ddamp-v4.0a-325 | P3-5/P3-6: examine машины снаружи. Клиент замечает соседние streamed vparts и шлёт `vehicle_menu_here {-128,-128}`; host выбирает соседнюю клетку (приоритет `VEH_TOOLS`/`WORKBENCH`), стримит её vehicle JSON и строит меню. Добавлен mirror-fallback для `veh_at` на границе submap; client actions используют точную клетку меню | suite: `test outside pos=...`; client `vehicle_menu_here scan adjacent`; menu `EXAMINE_VEHICLE`; `vehicle: mirror applied ... veh_at=0 p0=target`; `examine_vehicle -> native` |
 
 ### 9.3. Что протестировано
 
@@ -579,14 +580,15 @@ JSON/mapgen:
 | 2026-11-26 | P3-5 | EOC activation | row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
 | 2026-11-26 | P3-5 | Mass/auto turret aim | all-manual: `mode=1 turrets=1 shots=4`; auto: `targeted=1 enabled=1 power_disabled=0` |
 | 2026-11-26 | P3-13 | Washing machine + dishwasher runtime | `test utility sid=1 wm=11/1 dw=10/1`; оба сообщения заливки/детергента доставлены клиенту |
+| 2026-11-26 | P3-5/P3-6 | Examine машины снаружи | `test outside pos=...`; client `scan adjacent`; `mirror applied ... veh_at=0`; menu target exact; `examine_vehicle -> native` |
 
 ### 9.4. Следующие 5 задач
 
-1. Runtime-тест planter (`USE_PLANTER` + query_seed UI).
-2. Vehicle examine снаружи: стрим ближайших машин или клиентский direction prompt (сейчас зеркалится только машина под аватаром).
-3. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
-4. P6-1/P6-2: manifest версий модов/данных и handshake.
-5. P3-13: оставшиеся native-экраны (bike rack/capture/tiedown/harness/tool attach).
+1. P3-6: native `game::examine`/`iexamine` и direction prompt для соседней машины/клетки.
+2. Runtime-тест planter (`USE_PLANTER` + query_seed UI).
+3. P6-1/P6-2: manifest версий модов/данных и handshake.
+4. P3-13: оставшиеся native-экраны (bike rack/capture/tiedown/harness/tool attach).
+5. P4-5/P4-8/P8-1: render/data manifest и regression-матрица.
 
 ---
 

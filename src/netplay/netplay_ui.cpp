@@ -4179,6 +4179,51 @@ static std::optional<tripoint_bub_ms> mp_action_target()
     return mp_vehicle_menu_tile();
 }
 
+/* DDA MP v4.0a-325: does the latest streamed frame contain a vehicle part on
+ * a tile next to the avatar? The client has no vehicle object there yet, so
+ * ACTION_EXAMINE asks the host to pick and stream it. */
+static bool mp_adjacent_vpart_known()
+{
+    map &here = get_map();
+    const tripoint_bub_ms base = get_avatar().pos_bub();
+    for( const mp_cached_vpart &v : mp_vparts_cache ) {
+        const tripoint_bub_ms p = here.get_bub( v.pos );
+        if( !here.inbounds( p ) ) {
+            continue;
+        }
+        if( p == base ) {
+            continue;
+        }
+        if( std::abs( p.x() - base.x() ) <= 1 && std::abs( p.y() - base.y() ) <= 1 ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* DDA MP v4.0a-325: fallback for a streamed adjacent vehicle when map::veh_at
+ * misses it (the mirror can straddle a submap boundary). */
+static vehicle *mp_mirror_vehicle = nullptr;
+static vehicle *mp_mirror_vehicle_at( const tripoint_bub_ms &p, int &part_idx )
+{
+    part_idx = -1;
+    if( mp_mirror_vehicle == nullptr ) {
+        return nullptr;
+    }
+    map &here = get_map();
+    for( int i = 0; i < mp_mirror_vehicle->part_count(); ++i ) {
+        const vehicle_part &pt = mp_mirror_vehicle->part( i );
+        if( pt.removed ) {
+            continue;
+        }
+        if( mp_mirror_vehicle->bub_part_pos( here, pt ) == p ) {
+            part_idx = i;
+            return mp_mirror_vehicle;
+        }
+    }
+    return nullptr;
+}
+
 /* DDA MP v4.0a-315: native workbench menu on the client. Crafting still goes
  * through the existing craft/recraft intents to the host. */
 static void mp_run_workbench()
@@ -4499,6 +4544,16 @@ static void mp_run_vehicle_menu( const std::string &payload )
             if( !mp_match || !menu.entries[i].enabled ) {
                 continue;
             }
+            if( client_actions[i] == "examine_vehicle" ) {
+                const std::optional<tripoint_bub_ms> mp_t = mp_action_target();
+                int mp_idx = -1;
+                if( !mp_t ||
+                    ( !get_map().veh_at( *mp_t ) &&
+                      mp_mirror_vehicle_at( *mp_t, mp_idx ) == nullptr ) ) {
+                    mp_inv_log( "vehicle menu test: waiting for vehicle mirror" );
+                    return;
+                }
+            }
             ++mp_test_pick;
             mp_inv_log( string_format( "vehicle menu test select action=%s idx=%d gen=%d",
                                        wanted.c_str(), i, generation ) );
@@ -4533,10 +4588,21 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 mp_inv_log( string_format( "action: activate_eoc %d", eoc_idx ) );
             } else if( client_actions[i] == "examine_vehicle" ) {
                 if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
+                    mp_inv_log( string_format( "action: examine_vehicle target %d,%d",
+                                               mp_veh_pos->x(), mp_veh_pos->y() ) );
                     if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
                         mp_inv_log( "action: examine_vehicle -> native" );
                         g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
                         mp_inv_log( "action: examine_vehicle closed" );
+                    } else {
+                        int mp_part_idx = -1;
+                        if( vehicle *mp_mv = mp_mirror_vehicle_at( *mp_veh_pos, mp_part_idx ) ) {
+                            mp_inv_log( "action: examine_vehicle -> native (mirror fallback)" );
+                            g->exam_vehicle( *mp_mv, mp_mv->part( mp_part_idx ).mount );
+                            mp_inv_log( "action: examine_vehicle closed" );
+                        } else {
+                            mp_inv_log( "action: examine_vehicle no part at target" );
+                        }
                     }
                 } else {
                     mp_inv_log( "action: examine_vehicle no vehicle" );
@@ -4604,6 +4670,15 @@ static void mp_run_vehicle_menu( const std::string &payload )
                     mp_inv_log( "action: examine_vehicle -> native" );
                     g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
                     mp_inv_log( "action: examine_vehicle closed" );
+                } else {
+                    int mp_part_idx = -1;
+                    if( vehicle *mp_mv = mp_mirror_vehicle_at( *mp_veh_pos, mp_part_idx ) ) {
+                        mp_inv_log( "action: examine_vehicle -> native (mirror fallback)" );
+                        g->exam_vehicle( *mp_mv, mp_mv->part( mp_part_idx ).mount );
+                        mp_inv_log( "action: examine_vehicle closed" );
+                    } else {
+                        mp_inv_log( "action: examine_vehicle no part at target" );
+                    }
                 }
             } else {
                 mp_inv_log( "action: examine_vehicle no vehicle" );
@@ -4991,6 +5066,11 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
                                                    mp_veh_pos->x() - mp_base.x(),
                                                    mp_veh_pos->y() - mp_base.y() ) );
                     }
+                    break;
+                }
+                if( mp_adjacent_vpart_known() ) {
+                    netplay::client_send_intent( "vehicle_menu_here", 0, { -128, -128 } );
+                    mp_inv_log( "action: vehicle_menu_here scan adjacent" );
                     break;
                 }
             }
@@ -6073,7 +6153,6 @@ static void mp_native_apply_minimap_visibility()
  * host JSON. The streamed vehicle_parts frames remain the renderer fallback
  * for distant/memorized vehicles; this object exists so native veh_interact
  * can inspect parts, cargo and tools with the same engine code as SP. */
-static vehicle *mp_mirror_vehicle = nullptr;
 static tripoint_abs_sm mp_mirror_vehicle_sm;
 
 static void mp_clear_mirror_vehicle()
@@ -6153,10 +6232,14 @@ static void mp_native_apply_vehicle_json( const snapshot &snap )
             get_map().clear_vehicle_level_caches();
             get_map().add_vehicle_to_cache( mp_mirror_vehicle );
             mp_inv_log( string_format(
-                            "vehicle: mirror applied parts=%d pos=%d,%d z%d veh_at=%d",
+                            "vehicle: mirror applied parts=%d pos=%d,%d z%d veh_at=%d p0=%d,%d",
                             mp_mirror_vehicle->part_count(),
                             mirror_abs.x(), mirror_abs.y(), mirror_abs.z(),
-                            get_map().veh_at( get_avatar().pos_bub() ).has_value() ? 1 : 0 ) );
+                            get_map().veh_at( get_avatar().pos_bub() ).has_value() ? 1 : 0,
+                            mp_mirror_vehicle->bub_part_pos( get_map(),
+                                    mp_mirror_vehicle->part( 0 ) ).x(),
+                            mp_mirror_vehicle->bub_part_pos( get_map(),
+                                    mp_mirror_vehicle->part( 0 ) ).y() ) );
         } catch( const std::exception &err ) {
             mp_inv_log( std::string( "vehicle: mirror JSON error " ) + err.what() );
         }
@@ -9520,6 +9603,38 @@ void run_view_loop()
                             } else if( mp_ut_phase == 2 && mp_ut_ms > 6000 ) {
                                 mp_inv_log( "test: utility done" );
                                 ++mp_ut_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "examine_adjacent_test" ) {
+                        static int mp_ea_phase = 0;
+                        static auto mp_ea_t0 = std::chrono::steady_clock::now();
+                        if( mp_ea_phase == 0 ) {
+                            mp_ea_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: examine adjacent spawn" );
+                            ++mp_ea_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_ea_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_ea_t0 ).count();
+                            if( mp_ea_phase == 1 && mp_ea_ms > 3000 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: examine adjacent action" );
+                                ++mp_ea_phase;
+                                sent = false;
+                            } else if( mp_ea_phase == 2 && mp_ea_ms > 6000 ) {
+                                netplay::client_send_intent( "vehicle_menu_here", 0,
+                                                             { -128, -128 } );
+                                mp_inv_log( "test: examine adjacent retry" );
+                                ++mp_ea_phase;
+                                sent = false;
+                            } else if( mp_ea_phase == 3 && mp_ea_ms > 12000 ) {
+                                mp_inv_log( "test: examine adjacent done" );
+                                ++mp_ea_phase;
                                 sent = true;
                             } else {
                                 sent = false;

@@ -763,6 +763,7 @@ static void mine_tiles( snapshot &out, avatar &u, Character *viewer, map &here,
 /* snapshot builder                                                    */
 /* ------------------------------------------------------------------ */
 
+static bool mp_session_vehicle_pos( const npc &viewer, tripoint_bub_ms &out );
 static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
                                  npc *viewer = nullptr )
 {
@@ -1047,7 +1048,9 @@ static void build_host_snapshot( snapshot &out, const tripoint_bub_ms &center,
     out.veh_ax = out.veh_ay = out.veh_az = 0;
     out.has_vehicle_info = viewer != nullptr;
     if( viewer != nullptr ) {
-        if( const optional_vpart_position mp_veh = here.veh_at( viewer->pos_bub() ) ) {
+        tripoint_bub_ms mp_veh_pos = viewer->pos_bub();
+        mp_session_vehicle_pos( *viewer, mp_veh_pos );
+        if( const optional_vpart_position mp_veh = here.veh_at( mp_veh_pos ) ) {
             std::ostringstream mp_vos;
             JsonOut mp_vjo( mp_vos );
             mp_veh->vehicle().serialize( mp_vjo );
@@ -1227,6 +1230,26 @@ static std::map<int, int> av_pick_tile_gen;
  * at, relative to the session avatar. {} means the avatar's own tile. Vehicle
  * menu rows (examine/workbench/faucet/tool) return to this tile. */
 static std::map<int, point> av_vehicle_menu_off;
+
+/* DDA MP v4.0a-325: while a session has a vehicle interact menu open on an
+ * adjacent tile, stream that vehicle instead of the one under the avatar. */
+static bool mp_session_vehicle_pos( const npc &viewer, tripoint_bub_ms &out )
+{
+    const int npc_id = viewer.getID().get_value();
+    for( const auto &entry : av_sid_to_npc ) {
+        if( entry.second != npc_id ) {
+            continue;
+        }
+        const auto off_it = av_vehicle_menu_off.find( entry.first );
+        if( off_it != av_vehicle_menu_off.end() ) {
+            out = viewer.pos_bub() +
+                  tripoint_rel_ms( off_it->second.x, off_it->second.y, 0 );
+            return true;
+        }
+        break;
+    }
+    return false;
+}
 
 /* the living avatar npc a session is bound to, or nullptr */
 static npc *av_session_npc( int sid )
@@ -7610,6 +7633,36 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
             item empty_bottle( itype_id( "bottle_plastic" ) );
             av.i_add_or_drop( empty_bottle );
         }
+        if( std::getenv( "DDA_MP_TEST_OUTSIDE" ) != nullptr ) {
+            // Place the avatar outside next to a station/controls tile so the
+            // client examine has to request a host scan + streamed vehicle.
+            tripoint_bub_ms ref_pos = veh->bub_part_pos( here, veh->part( 0 ) );
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                const vehicle_part &pt = veh->part( i );
+                if( pt.info().has_flag( "CONTROLS" ) ||
+                    pt.info().has_flag( "WORKBENCH" ) ||
+                    pt.info().has_flag( "VEH_TOOLS" ) ) {
+                    ref_pos = veh->bub_part_pos( here, pt );
+                    break;
+                }
+            }
+            static const point outside_offs[] = {
+                { 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 },
+                { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 }
+            };
+            for( const point &off : outside_offs ) {
+                const tripoint_bub_ms p =
+                    ref_pos + tripoint_rel_ms( off.x, off.y, 0 );
+                if( here.inbounds( p ) && !here.veh_at( p ) && here.passable( p ) ) {
+                    av.setpos( here, p, false );
+                    break;
+                }
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "test outside pos=%d,%d\n", av.pos_bub().x(), av.pos_bub().y() );
+                std::fclose( f );
+            }
+        }
         std::string inv;
         int inv_count = 0;
         for( item *it : av.inv_dump() ) {
@@ -7897,31 +7950,75 @@ static bool mp_cmd_vehicle_menu( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_vehicle_scan_adjacent( npc &av, tripoint_bub_ms &out )
+{
+    map &here = get_map();
+    static const point offsets[] = {
+        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+    };
+    std::optional<tripoint_bub_ms> first;
+    for( const point &off : offsets ) {
+        const tripoint_bub_ms p =
+            av.pos_bub() + tripoint_rel_ms( off.x, off.y, 0 );
+        if( !here.inbounds( p ) ) {
+            continue;
+        }
+        const optional_vpart_position vp = here.veh_at( p );
+        if( !vp ) {
+            continue;
+        }
+        if( vp->avail_part_with_feature( "VEH_TOOLS" ) ||
+            vp->avail_part_with_feature( "WORKBENCH" ) ) {
+            out = p;
+            return true;
+        }
+        if( !first ) {
+            first = p;
+        }
+    }
+    if( first ) {
+        out = *first;
+        return true;
+    }
+    return false;
+}
+
 static bool mp_cmd_vehicle_menu_here( const netplay::intent_request &in )
 {
     // DDA MP v4.0a-315: open the host interact menu at the avatar's tile even
     // when it is not driving (workbench, faucet, doors, ...).
     // DDA MP v4.0a-318: optional dx,dy target a reachable adjacent vehicle tile
     // (tool station, kitchen unit), matching vanilla examine.
+    // DDA MP v4.0a-325: the sentinel -128,-128 asks the host to pick an
+    // adjacent vehicle tile itself (the client saw vehicle parts in its
+    // streamed cache but has no vehicle object there).
     npc *av = av_session_npc( in.sid );
-    if( av != nullptr ) {
-        const point off = in.args.size() >= 2 ? point( in.args[0], in.args[1] ) : point( 0, 0 );
-        const tripoint_bub_ms p =
-            av->pos_bub() + tripoint_rel_ms( off.x, off.y, 0 );
-        map &here = get_map();
-        if( !here.inbounds( p ) || !here.veh_at( p ) ) {
+    if( av == nullptr ) {
+        return true;
+    }
+    const bool scan = in.args.size() >= 2 && in.args[0] == -128 && in.args[1] == -128;
+    point off = in.args.size() >= 2 ? point( in.args[0], in.args[1] ) : point( 0, 0 );
+    map &here = get_map();
+    tripoint_bub_ms p = av->pos_bub() + tripoint_rel_ms( off.x, off.y, 0 );
+    if( scan || !here.inbounds( p ) || !here.veh_at( p ) ) {
+        if( !mp_vehicle_scan_adjacent( *av, p ) ) {
             av_vehicle_menu_off.erase( in.sid );
             netplay::host_send_event_to_sid(
                 in.sid, netplay::fork_text( "There is no vehicle there." ),
                 static_cast<int>( m_info ) );
-        } else {
-            av_vehicle_menu_off[in.sid] = off;
-            g->mp_anchor_map_on( *av, true );
-            mp_send_vehicle_menu_at( in.sid, *av, p );
-            if( !netplay::host_avatar_keys_pending() ) {
-                g->mp_anchor_map_on( get_avatar() );
-            }
+            return true;
         }
+        off = point( p.x() - av->pos_bub().x(), p.y() - av->pos_bub().y() );
+    }
+    av_vehicle_menu_off[in.sid] = off;
+    g->mp_anchor_map_on( *av, true );
+    // Stream the target vehicle before the menu: client-side native actions
+    // (examine/workbench/turret/...) need a mirror at that tile.
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    mp_send_vehicle_menu_at( in.sid, *av, p );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
     }
     return true;
 }
