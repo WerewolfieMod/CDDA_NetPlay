@@ -1163,8 +1163,10 @@ static std::string mp_smash_text;
 /// rather than a gun; confirm sends a reach attack instead of a shot.
 static bool mp_fire_reach = false;
 /// DDA MP v4.0a-321: the same cursor aimed at a vehicle turret sends a turret
-/// fire command instead of the avatar's weapon shot.
+/// fire command instead of the avatar's weapon shot. Mode: 0 = single turret,
+/// 1 = all manual turrets, 2 = override automatic turrets.
 static bool mp_fire_turret = false;
+static int mp_fire_turret_mode = 0;
 static bool mp_look_fast_scroll = false;
 
 /* Tile under the look/fire/throw reticle. The snapshot origin is the pivot
@@ -1200,6 +1202,7 @@ static void mp_begin_client_fire()
     // reach attack target UI; mirror that with the client's own reticle.
     mp_fire_reach = false;
     mp_fire_turret = false;
+    mp_fire_turret_mode = 0;
     if( weapon->is_gun() ) {
         // gun target UI
     } else if( weapon->current_reach_range( get_avatar() ).first > 1 ) {
@@ -4343,13 +4346,13 @@ static void mp_run_turret_reload()
     mp_send_turret_reload( uid );
 }
 
-static void mp_send_turret_fire( int dx, int dy )
+static void mp_send_turret_fire( int dx, int dy, int mode )
 {
-    netplay::client_send_intent( "vehicle_turret_fire", 0, { dx, dy } );
-    mp_inv_log( string_format( "action: turret_fire %d,%d", dx, dy ) );
+    netplay::client_send_intent( "vehicle_turret_fire", 0, { dx, dy, mode } );
+    mp_inv_log( string_format( "action: turret_fire %d,%d mode=%d", dx, dy, mode ) );
 }
 
-static void mp_run_turret_aim()
+static void mp_run_turret_aim( int mode = 0 )
 {
     const std::optional<tripoint_bub_ms> ta_pos = mp_action_target();
     if( !ta_pos ) {
@@ -4371,18 +4374,21 @@ static void mp_run_turret_aim()
         return;
     }
     if( const char *test_ta = std::getenv( "DDA_MP_TEST_TURRET_AIM" );
-        test_ta != nullptr && test_ta[0] != '\0' ) {
+        ( test_ta != nullptr && test_ta[0] != '\0' ) ||
+        std::getenv( "DDA_MP_TEST_TURRET_AUTO" ) != nullptr ) {
         // Deterministic target for the automated run; the cursor path below
         // is the production one.
-        mp_send_turret_fire( 3, 0 );
+        mp_send_turret_fire( 3, 0, mode );
         return;
     }
     mp_fire_reach = false;
     mp_fire_turret = true;
+    mp_fire_turret_mode = mode;
     mp_cursor = mp_cursor_mode::fire;
     mp_cursor_dx = 0;
     mp_cursor_dy = 0;
-    mp_inv_log( string_format( "turret_aim: cursor from %d,%d", ta_pos->x(), ta_pos->y() ) );
+    mp_inv_log( string_format( "turret_aim: cursor from %d,%d mode=%d",
+                               ta_pos->x(), ta_pos->y(), mode ) );
 }
 
 /* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
@@ -4516,7 +4522,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
             } else if( client_actions[i] == "turret_reload" ) {
                 mp_run_turret_reload();
             } else if( client_actions[i] == "turret_aim" ) {
-                mp_run_turret_aim();
+                mp_run_turret_aim( 0 );
+            } else if( client_actions[i] == "turret_aim_all" ) {
+                mp_run_turret_aim( 1 );
+            } else if( client_actions[i] == "turret_aim_auto" ) {
+                mp_run_turret_aim( 2 );
             } else if( client_actions[i].rfind( "activate_eoc:", 0 ) == 0 ) {
                 const int eoc_idx = std::atoi( client_actions[i].substr( 13 ).c_str() );
                 netplay::client_send_intent( "vehicle_activate_eoc", 0, { eoc_idx } );
@@ -4579,7 +4589,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
         } else if( ca == "turret_reload" ) {
             mp_run_turret_reload();
         } else if( ca == "turret_aim" ) {
-            mp_run_turret_aim();
+            mp_run_turret_aim( 0 );
+        } else if( ca == "turret_aim_all" ) {
+            mp_run_turret_aim( 1 );
+        } else if( ca == "turret_aim_auto" ) {
+            mp_run_turret_aim( 2 );
         } else if( ca.rfind( "activate_eoc:", 0 ) == 0 ) {
             const int eoc_idx = std::atoi( ca.substr( 13 ).c_str() );
             netplay::client_send_intent( "vehicle_activate_eoc", 0, { eoc_idx } );
@@ -10185,6 +10199,7 @@ void run_view_loop()
                         netplay::client_request_snapshot( mp_cursor_dx, mp_cursor_dy, 0 );
                     }
                     mp_fire_turret = false;
+                    mp_fire_turret_mode = 0;
                     mp_cursor = mp_cursor_mode::none;
                     continue;
                 }
@@ -10270,8 +10285,9 @@ void run_view_loop()
                                                    mp_cursor_dx, mp_cursor_dy ) );
                     } else if( mp_cursor == mp_cursor_mode::fire ) {
                         if( mp_fire_turret ) {
-                            mp_send_turret_fire( mp_cursor_dx, mp_cursor_dy );
+                            mp_send_turret_fire( mp_cursor_dx, mp_cursor_dy, mp_fire_turret_mode );
                             mp_fire_turret = false;
+                            mp_fire_turret_mode = 0;
                         } else if( mp_fire_reach ) {
                             netplay::client_send_intent(
                                 "reach_attack", 0, { mp_cursor_dx, mp_cursor_dy } );

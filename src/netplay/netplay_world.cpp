@@ -7275,7 +7275,9 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     const bool mp_workbench_test = std::getenv( "DDA_MP_TEST_WORKBENCH" ) != nullptr;
     const bool mp_veh_tool_test = std::getenv( "DDA_MP_TEST_VEH_TOOL" ) != nullptr;
     const bool mp_smart_test = std::getenv( "DDA_MP_TEST_SMART_ENGINE" ) != nullptr;
-    const bool mp_turret_aim_test = std::getenv( "DDA_MP_TEST_TURRET_AIM" ) != nullptr;
+    const bool mp_turret_auto_test = std::getenv( "DDA_MP_TEST_TURRET_AUTO" ) != nullptr;
+    const bool mp_turret_aim_test = std::getenv( "DDA_MP_TEST_TURRET_AIM" ) != nullptr ||
+                                    mp_turret_auto_test;
     const bool mp_turret_test = std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr ||
                                 mp_turret_aim_test;
     const bool mp_eoc_test = std::getenv( "DDA_MP_TEST_EOC" ) != nullptr;
@@ -7445,10 +7447,19 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                 }
                 turret_idx = veh->install_part( here, mount, vpart_id( "turret_m249" ) );
                 if( turret_idx >= 0 ) {
+                    if( mp_turret_auto_test ) {
+                        const vpart_info &controls_info = vpart_id( "controls_turret" ).obj();
+                        if( veh->can_mount( mount, controls_info ).success() ) {
+                            veh->install_part( here, mount, vpart_id( "controls_turret" ) );
+                        }
+                    }
                     break;
                 }
             }
             if( turret_idx >= 0 ) {
+                if( mp_turret_auto_test ) {
+                    veh->part( turret_idx ).enabled = true;
+                }
                 if( mp_turret_aim_test ) {
                     turret_data loaded = veh->turret_query( veh->part( turret_idx ) );
                     if( loaded ) {
@@ -7460,8 +7471,10 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                 av.setpos( here, ctrl_pos, false );
             }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-                std::fprintf( f, "test turret part=%d pos=%d,%d\n",
-                              turret_idx, ctrl_pos.x(), ctrl_pos.y() );
+                std::fprintf( f, "test turret part=%d pos=%d,%d auto=%d enabled=%d\n",
+                              turret_idx, ctrl_pos.x(), ctrl_pos.y(),
+                              mp_turret_auto_test ? 1 : 0,
+                              turret_idx >= 0 && veh->part( turret_idx ).enabled ? 1 : 0 );
                 std::fclose( f );
             }
         }
@@ -8085,30 +8098,15 @@ static bool mp_cmd_vehicle_turret_fire( const netplay::intent_request &in )
         return true;
     }
     vehicle &veh = vp->vehicle();
-    turret_data turret = veh.turret_query( &here, p );
-    if( !turret ) {
-        netplay::host_send_event_to_sid(
-            in.sid, netplay::fork_text( "There is no turret there." ),
-            static_cast<int>( m_info ) );
-        return true;
-    }
-    if( turret.query() != turret_data::status::ready ) {
-        netplay::host_send_event_to_sid(
-            in.sid, netplay::fork_text( "The turret is not ready to fire." ),
-            static_cast<int>( m_info ) );
-        return true;
-    }
+    const int mode = in.args.size() > 2 ? in.args[2] : 0;
     g->mp_anchor_map_on( *av, true );
     const tripoint_bub_ms target =
         av->pos_bub() + tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    const tripoint_abs_ms abs_target = here.get_abs( target );
     const int dist = std::max( std::abs( in.args[0] ), std::abs( in.args[1] ) );
     if( dist < 1 ) {
         netplay::host_send_event_to_sid(
             in.sid, netplay::fork_text( "You can't aim there." ),
-            static_cast<int>( m_info ) );
-    } else if( !turret.in_range( here.get_abs( target ) ) ) {
-        netplay::host_send_event_to_sid(
-            in.sid, netplay::fork_text( "Target out of range." ),
             static_cast<int>( m_info ) );
     } else if( !av->sees( here, target ) ) {
         netplay::host_send_event_to_sid(
@@ -8116,12 +8114,72 @@ static bool mp_cmd_vehicle_turret_fire( const netplay::intent_request &in )
             static_cast<int>( m_info ) );
     } else {
         const std::size_t msg_before = Messages::generation();
-        const int shots = turret.fire( *av, &here, target );
-        turret_data after = veh.turret_query( &here, p );
-        mp_ctrl_log( string_format(
-                         "vehicle turret fire sid=%d pos=%d,%d target=%d,%d shots=%d ammo=%d",
-                         in.sid, p.x(), p.y(), in.args[0], in.args[1], shots,
-                         after ? after.ammo_remaining() : 0 ) );
+        int shots = 0;
+        int fired = 0;
+        int targeted = 0;
+        const auto ready_turrets = [&veh]( bool automatic ) {
+            std::vector<vehicle_part *> res;
+            for( vehicle_part *t : veh.turrets() ) {
+                if( t->enabled != automatic ) {
+                    continue;
+                }
+                turret_data td = veh.turret_query( *t );
+                if( td.query() == turret_data::status::ready ) {
+                    res.push_back( t );
+                }
+            }
+            return res;
+        };
+        if( mode == 2 ) {
+            // Override automatic turrets: set a manual target, do not fire.
+            int enabled_count = 0;
+            int power_disabled_count = 0;
+            for( vehicle_part *t : veh.turrets() ) {
+                enabled_count += t->enabled ? 1 : 0;
+                power_disabled_count += t->power_disabled ? 1 : 0;
+            }
+            const std::vector<vehicle_part *> turrets = ready_turrets( true );
+            for( vehicle_part *t : turrets ) {
+                turret_data td = veh.turret_query( *t );
+                if( td && td.in_range( abs_target ) ) {
+                    t->target.second = abs_target;
+                    ++targeted;
+                }
+            }
+            if( targeted > 0 ) {
+                av->mod_moves( -( 100 - 5 * av->get_int() ) );
+            }
+            mp_ctrl_log( string_format(
+                             "vehicle turret aim auto sid=%d target=%d,%d targeted=%d enabled=%d power_disabled=%d",
+                             in.sid, in.args[0], in.args[1], targeted, enabled_count,
+                             power_disabled_count ) );
+        } else {
+            std::vector<vehicle_part *> turrets;
+            if( mode == 1 ) {
+                turrets = ready_turrets( false );
+            } else {
+                turrets = veh.get_parts_at( &here, p, "TURRET", part_status_flag::any );
+            }
+            for( vehicle_part *t : turrets ) {
+                turret_data td = veh.turret_query( *t );
+                if( td && td.in_range( abs_target ) ) {
+                    shots += td.fire( *av, &here, target );
+                    ++fired;
+                }
+            }
+            turret_data after = veh.turret_query( &here, p );
+            mp_ctrl_log( string_format(
+                             "vehicle turret fire sid=%d pos=%d,%d target=%d,%d mode=%d turrets=%d shots=%d ammo=%d",
+                             in.sid, p.x(), p.y(), in.args[0], in.args[1], mode, fired, shots,
+                             after ? after.ammo_remaining() : 0 ) );
+        }
+        if( fired == 0 && targeted == 0 ) {
+            const std::string msg = mode == 2 ?
+                                    netplay::fork_text( "No automatic turrets are ready." ) :
+                                    mode == 1 ? netplay::fork_text( "No manual turrets are ready." ) :
+                                    netplay::fork_text( "The turret is not ready to fire." );
+            netplay::host_send_event_to_sid( in.sid, msg, static_cast<int>( m_info ) );
+        }
         av_move_pool[in.sid] = std::max( 0, av->get_moves() );
         av->set_moves( av_move_pool[in.sid] );
         av_mark_acted( in.sid );

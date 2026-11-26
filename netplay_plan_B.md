@@ -182,7 +182,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-2 | Перехват мутаций (activities/map/vehicle/item/character/dialogue/EOC) | client | P3-1/P1 | UI не меняет мир напрямую | TODO |
 | P3-3 | Перевести native inventory/@/craft/pickup на command bus | client | P1/P3-2 | actions идут через registry | PARTIAL |
 | P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI; `e` открывает `interact_with`-меню, `EXAMINE_VEHICLE` — нативный `veh_interact`; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew через command bus; `DDA_MP_DIRECT_VEH_INTERACT` — прямой экран) |
-| P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | PARTIAL (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK/USE_TOOL/SMART_ENGINE/TURRET_RELOAD/TURRET_AIM/ACTIVATE_EOC; mass/auto turret aim disabled) |
+| P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | DONE (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK/USE_TOOL/SMART_ENGINE/TURRET_RELOAD/TURRET_AIM/ACTIVATE_EOC; turret single/all/auto aim; остальные строки — safe host callbacks) |
 | P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (auto-target) |
 | P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | TODO |
 | P3-8 | Native item menu (`inventory_item_menu`) | `game_inventory` | P2-3 | заменить `mp_client_item_menu` | PARTIAL |
@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-322`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом), workbench, `Use <tool>`, smart controller, turret reload, turret aim и EOC (проверено рантаймом). Меню передаёт точную клетку (`target_dx/dy`); adjacent examine по-прежнему требует, чтобы машина была зеркалирована. Пункты 1.1/1.3 закрыты; 1.2 остаётся частично: массовый/автоматический turret aim. Долг: клиент зеркалит только машину под аватаром, поэтому examine машины снаружи (без посадки) всё ещё уходит на host — нужен стрим ближайших машин или direction prompt. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC (ваниль отбрасывает такие сообщения).
+Статус на `ddamp-v4.0a-323`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. Меню передаёт точную клетку (`target_dx/dy`); adjacent examine по-прежнему требует, чтобы машина была зеркалирована. Долг: клиент зеркалит только машину под аватаром, поэтому examine машины снаружи (без посадки) всё ещё уходит на host — нужен стрим ближайших машин или direction prompt. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC (ваниль отбрасывает такие сообщения).
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -531,6 +531,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-320 | P3-5: turret reload — клиент выбирает магазин нативным `select_ammo` на зеркале, отправляет uid; host строит `reload_option` и запускает `reload_activity_actor` на сессионном аватаре. Меню теперь передаёт `target_dx/dy`, client actions используют точную клетку меню. Тестовая машина: `turret_mount` + `turret_m249` + `stanag10` в рюкзаке | turret suite: `test turret part=80`; row 9 `action=RELOAD_TURRET client=turret_reload`; `turret_reload: target 66,64 menu=1`; host `vehicle turret reload ... ok=1 activity=1`; после завершения `mag=1 ammo=10 activity=0` |
 | 2026-11-26 | ddamp-v4.0a-321 | P3-5: turret aim — client action `turret_aim` открывает reticle; подтверждение шлёт `vehicle_turret_fire`; host проверяет ready/range/LOS и вызывает `turret_data::fire` на сессионном аватаре. Тестовая машина заряжает магазин в turret m249 | turret aim suite: row 15 `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 | 2026-11-26 | ddamp-v4.0a-322 | P3-5: EOC activation — строка `Activate <part>` стала client action `activate_eoc:<part_index>`; host запускает `activatable_eoc` через `dialogue` с talker сессионного аватара. Тестовый EOC-модуль в `netplay_test` | eoc suite: `test eoc part=79`; row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
+| 2026-11-26 | ddamp-v4.0a-323 | P3-5 closeout: массовый и автоматический turret aim. `Aim turrets manually` стреляет всеми manual-турелями в выбранную клетку; `Aim automatic turrets` ставит target автоматическим (нужен `TURRET_CONTROLS`). Все строки верхнего меню теперь safe или client actions | all-manual: `mode=1 turrets=1 shots=4 ammo=6`; auto: `turret aim auto ... targeted=1 enabled=1 power_disabled=0` (тестовая машина с `controls_turret`) |
 
 ### 9.3. Что протестировано
 
@@ -575,14 +576,15 @@ JSON/mapgen:
 | 2026-11-26 | P3-5 | Turret reload через client ammo selector | меню target `66,64`; row `RELOAD_TURRET client=turret_reload`; host `vehicle turret reload ... ok=1`; после activity `mag=1 ammo=10 activity=0` |
 | 2026-11-26 | P3-5 | Turret aim/fire | row `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 | 2026-11-26 | P3-5 | EOC activation | row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
+| 2026-11-26 | P3-5 | Mass/auto turret aim | all-manual: `mode=1 turrets=1 shots=4`; auto: `targeted=1 enabled=1 power_disabled=0` |
 
 ### 9.4. Следующие 5 задач
 
-1. P3-5: массовый/автоматический turret aim (`Aim turrets manually`, `Aim automatic turrets`).
-2. Runtime-тест planter/washing machine/dishwasher на машине с этими деталями.
-3. Vehicle examine снаружи: стрим ближайших машин или клиентский direction prompt (сейчас зеркалится только машина под аватаром).
-4. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
-5. P6-1/P6-2: manifest версий модов/данных и handshake.
+1. Runtime-тест planter/washing machine/dishwasher на машине с этими деталями.
+2. Vehicle examine снаружи: стрим ближайших машин или клиентский direction prompt (сейчас зеркалится только машина под аватаром).
+3. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
+4. P6-1/P6-2: manifest версий модов/данных и handshake.
+5. P3-13: оставшиеся native-экраны (bike rack/capture/tiedown/harness/tool attach).
 
 ---
 

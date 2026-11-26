@@ -2627,11 +2627,13 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         // We can also fire manual turrets with ACTION_FIRE while standing at the controls.
         menu.add( _( "Aim turrets manually" ) )
         .hotkey( "TURRET_MANUAL_AIM" )
+        .client_action( "turret_aim_all" )
         .on_submit( [this] { turrets_aim_and_fire_all_manual( true ); } );
 
         // This lets us manually override and set the target for the automatic turrets instead.
         menu.add( _( "Aim automatic turrets" ) )
         .hotkey( "TURRET_MANUAL_OVERRIDE" )
+        .client_action( "turret_aim_auto" )
         .on_submit( [this] { turrets_override_automatic_aim(); } );
 
         menu.add( _( "Aim individual turret" ) )
