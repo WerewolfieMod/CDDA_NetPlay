@@ -65,7 +65,7 @@ namespace netplay
 static_assert( sizeof( socket_t ) == 8, "socket_t width" );
 
 /// DDA MP v4.0a-326: bumped with the data-manifest handshake.
-static constexpr const char *NETPLAY_VERSION = "4.0a-326";
+static constexpr const char *NETPLAY_VERSION = "4.0a-327";
 
 std::string data_manifest_hash()
 {
@@ -687,6 +687,19 @@ std::string client_host_manifest_hash()
 {
     std::lock_guard<std::mutex> lk( state_mutex );
     return state.client_last_host_manifest_hash;
+}
+
+std::vector<std::pair<std::string, std::string>> client_host_mod_versions()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_mod_versions;
+}
+
+void client_set_join_error( const std::string &reason )
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    state.client_kicked_flag = true;
+    state.client_kick_reason_text = reason;
 }
 
 std::vector<std::pair<std::string, std::string>> client_host_world_options()

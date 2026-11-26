@@ -360,8 +360,45 @@ static void fat_client_load_data()
             // the game data; map/world state arrives in snapshots.
             static std::unique_ptr<WORLD> mp_virtual_world;
             if( w == nullptr ) {
-                const std::vector<std::string> host_mods = netplay::client_host_mods();
+                std::vector<std::string> host_mods = netplay::client_host_mods();
+                if( const char *missing_test = std::getenv( "DDA_MP_TEST_MANIFEST_MISSING" );
+                    missing_test != nullptr && missing_test[0] != '\0' ) {
+                    host_mods.emplace_back( missing_test );
+                }
                 if( !host_mods.empty() ) {
+                    std::map<std::string, std::string> available_mods;
+                    for( const mod_id &m : world_generator->get_mod_manager().all_mods() ) {
+                        available_mods[m.str()] = m->version;
+                    }
+                    std::string manifest_error;
+                    for( const std::string &id : host_mods ) {
+                        if( available_mods.find( id ) == available_mods.end() ) {
+                            manifest_error += ( manifest_error.empty() ? "" : ", " ) + id;
+                        }
+                    }
+                    if( !manifest_error.empty() ) {
+                        const std::string msg = string_format(
+                                                    "Missing mod data: %s. Install the same mods as the host.",
+                                                    manifest_error.c_str() );
+                        mp_fat_log( "tiles: " + msg );
+                        netplay::client_set_join_error( msg );
+                        netplay::client_disconnect();
+                        return;
+                    }
+                    for( const auto &kv : netplay::client_host_mod_versions() ) {
+                        const auto it = available_mods.find( kv.first );
+                        if( it != available_mods.end() && !kv.second.empty() &&
+                            it->second != kv.second ) {
+                            const std::string msg = string_format(
+                                                        "Mod version mismatch: %s host=%s local=%s.",
+                                                        kv.first.c_str(), kv.second.c_str(),
+                                                        it->second.c_str() );
+                            mp_fat_log( "tiles: " + msg );
+                            netplay::client_set_join_error( msg );
+                            netplay::client_disconnect();
+                            return;
+                        }
+                    }
                     mp_virtual_world = std::make_unique<WORLD>( wname );
                     mp_virtual_world->active_mod_order.clear();
                     for( const std::string &id : host_mods ) {
@@ -422,12 +459,22 @@ static void fat_client_load_data()
     if( !mp_manifest_reported && netplay::client_is_connected() ) {
         mp_manifest_reported = true;
         const std::string local_hash = netplay::data_manifest_hash();
+        const std::string host_hash = netplay::client_host_manifest_hash();
         mp_fat_log( string_format( "tiles: manifest host=%s local=%s game=%s/%s netplay=%s/%s",
-                                   netplay::client_host_manifest_hash().c_str(),
+                                   host_hash.c_str(),
                                    local_hash.c_str(),
                                    netplay::client_host_game_version().c_str(), VERSION,
                                    netplay::client_host_netplay_version().c_str(),
-                                   "4.0a-326" ) );
+                                   "4.0a-327" ) );
+        if( !host_hash.empty() && host_hash != local_hash ) {
+            const std::string msg = string_format(
+                                        "Data manifest mismatch: host=%s local=%s. Use the same mods and versions as the host.",
+                                        host_hash.c_str(), local_hash.c_str() );
+            mp_fat_log( "tiles: " + msg );
+            netplay::client_set_join_error( msg );
+            netplay::client_disconnect();
+            return;
+        }
         netplay::client_send_intent( "manifest_check", 0, {}, local_hash );
     }
 }
