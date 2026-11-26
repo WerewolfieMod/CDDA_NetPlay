@@ -6758,6 +6758,8 @@ static void mp_send_vehicle_menu_at( int sid, npc &av, const tripoint_bub_ms &p 
     JsonOut js( os );
     js.start_object();
     js.member( "generation", static_cast<int>( built.generation ) );
+    js.member( "target_dx", p.x() - av.pos_bub().x() );
+    js.member( "target_dy", p.y() - av.pos_bub().y() );
     js.member( "entries" );
     js.start_array();
     for( const veh_menu_item &it : built.items ) {
@@ -7272,6 +7274,7 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     const bool mp_workbench_test = std::getenv( "DDA_MP_TEST_WORKBENCH" ) != nullptr;
     const bool mp_veh_tool_test = std::getenv( "DDA_MP_TEST_VEH_TOOL" ) != nullptr;
     const bool mp_smart_test = std::getenv( "DDA_MP_TEST_SMART_ENGINE" ) != nullptr;
+    const bool mp_turret_test = std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr;
     const bool mp_cart_test = mp_workbench_test || mp_veh_tool_test;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
@@ -7387,6 +7390,69 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                 std::fclose( f );
             }
         }
+        if( mp_turret_test ) {
+            // Turret reload test: normal car, turret on the controls tile and
+            // a loaded STANAG magazine in the avatar's backpack.
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.is_battery() ) {
+                    pt.ammo_set( itype_id( "battery" ), 1000 );
+                } else if( pt.is_tank() && pt.get_base().empty() ) {
+                    pt.ammo_set( itype_id( "gasoline" ), 200 );
+                }
+            }
+            point_rel_ms turret_mount( 0, 0 );
+            tripoint_bub_ms ctrl_pos = veh->bub_part_pos( here, veh->part( 0 ) );
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                const vehicle_part &pt = veh->part( i );
+                if( pt.info().has_flag( "CONTROLS" ) ) {
+                    turret_mount = pt.mount;
+                    ctrl_pos = veh->bub_part_pos( here, pt );
+                    break;
+                }
+            }
+            int turret_idx = -1;
+            const vpart_info &turret_mount_info = vpart_id( "turret_mount" ).obj();
+            const vpart_info &turret_info = vpart_id( "turret_m249" ).obj();
+            for( const point &off : { point( 0, 0 ), point( 0, 1 ), point( 0, -1 ),
+                                      point( -1, 0 ), point( 1, 0 ) } ) {
+                const point_rel_ms mount( turret_mount.x() + off.x, turret_mount.y() + off.y );
+                const ret_val<void> mount_res = veh->can_mount( mount, turret_mount_info );
+                if( !mount_res.success() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                        std::fprintf( f, "test turret mount %d,%d fail=%s\n",
+                                      mount.x(), mount.y(), mount_res.c_str() );
+                        std::fclose( f );
+                    }
+                    continue;
+                }
+                const int mount_idx = veh->install_part( here, mount, vpart_id( "turret_mount" ) );
+                if( mount_idx < 0 ) {
+                    continue;
+                }
+                const ret_val<void> turret_res = veh->can_mount( mount, turret_info );
+                if( !turret_res.success() ) {
+                    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                        std::fprintf( f, "test turret part %d,%d fail=%s\n",
+                                      mount.x(), mount.y(), turret_res.c_str() );
+                        std::fclose( f );
+                    }
+                    continue;
+                }
+                turret_idx = veh->install_part( here, mount, vpart_id( "turret_m249" ) );
+                if( turret_idx >= 0 ) {
+                    break;
+                }
+            }
+            if( turret_idx >= 0 ) {
+                av.setpos( here, ctrl_pos, false );
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "test turret part=%d pos=%d,%d\n",
+                              turret_idx, ctrl_pos.x(), ctrl_pos.y() );
+                std::fclose( f );
+            }
+        }
         // The test avatar has only worn clothes; give it a backpack so the
         // fuel container is not dropped on the ground.
         av.wear_item( item( itype_id( "backpack" ) ), false );
@@ -7400,6 +7466,13 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         // check, not consume_items().
         item beeper_item( itype_id( "beeper" ) );
         av.i_add_or_drop( beeper_item );
+        if( mp_turret_test ) {
+            // Short magazine fits the test backpack; long STANAGs can be
+            // dropped for length even when spare volume exists.
+            item magazine( itype_id( "stanag10" ) );
+            magazine.ammo_set( itype_id( "556" ), 10 );
+            av.i_add_or_drop( magazine );
+        }
         if( std::getenv( "DDA_MP_TEST_HOTWIRE" ) != nullptr ) {
             veh->is_locked = true;
             veh->is_alarm_on = false;
@@ -7853,6 +7926,87 @@ static bool mp_cmd_vehicle_smart_engine( const netplay::intent_request &in )
                      in.sid, enabled ? 1 : 0, lo, hi, controllers ) );
     av_send_status( in.sid );
     av_send_session_picture( in.sid, av->pos_bub(), av );
+    return true;
+}
+
+static bool mp_cmd_vehicle_turret_reload( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-320: reload a turret with the exact carried magazine/ammo
+    // the client selected (uid). The host starts the stock reload activity on
+    // the session avatar.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms p = mp_vehicle_menu_target( in.sid, *av );
+    const optional_vpart_position vp = here.veh_at( p );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no vehicle there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    turret_data turret = veh.turret_query( &here, p );
+    if( !turret || !turret.can_reload() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no reloadable turret there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    item_location ammo = av_find_by_uid( *av, in.data );
+    if( !ammo ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "That ammo moved." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    bool ok = false;
+    {
+        mp_quiet_remote_data quiet;
+        mp_player_character_scope scope( *av );
+        item::reload_option opt( av, turret.base(), ammo,
+                                 item::reload_option::POCKET_FALLBACK );
+        if( opt ) {
+            reload_activity_actor reload_act( std::move( opt ) );
+            av->assign_activity( reload_act );
+            ok = true;
+        }
+    }
+    mp_ctrl_log( string_format(
+                     "vehicle turret reload sid=%d pos=%d,%d ammo=%s ok=%d activity=%d",
+                     in.sid, p.x(), p.y(), in.data.c_str(), ok ? 1 : 0,
+                     av->activity ? 1 : 0 ) );
+    if( !ok ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You can't reload that turret with this ammo." ),
+            static_cast<int>( m_info ) );
+    }
+    if( ok && std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr && av->activity ) {
+        // Test shortcut: complete the reload immediately.
+        av->set_moves( av->activity.moves_left + 100 );
+        for( int guard = 0; guard < 50 && av->activity; ++guard ) {
+            av->process_activity();
+        }
+    }
+    turret_data after = veh.turret_query( &here, p );
+    const bool after_valid = static_cast<bool>( after );
+    const item_location after_base = after_valid ? after.base() : item_location();
+    mp_ctrl_log( string_format(
+                     "vehicle turret reload done sid=%d mag=%d ammo=%d activity=%d",
+                     in.sid,
+                     after_base && after_base->magazine_current() ? 1 : 0,
+                     after_valid ? after.ammo_remaining() : 0,
+                     av->activity ? 1 : 0 ) );
+    netplay::host_forward_new_messages( in.sid, msg_before );
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
     return true;
 }
 
@@ -9649,6 +9803,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_menu_here", mp_cmd_vehicle_menu_here );
         r.emplace( "vehicle_use_tool", mp_cmd_vehicle_use_tool );
         r.emplace( "vehicle_smart_engine", mp_cmd_vehicle_smart_engine );
+        r.emplace( "vehicle_turret_reload", mp_cmd_vehicle_turret_reload );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

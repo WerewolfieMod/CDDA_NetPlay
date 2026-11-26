@@ -4159,12 +4159,25 @@ static std::optional<tripoint_bub_ms> mp_vehicle_menu_tile()
     return std::nullopt;
 }
 
+/* DDA MP v4.0a-320: the menu payload carries the tile the host built it for.
+ * Client actions on that menu must use the same tile, not a re-scan. */
+static bool mp_action_target_valid = false;
+static point mp_action_target_off;
+static std::optional<tripoint_bub_ms> mp_action_target()
+{
+    if( mp_action_target_valid ) {
+        return get_avatar().pos_bub() +
+               tripoint_rel_ms( mp_action_target_off.x, mp_action_target_off.y, 0 );
+    }
+    return mp_vehicle_menu_tile();
+}
+
 /* DDA MP v4.0a-315: native workbench menu on the client. Crafting still goes
  * through the existing craft/recraft intents to the host. */
 static void mp_run_workbench()
 {
     std::string wp_name = _( "workbench" );
-    if( const std::optional<tripoint_bub_ms> wp_pos = mp_vehicle_menu_tile() ) {
+    if( const std::optional<tripoint_bub_ms> wp_pos = mp_action_target() ) {
         if( const optional_vpart_position vp = get_map().veh_at( *wp_pos ) ) {
             const int idx = vp->vehicle().avail_part_with_feature( vp->mount_pos(), "WORKBENCH" );
             if( idx >= 0 ) {
@@ -4214,7 +4227,7 @@ static void mp_send_smart_engine( bool enabled, int lo, int hi )
 
 static void mp_run_smart_engine()
 {
-    const std::optional<tripoint_bub_ms> se_pos = mp_vehicle_menu_tile();
+    const std::optional<tripoint_bub_ms> se_pos = mp_action_target();
     if( !se_pos ) {
         mp_inv_log( "smart_engine: no vehicle" );
         return;
@@ -4254,6 +4267,78 @@ static void mp_run_smart_engine()
     mp_send_smart_engine( se_enabled, se_lo, se_hi );
 }
 
+/* DDA MP v4.0a-320: turret reload. The client picks a magazine/ammo with the
+ * stock ammo selector on its mirror; the host validates that exact item by uid
+ * and starts the vanilla reload activity on the session avatar. */
+static void mp_send_turret_reload( const std::string &uid )
+{
+    netplay::client_send_intent( "vehicle_turret_reload", 0, {}, uid );
+    mp_inv_log( "action: turret_reload uid=" + uid );
+}
+
+static void mp_run_turret_reload()
+{
+    const std::optional<tripoint_bub_ms> tr_pos = mp_action_target();
+    if( !tr_pos ) {
+        mp_inv_log( "turret_reload: no vehicle" );
+        return;
+    }
+    mp_inv_log( string_format( "turret_reload: target %d,%d menu=%d",
+                               tr_pos->x(), tr_pos->y(),
+                               mp_action_target_valid ? 1 : 0 ) );
+    const optional_vpart_position tr_vp = get_map().veh_at( *tr_pos );
+    if( !tr_vp ) {
+        mp_inv_log( "turret_reload: no vehicle part" );
+        return;
+    }
+    turret_data turret = tr_vp->vehicle().turret_query( tr_vp->pos_abs() );
+    if( !turret ) {
+        mp_inv_log( "turret_reload: no turret" );
+        return;
+    }
+    if( const char *test_tr = std::getenv( "DDA_MP_TEST_TURRET" );
+        test_tr != nullptr && test_tr[0] != '\0' ) {
+        // Automated run: take the first compatible carried ammo, including
+        // ammo nested inside a worn container.
+        bool sent = false;
+        std::function<void( item_location )> walk = [&]( item_location loc ) {
+            if( !loc || sent ) {
+                return;
+            }
+            const std::string uid = loc->get_var( "mp_uid", std::string() );
+            if( !uid.empty() && turret.base() &&
+                turret.base()->can_reload_with( *loc, true ) ) {
+                mp_send_turret_reload( uid );
+                sent = true;
+                return;
+            }
+            for( item *child : loc->get_contents().all_items_top() ) {
+                if( child != nullptr ) {
+                    walk( item_location( loc, child ) );
+                }
+            }
+        };
+        for( item_location &top : get_avatar().top_items_loc() ) {
+            walk( top );
+        }
+        if( !sent ) {
+            mp_inv_log( "turret_reload: no compatible ammo" );
+        }
+        return;
+    }
+    item::reload_option opt = get_avatar().select_ammo( turret.base(), true );
+    if( !opt || !opt.ammo ) {
+        mp_inv_log( "turret_reload: cancelled" );
+        return;
+    }
+    const std::string uid = opt.ammo->get_var( "mp_uid", std::string() );
+    if( uid.empty() ) {
+        mp_inv_log( "turret_reload: ammo has no uid" );
+        return;
+    }
+    mp_send_turret_reload( uid );
+}
+
 /* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
  * labels/descriptions/flags of its own build_interact_menu() and runs the
  * selected row for this session avatar. Entries that need a host-side modal
@@ -4273,6 +4358,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
         JsonValue jv = json_loader::from_string( payload );
         JsonObject jo = jv.get_object();
         generation = jo.get_int( "generation" );
+        mp_action_target_valid = jo.has_int( "target_dx" ) && jo.has_int( "target_dy" );
+        if( mp_action_target_valid ) {
+            mp_action_target_off = point( jo.get_int( "target_dx" ),
+                                         jo.get_int( "target_dy" ) );
+        }
         int idx = 0;
         for( JsonObject e : jo.get_array( "entries" ) ) {
             const int mp_hotkey = e.has_int( "key" ) ? e.get_int( "key" ) : MENU_AUTOASSIGN;
@@ -4373,8 +4463,10 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 mp_run_workbench();
             } else if( client_actions[i] == "smart_engine" ) {
                 mp_run_smart_engine();
+            } else if( client_actions[i] == "turret_reload" ) {
+                mp_run_turret_reload();
             } else if( client_actions[i] == "examine_vehicle" ) {
-                if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
+                if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
                     if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
                         mp_inv_log( "action: examine_vehicle -> native" );
                         g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
@@ -4428,8 +4520,10 @@ static void mp_run_vehicle_menu( const std::string &payload )
             mp_run_workbench();
         } else if( ca == "smart_engine" ) {
             mp_run_smart_engine();
+        } else if( ca == "turret_reload" ) {
+            mp_run_turret_reload();
         } else if( ca == "examine_vehicle" ) {
-            if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
+            if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
                 if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
                     mp_inv_log( "action: examine_vehicle -> native" );
                     g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
@@ -9231,6 +9325,37 @@ void run_view_loop()
                             } else if( mp_se_phase == 3 && mp_se_ms > 9000 ) {
                                 mp_inv_log( "test: smart engine done" );
                                 ++mp_se_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "turret_reload_test" ) {
+                        static int mp_tr_phase = 0;
+                        static auto mp_tr_t0 = std::chrono::steady_clock::now();
+                        if( mp_tr_phase == 0 ) {
+                            mp_tr_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: turret reload spawn" );
+                            ++mp_tr_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_tr_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_tr_t0 ).count();
+                            if( mp_tr_phase == 1 && mp_tr_ms > 2500 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: turret reload control" );
+                                ++mp_tr_phase;
+                                sent = false;
+                            } else if( mp_tr_phase == 2 && mp_tr_ms > 5000 ) {
+                                netplay::client_send_intent( "vehicle_menu", 0, {} );
+                                mp_inv_log( "test: turret reload menu request" );
+                                ++mp_tr_phase;
+                                sent = false;
+                            } else if( mp_tr_phase == 3 && mp_tr_ms > 9000 ) {
+                                mp_inv_log( "test: turret reload done" );
+                                ++mp_tr_phase;
                                 sent = true;
                             } else {
                                 sent = false;

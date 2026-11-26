@@ -2601,6 +2601,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
     if( turret.can_reload() ) {
         menu.add( string_format( _( "Reload %s" ), turret.name() ) )
         .hotkey( "RELOAD_TURRET" )
+        .client_action( "turret_reload" )
         .skip_locked_check()
         .on_submit( [this, vppos, here] {
             item_location loc = turret_query( here, vppos ).base();
