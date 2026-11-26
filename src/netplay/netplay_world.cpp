@@ -2105,6 +2105,39 @@ static void av_wake( const shared_ptr_fast<npc> &npc_ptr )
             }
         }
     }
+    // DDA MP v4.0a-309 test hooks: two same-type items with different damage
+    // (pickup uid path) and a loaded pistol (fire validation), spawned once.
+    static bool mp_test_audit_done = false;
+    if( !mp_test_audit_done ) {
+        const bool mp_pick = std::getenv( "DDA_MP_TEST_PICKUP_UID" ) != nullptr;
+        const bool mp_fire = std::getenv( "DDA_MP_TEST_FIRE" ) != nullptr;
+        if( mp_pick || mp_fire ) {
+            mp_test_audit_done = true;
+            map &here = get_map();
+            const tripoint_bub_ms p = npc_ptr->pos_bub();
+            if( mp_pick ) {
+                item rock_a( itype_id( "rock" ) );
+                item rock_b( itype_id( "rock" ) );
+                // Different vars keep the twins from stacking, so the listing
+                // really has two same-type rows with different uids/damage.
+                rock_a.set_var( "test_twin", "a" );
+                rock_b.set_var( "test_twin", "b" );
+                rock_b.set_damage( 1 );
+                here.add_item_or_charges( p, rock_a, false );
+                here.add_item_or_charges( p, rock_b, false );
+            }
+            if( mp_fire ) {
+                item gun( itype_id( "glock_19" ) );
+                gun.ammo_set( itype_id( "9mm" ), 10 );
+                npc_ptr->set_wielded_item( gun );
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "test audit items pick=%d fire=%d\n",
+                              mp_pick ? 1 : 0, mp_fire ? 1 : 0 );
+                std::fclose( f );
+            }
+        }
+    }
 }
 
 /* DDA MP v4.0a-214: a malformed client profile must never pop a modal on the
@@ -4754,6 +4787,9 @@ static void host_smash_at( int sid, npc &av, const tripoint_bub_ms &target )
     av_send_session_picture( sid, av.pos_bub(), &av );
 }
 
+static void mp_send_vehicle_menu( int sid, npc &av );
+static void mp_send_engine_menu( int sid, npc &av );
+
 void host_pump_client_actions()
 {
     if( !host_is_running() ) {
@@ -5104,9 +5140,22 @@ void host_pump_client_actions()
                 // boarding: locked vehicles, theft confirmation and hands /
                 // weapon checks. Prompts go through the session prompt bridge.
                 if( mp_veh.is_locked ) {
+                    // DDA MP v4.0a-309: vanilla opens interact_with on a locked
+                    // vehicle and offers hotwire. Board the session avatar (the
+                    // menu's player_inside check needs it) and stream the host
+                    // menu; HOTWIRE runs on the host with the session scope.
                     netplay::host_send_event_fmt_to_sid(
                         sid, "The %s is locked.", { mp_veh.name },
                         static_cast<int>( m_info ) );
+                    if( controls_pos ) {
+                        if( av->in_vehicle && av->pos_bub() != *controls_pos ) {
+                            here.unboard_vehicle( av->pos_bub(), false );
+                        }
+                        av->setpos( here, *controls_pos, false );
+                        here.board_vehicle( *controls_pos, av );
+                        mp_send_vehicle_menu( sid, *av );
+                    }
+                    changed = true;
                     break;
                 }
                 if( !mp_veh.handle_potential_theft( *av ) ) {
@@ -5564,11 +5613,14 @@ void host_pump_client_actions()
             continue;
         }
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            const item *mp_picked = what.empty() ? nullptr : what.front().first.get_item();
             std::fprintf( f,
-                          "pickup take sid=%d gen=%d nodes=%d uids=%d what=%d equip=%d\n",
+                          "pickup take sid=%d gen=%d nodes=%d uids=%d what=%d equip=%d uid=%lld dmg=%d\n",
                           psid, generation, static_cast<int>( nodes.size() ),
                           static_cast<int>( want_uids.size() ),
-                          static_cast<int>( what.size() ), equip );
+                          static_cast<int>( what.size() ), equip,
+                          mp_picked ? static_cast<long long>( mp_picked->uid().get_value() ) : 0LL,
+                          mp_picked ? mp_picked->damage() : -1 );
             std::fclose( f );
         }
         if( equip != 0 ) {
@@ -6739,6 +6791,22 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
     } catch( ... ) {
         mp_ctrl_log( "vehicle menu action failed" );
     }
+    if( std::getenv( "DDA_MP_TEST_HOTWIRE" ) != nullptr &&
+        mp_menu_action == "HOTWIRE" && av->activity ) {
+        // Test shortcut: skip the long hotwire activity and log the lock state.
+        const bool mp_hot_locked_before = built.locked;
+        av->set_moves( av->activity.moves_left + 100 );
+        for( int guard = 0; guard < 10 && av->activity; ++guard ) {
+            av->process_activity();
+        }
+        const optional_vpart_position mp_hot_vp = here.veh_at( av->pos_bub() );
+        mp_ctrl_log( string_format(
+                         "test hotwire sid=%d locked=%d->%d activity=%d cont=%d",
+                         sid, mp_hot_locked_before ? 1 : 0,
+                         mp_hot_vp ? ( mp_hot_vp->vehicle().is_locked ? 1 : 0 ) : -1,
+                         av->activity ? 1 : 0,
+                         av->controlling_vehicle ? 1 : 0 ) );
+    }
     netplay::host_forward_new_messages( sid, msg_before );
     if( !g->swapping_dimensions ) {
         if( const optional_vpart_position vp = here.veh_at( av->pos_bub() ) ) {
@@ -7124,6 +7192,20 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         // check, not consume_items().
         item beeper_item( itype_id( "beeper" ) );
         av.i_add_or_drop( beeper_item );
+        if( std::getenv( "DDA_MP_TEST_HOTWIRE" ) != nullptr ) {
+            veh->is_locked = true;
+            veh->is_alarm_on = false;
+            // The stock car spawn can come with an empty battery; charge it so
+            // the post-hotwire take-control path can start the engine.
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                if( veh->part( i ).is_battery() ) {
+                    veh->part( i ).ammo_set( itype_id( "battery" ), 1000 );
+                }
+            }
+            av.set_skill_level( skill_id( "mechanics" ), 10 );
+            item screwdriver( itype_id( "screwdriver" ) );
+            av.i_add_or_drop( screwdriver );
+        }
         std::string inv;
         int inv_count = 0;
         for( item *it : av.inv_dump() ) {

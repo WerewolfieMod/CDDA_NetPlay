@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-308`: закрыты control vehicle (кроме hotwire и времени запуска двигателя), стоимость `movement_mode`, stable uid для pickup, range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon с выбором контейнера и refuel по выбранной детали/предмету. Пункты 1.1/1.3 закрыты переходом на native `veh_interact`; 1.2 и 7 (верхнее меню `^`, hotwire, legacy-хоткеи) остаются в P3-5.
+Статус на `ddamp-v4.0a-309`: закрыты control vehicle (hotwire и theft/hands/reins; осталось время запуска двигателя), стоимость `movement_mode`, stable uid для pickup, range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon с выбором контейнера и refuel по выбранной детали/предмету. Пункты 1.1/1.3 закрыты переходом на native `veh_interact`; 1.2/7 остаются частично (P3-5): smart engine, turret aim/reload, use tool, faucet fill, workbench, planter, EOC, lockpick.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -517,6 +517,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-306 | P3-4 closeout: `vehicle_install/siphon/unload/shape/crew` в registry; исправлен учёт слива (`handle_npc_liquid` по значению); native `veh_interact` включён по умолчанию | suite: `install installed=79 parts=92`, `siphon drained=200`, `unload fuel=none`, `shape part=0 variant=cover`, `crew part=1 npc=0 assigned=1`; клиент получил зеркало `parts=92` |
 | 2026-11-26 | ddamp-v4.0a-307 | Аудит-фиксы: control vehicle parity (locked/theft/двуручное оружие/`RESTRICT_HANDS`/вожжи), stable uid для `pickup.action`, проверки дистанции `fire`/`reach_attack`/`butcher`/NPC-talk-trade-mission, стоимость `movement_mode`, refuel по выбранной детали и предмету | golf cart: `take drv=1 engine=1`; suite без регрессий (`install parts=92`, `siphon drained=200`); pickup/fire — сборка + код-ревью, без рантайм-прогона |
 | 2026-11-26 | ddamp-v4.0a-308 | Siphon parity: клиент выбирает контейнер (или «на пол»), хост переливает в выбранный item по uid; refuel принимает выбранную деталь и uid топлива | suite: `siphon via_uid=1 drained=200` (бутылка), `refuel part=78 after=200`; install/shape/crew/unload без регрессий |
+| 2026-11-26 | ddamp-v4.0a-309 | Locked vehicle/hotwire: запертая машина борт-ит сессионного аватара и открывает host-меню `interact_with`; HOTWIRE выполняется на хосте. Плюс runtime-тесты аудита (fire range, NPC distance, pickup uid) | `menu ... HOTWIRE safe=1 enabled=1`; `test hotwire locked=1->0`; повторный `^` → `take ... drv=1 engine=1`; `Target out of range`; `That NPC is too far away`; pickup `uids=1 uid=30767` |
 
 ### 9.3. Что протестировано
 
@@ -546,13 +547,15 @@ JSON/mapgen:
 | 2026-11-26 | P7-1 | Golf cart control после parity-правок (`DDA_MP_TEST_GOLF` + `DDA_MP_TEST_CLIENT_VEHICLE`) | `ctrl ... take ... drv=1 engine=1`; drive/turn/menu/handbrake/horn/tracking/release в `netplay_control.log` |
 | 2026-11-26 | P3-4 | Vehicle suite regression после ddamp-v4.0a-307 | `install installed=79 parts=92`; `siphon drained=200`; `shape/crew/unload` без изменений |
 | 2026-11-26 | P3-4 | Siphon через выбранный контейнер (`vehicle_siphon` + uid) | `vehicle siphon ... drained=200 via_uid=1`; refuel `part=78 before=0 after=200`; клиентское зеркало `parts=92` |
+| 2026-11-26 | P3-5/P7-1 | Locked vehicle + hotwire (`DDA_MP_TEST_HOTWIRE`) | `ctrl in=0` → `menu HOTWIRE safe=1` → `test hotwire locked=1->0` → второй `^` `take ... drv=1 engine=1` |
+| 2026-11-26 | P7-1 | Audit runtime: fire range, далёкий NPC, pickup uid | `clientlog: Target out of range.`; `clientlog: That NPC is too far away.`; `pickup take ... uids=1 uid=30767` |
 
 ### 9.4. Следующие 5 задач
 
-1. P3-5: native верхнее меню `^` (`vehicle::interact_with`) — hotwire/locked, tool/fuel/curtain/workbench и остальные строки.
-2. Runtime-тесты pickup uid, fire/reach и NPC-дистанций (сейчас сборка + код-ревью).
-3. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
-4. P3-9: native trade/dialogue/mission UI вместо uilist.
+1. P3-5: remaining `^` rows — smart controller, turret aim/reload, use tool, faucet fill, workbench, planter, EOC, lockpick; native `interact_with` polish.
+2. Engine start parity: use the vanilla `start_engines()` activity (time/conditions) instead of `start_engines_direct()`.
+3. Deterministic pickup damage-twin assertion in the audit test (choose the damaged row by content).
+4. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.
 5. P6-1/P6-2: manifest версий модов/данных и handshake.
 
 ---

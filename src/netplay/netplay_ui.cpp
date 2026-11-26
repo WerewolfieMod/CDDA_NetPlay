@@ -1928,6 +1928,20 @@ static void mp_run_pickup( const std::string &text )
         if( pkt.entries.empty() ) {
             return;
         }
+        // DDA MP v4.0a-309 test hook: choose the last streamed row and send its
+        // stable uid without opening the selector.
+        if( const char *auto_pick = std::getenv( "DDA_MP_TEST_PICKUP_AUTO" );
+            auto_pick != nullptr && auto_pick[0] != '\0' ) {
+            const int choose = static_cast<int>( pkt.entries.size() ) - 1;
+            if( choose >= 0 && !pkt.entries[choose].uid.empty() ) {
+                netplay::client_send_pickup_action(
+                    pkt.header.generation, { choose }, 0,
+                    { pkt.entries[choose].uid } );
+                mp_inv_log( string_format( "pickup: auto uid row=%d uid=%s",
+                                           choose, pkt.entries[choose].uid.c_str() ) );
+            }
+            return;
+        }
         // DDA MP v4.0a-236: the host's pickup lists the streamed ground rows
         // as MAP items (one category, flat list). The old client copy stacked
         // them into a synthetic backpack, which made the selector print a
@@ -8752,6 +8766,44 @@ void run_view_loop()
                         mp_client_dispatch_action( ACTION_MEND, "", "" );
                     } else if( action_name == "autoattack" ) {
                         netplay::client_send_intent( "autoattack", 0, {} );
+                    } else if( action_name == "audit" ) {
+                        // DDA MP v4.0a-309: exercise the new validators:
+                        // out-of-range fire, far NPC, pickup by stable uid.
+                        netplay::client_send_intent( "fire", 0, { 50, 0, 1 } );
+                        netplay::client_send_intent( "talk_npc", 0, { 10, 10 } );
+                        netplay::client_send_client_action( ACTION_PICKUP );
+                        mp_inv_log( "test: audit validators" );
+                    } else if( action_name == "hotwire" ) {
+                        static int mp_hot_phase = 0;
+                        static auto mp_hot_t0 = std::chrono::steady_clock::now();
+                        if( mp_hot_phase == 0 ) {
+                            mp_hot_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: hotwire spawn car" );
+                            ++mp_hot_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_hot_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_hot_t0 ).count();
+                            if( mp_hot_phase == 1 && mp_hot_ms > 2500 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: hotwire control 1" );
+                                ++mp_hot_phase;
+                                sent = false;
+                            } else if( mp_hot_phase == 2 && mp_hot_ms > 6000 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: hotwire control 2" );
+                                ++mp_hot_phase;
+                                sent = false;
+                            } else if( mp_hot_phase == 3 && mp_hot_ms > 8000 ) {
+                                mp_inv_log( "test: hotwire done" );
+                                ++mp_hot_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "wield" ) {
                         // Carried items live inside container pockets, so walk
                         // the top-level location tree instead of inv_dump().
