@@ -499,6 +499,7 @@ struct netplay_state {
         int generation = 0;
         std::vector<int> nodes;
         int equip = 0;
+        std::string uids;
     };
     std::mutex pickup_act_mutex;
     std::deque<pickup_action> pickup_actions;
@@ -1259,10 +1260,13 @@ static void host_session_reader( int sid, socket_t sock )
                 } else if( in.action == "pickup.action" && !in.args.empty() ) {
                     std::lock_guard<std::mutex> lk( state.pickup_act_mutex );
                     if( state.pickup_actions.size() < 8 ) {
-                        state.pickup_actions.push_back( { sid, in.generation,
-                                                          std::vector<int>( in.args.begin() + 1,
-                                                                  in.args.end() ),
-                                                          in.args[0] } );
+                        internal::netplay_state::pickup_action a;
+                        a.sid = sid;
+                        a.generation = in.generation;
+                        a.equip = in.args[0];
+                        a.nodes.assign( in.args.begin() + 1, in.args.end() );
+                        a.uids = in.data;
+                        state.pickup_actions.push_back( std::move( a ) );
                     }
                 } else if( in.action == "inv.uid" && !in.args.empty() ) {
                     std::lock_guard<std::mutex> lk( state.inv_uid_mutex );
@@ -3284,7 +3288,8 @@ bool client_pickup_packet( std::string &out )
     return true;
 }
 
-bool client_send_pickup_action( int generation, const std::vector<int> &nodes, int equip )
+bool client_send_pickup_action( int generation, const std::vector<int> &nodes, int equip,
+                                const std::vector<std::string> &uids )
 {
     if( !state.connected ) {
         return false;
@@ -3292,10 +3297,18 @@ bool client_send_pickup_action( int generation, const std::vector<int> &nodes, i
     std::vector<int> args;
     args.push_back( equip );
     args.insert( args.end(), nodes.begin(), nodes.end() );
-    return client_send_intent( "pickup.action", generation, args );
+    std::string uid_data;
+    for( size_t i = 0; i < uids.size(); ++i ) {
+        if( i > 0 ) {
+            uid_data += '\x1f';
+        }
+        uid_data += uids[i];
+    }
+    return client_send_intent( "pickup.action", generation, args, uid_data );
 }
 
-bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes, int &equip )
+bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes, int &equip,
+                             std::string &uids )
 {
     std::lock_guard<std::mutex> lk( state.pickup_act_mutex );
     if( state.pickup_actions.empty() ) {
@@ -3307,6 +3320,7 @@ bool host_pop_pickup_action( int &sid, int &generation, std::vector<int> &nodes,
     generation = a.generation;
     nodes = std::move( a.nodes );
     equip = a.equip;
+    uids = std::move( a.uids );
     return true;
 }
 

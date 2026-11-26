@@ -125,6 +125,7 @@ static constexpr int FRAMEH = 25 + 7; // +3 tiles above / below, +1 to fill the 
 static const itype_id itype_corpse( "corpse" );
 /// Vehicle command constants (solid fuel unload, install test shortcut).
 static const itype_id fuel_type_battery( "battery" );
+static const itype_id fuel_type_animal( "animal" );
 static const itype_id itype_plut_cell( "plut_cell" );
 static const trait_id trait_DEBUG_HS( "DEBUG_HS" );
 
@@ -1210,6 +1211,9 @@ static std::map<int, int> av_inv_gen;
 struct av_pick_row {
     tripoint_abs_ms pos;
     std::string type;
+    /// DDA MP v4.0a-307: stable runtime item id. Distinguishes two items of
+    /// the same type on one tile (damage/charges/contents may differ).
+    int64_t uid = 0;
 };
 static std::map<int, std::vector<av_pick_row>> av_pick_nodes;
 static std::map<int, int> av_pick_gen;
@@ -4588,6 +4592,9 @@ static void mp_send_pickup_listing( int sid, npc &av,
             e.color_index = netplay::inv_color_index( it.color_in_inventory() );
             e.damage = it.damage();
             e.filthy = it.is_filthy();
+            // DDA MP v4.0a-307: stable host item id for the pickup action, so
+            // two same-type items on one tile stay distinguishable.
+            e.uid = std::to_string( it.uid().get_value() );
             // DDA MP v4.0a-257: the exact item state for the client's menu:
             // corpse mtype/pulped flag, variant, contents, dirtiness. The flat
             // fields above cannot reconstruct it.
@@ -4612,7 +4619,8 @@ static void mp_send_pickup_listing( int sid, npc &av,
                          !it.is_frozen_liquid() &&
                          it.is_owned_by( av, true );
             pkt.entries.push_back( e );
-            rows.push_back( { here.get_abs( p ), it.typeId().str() } );
+            rows.push_back( { here.get_abs( p ), it.typeId().str(),
+                              it.uid().get_value() } );
         }
     }
     if( pkt.entries.empty() ) {
@@ -5041,23 +5049,35 @@ void host_pump_client_actions()
                     changed = true;
                     break;
                 }
-                auto has_controls = [&]( const tripoint_bub_ms & p ) {
+                auto feature_idx_at = [&]( const tripoint_bub_ms &p,
+                                           const std::string &feature ) {
                     const optional_vpart_position vp = here.veh_at( p );
-                    return vp && vp->vehicle().avail_part_with_feature( vp->mount_pos(),
-                            "CONTROLS" ) >= 0;
+                    return vp ? vp->vehicle().avail_part_with_feature( vp->mount_pos(),
+                                                                       feature ) : -1;
                 };
                 std::optional<tripoint_bub_ms> controls_pos;
-                if( has_controls( pos ) ) {
+                if( feature_idx_at( pos, "CONTROLS" ) >= 0 ) {
                     controls_pos = pos;
                 } else {
                     for( const tripoint_bub_ms &p : here.points_in_radius( pos, 1 ) ) {
-                        if( p != pos && here.inbounds( p ) && has_controls( p ) ) {
+                        if( p != pos && here.inbounds( p ) &&
+                            feature_idx_at( p, "CONTROLS" ) >= 0 ) {
                             controls_pos = p;
                             break;
                         }
                     }
                 }
-                if( !controls_pos ) {
+                // DDA MP v4.0a-307: reins parity (CONTROL_ANIMAL + a harnessed
+                // animal), like game::control_vehicle.
+                bool reins_ok = false;
+                if( const optional_vpart_position cur_vp = here.veh_at( pos ) ) {
+                    vehicle &cur_veh = cur_vp->vehicle();
+                    reins_ok = cur_veh.avail_part_with_feature( cur_vp->mount_pos(),
+                               "CONTROL_ANIMAL" ) >= 0 &&
+                               cur_veh.has_engine_type( fuel_type_animal, false ) &&
+                               cur_veh.get_harnessed_animal( here ) != nullptr;
+                }
+                if( !controls_pos && !reins_ok ) {
                     mp_ctrl_log( string_format( "ctrl sid=%d no-controls pos=%d,%d",
                                                 sid, pos.x(), pos.y() ) );
                     netplay::host_send_event_to_sid(
@@ -5065,32 +5085,75 @@ void host_pump_client_actions()
                         static_cast<int>( m_info ) );
                     break;
                 }
-                const optional_vpart_position vp = here.veh_at( *controls_pos );
+                const optional_vpart_position vp = controls_pos ?
+                                                   here.veh_at( *controls_pos ) : here.veh_at( pos );
                 if( !vp ) {
                     mp_ctrl_log( string_format( "ctrl sid=%d controls-tile-no-veh pos=%d,%d",
-                                                sid, controls_pos->x(), controls_pos->y() ) );
+                                                sid, pos.x(), pos.y() ) );
                     break;
                 }
+                vehicle &mp_veh = vp->vehicle();
                 mp_ctrl_log( string_format(
                                  "ctrl sid=%d found pos=%d,%d controls=%d,%d veh=%d,%d in=%d",
-                                 sid, pos.x(), pos.y(), controls_pos->x(), controls_pos->y(),
-                                 vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
+                                 sid, pos.x(), pos.y(),
+                                 controls_pos ? controls_pos->x() : pos.x(),
+                                 controls_pos ? controls_pos->y() : pos.y(),
+                                 mp_veh.pos_abs().x(), mp_veh.pos_abs().y(),
                                  av->in_vehicle ? 1 : 0 ) );
+                // DDA MP v4.0a-307: parity with game::control_vehicle before
+                // boarding: locked vehicles, theft confirmation and hands /
+                // weapon checks. Prompts go through the session prompt bridge.
+                if( mp_veh.is_locked ) {
+                    netplay::host_send_event_fmt_to_sid(
+                        sid, "The %s is locked.", { mp_veh.name },
+                        static_cast<int>( m_info ) );
+                    break;
+                }
+                if( !mp_veh.handle_potential_theft( *av ) ) {
+                    break;
+                }
+                const item_location mp_weapon = av->get_wielded_item();
+                if( mp_weapon ) {
+                    if( av->worn_with_flag( flag_RESTRICT_HANDS ) ) {
+                        netplay::host_send_event_to_sid(
+                            sid, _( "Something you are wearing hinders the use of both hands." ),
+                            static_cast<int>( m_info ) );
+                        break;
+                    }
+                    if( !av->has_two_arms_lifting() || mp_weapon->is_two_handed( *av ) ) {
+                        const char *mp_put_away_fmt = !av->has_two_arms_lifting() ?
+                            _( "You can't drive because you have to wield a %s.\n\nPut it away?" ) :
+                            _( "You can't drive because you have to wield a %s with both hands.\n\nPut it away?" );
+                        if( !query_yn( mp_put_away_fmt, mp_weapon->tname() ) ||
+                            !av->unwield() ) {
+                            break;
+                        }
+                    }
+                }
+                if( !controls_pos ) {
+                    // Reins: no engine start and no boarding, just control.
+                    av->controlling_vehicle = true;
+                    netplay::host_send_event_to_sid(
+                        sid, _( "You take control of the reins." ),
+                        static_cast<int>( m_info ) );
+                    changed = true;
+                    break;
+                }
                 if( av->in_vehicle && av->pos_bub() != *controls_pos ) {
                     here.unboard_vehicle( av->pos_bub(), false );
                 }
                 av->setpos( here, *controls_pos, false );
                 here.board_vehicle( *controls_pos, av );
-                bool mp_engine_ok = vp->vehicle().engine_on;
+                bool mp_engine_ok = mp_veh.engine_on;
                 if( !mp_engine_ok ) {
                     // DDA MP v4.0a-261: start immediately for the session
                     // avatar (stock activity looks the vehicle up from the
                     // host player position and cannot find a remote one).
-                    mp_engine_ok = vp->vehicle().start_engines_direct( here, *av );
+                    mp_engine_ok = mp_veh.start_engines_direct( here, *av );
                 }
                 if( !mp_engine_ok ) {
                     netplay::host_send_event_fmt_to_sid(
-                        sid, "The %s's engine fails to start.", { vp->vehicle().name },
+                        sid, "The %s's engine fails to start.", { mp_veh.name },
                         static_cast<int>( m_bad ) );
                     av->controlling_vehicle = false;
                     changed = true;
@@ -5100,23 +5163,23 @@ void host_pump_client_actions()
                 mp_ctrl_log( string_format(
                                  "ctrl sid=%d take pos=%d,%d veh=%d,%d in=%d drv=%d engine=%d",
                                  sid, av->pos_bub().x(), av->pos_bub().y(),
-                                 vp->vehicle().pos_abs().x(), vp->vehicle().pos_abs().y(),
+                                 mp_veh.pos_abs().x(), mp_veh.pos_abs().y(),
                                  av->in_vehicle ? 1 : 0, av->controlling_vehicle ? 1 : 0,
-                                 vp->vehicle().engine_on ? 1 : 0 ) );
+                                 mp_veh.engine_on ? 1 : 0 ) );
                 netplay::host_send_event_fmt_to_sid(
-                    sid, "You take control of the %s.", { vp->vehicle().name },
+                    sid, "You take control of the %s.", { mp_veh.name },
                     static_cast<int>( m_info ) );
                 // DDA MP v4.0a-267: mirror the tail of game::control_vehicle:
                 // the driver sees the vehicle live instead of through memory,
                 // and no autopilot/follow mode may fight the stick.
-                for( const tripoint_abs_ms &mp_target : vp->vehicle().get_points() ) {
+                for( const tripoint_abs_ms &mp_target : mp_veh.get_points() ) {
                     av_mem_for( *av ).clear_tile_decoration( mp_target, "vp_" );
                     here.memory_cache_dec_set_dirty( here.get_bub( mp_target ), true );
                 }
-                vp->vehicle().is_following = false;
-                vp->vehicle().is_patrolling = false;
-                vp->vehicle().autopilot_on = false;
-                vp->vehicle().is_autodriving = false;
+                mp_veh.is_following = false;
+                mp_veh.is_patrolling = false;
+                mp_veh.autopilot_on = false;
+                mp_veh.is_autodriving = false;
                 changed = true;
                 break;
             }
@@ -5356,6 +5419,12 @@ void host_pump_client_actions()
                 static_cast<int>( m_info ) );
             continue;
         }
+        // DDA MP v4.0a-307: only adjacent tiles, like the stock pickup UI.
+        if( std::abs( dx ) > 1 || std::abs( dy ) > 1 ) {
+            netplay::host_send_event_to_sid(
+                psid, _( "That tile is too far away." ), static_cast<int>( m_info ) );
+            continue;
+        }
         const auto tsid_it = av_sid_to_npc.find( psid );
         if( tsid_it == av_sid_to_npc.end() ) {
             continue;
@@ -5376,7 +5445,8 @@ void host_pump_client_actions()
         int generation = 0;
         int equip = 0;
         std::vector<int> nodes;
-        if( !netplay::host_pop_pickup_action( psid, generation, nodes, equip ) ) {
+        std::string uid_data;
+        if( !netplay::host_pop_pickup_action( psid, generation, nodes, equip, uid_data ) ) {
             break;
         }
         const auto nodes_it = av_pick_nodes.find( psid );
@@ -5398,18 +5468,59 @@ void host_pump_client_actions()
         mp_anchored = true;
         map &here = get_map();
         drop_locations what;
-        for( const int node : nodes ) {
-            if( node < 0 || node >= static_cast<int>( nodes_it->second.size() ) ) {
-                continue;
+        // DDA MP v4.0a-307: prefer the stable uids the client sends with the
+        // selection. Node indices remain the fallback for older clients.
+        std::vector<int64_t> want_uids;
+        if( !uid_data.empty() ) {
+            std::size_t upos = 0;
+            while( upos <= uid_data.size() ) {
+                const std::size_t q = uid_data.find( '\x1f', upos );
+                const std::string part = uid_data.substr(
+                                             upos, q == std::string::npos ?
+                                             std::string::npos : q - upos );
+                if( !part.empty() ) {
+                    try {
+                        want_uids.push_back( std::stoll( part ) );
+                    } catch( ... ) {
+                    }
+                }
+                if( q == std::string::npos ) {
+                    break;
+                }
+                upos = q + 1;
             }
-            const av_pick_row &row = nodes_it->second[node];
+        }
+        std::vector<const av_pick_row *> picked;
+        if( !want_uids.empty() ) {
+            for( const int64_t uid : want_uids ) {
+                for( const av_pick_row &row : nodes_it->second ) {
+                    if( row.uid == uid ) {
+                        picked.push_back( &row );
+                        break;
+                    }
+                }
+            }
+        } else {
+            for( const int node : nodes ) {
+                if( node < 0 || node >= static_cast<int>( nodes_it->second.size() ) ) {
+                    continue;
+                }
+                picked.push_back( &nodes_it->second[node] );
+            }
+        }
+        for( const av_pick_row *row_ptr : picked ) {
+            const av_pick_row &row = *row_ptr;
             const tripoint_bub_ms p = here.get_bub( row.pos );
             if( !here.inbounds( p ) ) {
                 continue;
             }
-            // The map may have changed since the listing; re-find the row by type.
+            // The map may have changed since the listing; re-find the exact
+            // item by uid, or by type for older listings.
             for( item &it : here.i_at( p ) ) {
-                if( it.typeId().str() != row.type ) {
+                const bool matches = row.uid != 0 ?
+                                     it.uid().get_value() == row.uid :
+                                     it.typeId().str() == row.type;
+                if( !matches ) {
                     continue;
                 }
                 if( craft_reservation::contains_reserved_or_live_craft( it ) ) {
@@ -5453,8 +5564,10 @@ void host_pump_client_actions()
             continue;
         }
         if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-            std::fprintf( f, "pickup take sid=%d gen=%d rows=%d what=%d equip=%d\n",
+            std::fprintf( f,
+                          "pickup take sid=%d gen=%d nodes=%d uids=%d what=%d equip=%d\n",
                           psid, generation, static_cast<int>( nodes.size() ),
+                          static_cast<int>( want_uids.size() ),
                           static_cast<int>( what.size() ), equip );
             std::fclose( f );
         }
@@ -6807,7 +6920,8 @@ static void mp_toggle_engine( int sid, int generation, int index )
 /* DDA MP v4.0a-201: refuel a vehicle from the session avatar's inventory.
  * Mirrors veh_interact::do_refill: pick the first refillable part with a
  * compatible item and let the engine's vehicle activity do the transfer. */
-static void mp_vehicle_refuel( int sid, npc &av )
+static void mp_vehicle_refuel( int sid, npc &av, int want_part = -1,
+                               const std::string &refill_uid = std::string() )
 {
     map &here = get_map();
     const optional_vpart_position vp = here.veh_at( av.pos_bub() );
@@ -6831,35 +6945,81 @@ static void mp_vehicle_refuel( int sid, npc &av )
             sid, fork_text( "You can't refuel a moving vehicle." ), static_cast<int>( m_info ) );
         return;
     }
-    int part_idx = -1;
-    item_location refill;
-    for( int i = 0; i < veh.part_count() && part_idx < 0; ++i ) {
-        vehicle_part &pt = veh.part( i );
+
+    auto part_accepts = []( vehicle_part &pt, const item &it ) {
         if( !pt.is_available() ) {
-            continue;
+            return false;
         }
         const bool tank = pt.is_tank();
         if( !tank && !pt.is_fuel_store() ) {
-            continue;
+            return false;
         }
-        for( item *it : av.items_with( []( const item & ) {
-        return true;
-        } ) ) {
-            if( it == nullptr ) {
+        if( tank ) {
+            return it.is_watertight_container() && it.num_item_stacks() == 1 &&
+                   pt.can_reload( it.only_item() );
+        }
+        return pt.can_reload( it ) || pt.get_base().can_reload_with( it, true );
+    };
+
+    int part_idx = -1;
+    item_location refill;
+    if( !refill_uid.empty() ) {
+        // DDA MP v4.0a-307: the native client picked the part and the exact
+        // fuel item; validate that pair instead of guessing.
+        refill = av_find_by_uid( av, refill_uid );
+        if( !refill ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f, "vehicle refuel sid=%d result=item_moved uid=%s\n",
+                              sid, refill_uid.c_str() );
+                std::fclose( f );
+            }
+            netplay::host_send_event_to_sid(
+                sid, fork_text( "That item moved." ), static_cast<int>( m_info ) );
+            return;
+        }
+        if( want_part >= 0 && want_part < veh.part_count() &&
+            part_accepts( veh.part( want_part ), *refill ) ) {
+            part_idx = want_part;
+        } else {
+            for( int i = 0; i < veh.part_count() && part_idx < 0; ++i ) {
+                if( part_accepts( veh.part( i ), *refill ) ) {
+                    part_idx = i;
+                }
+            }
+        }
+        if( part_idx < 0 ) {
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
+                std::fprintf( f,
+                              "vehicle refuel sid=%d result=part_not_compatible part=%d uid=%s\n",
+                              sid, want_part, refill_uid.c_str() );
+                std::fclose( f );
+            }
+            netplay::host_send_event_to_sid(
+                sid, fork_text( "You can't refuel that part with this item." ),
+                static_cast<int>( m_info ) );
+            return;
+        }
+    } else {
+        for( int i = 0; i < veh.part_count() && part_idx < 0; ++i ) {
+            vehicle_part &pt = veh.part( i );
+            if( !pt.is_available() ) {
                 continue;
             }
-            bool ok = false;
-            if( tank ) {
-                if( it->is_watertight_container() && it->num_item_stacks() == 1 ) {
-                    ok = pt.can_reload( it->only_item() );
-                }
-            } else {
-                ok = pt.can_reload( *it ) || pt.get_base().can_reload_with( *it, true );
+            const bool tank = pt.is_tank();
+            if( !tank && !pt.is_fuel_store() ) {
+                continue;
             }
-            if( ok ) {
-                part_idx = i;
-                refill = item_location( av, it );
-                break;
+            for( item *it : av.items_with( []( const item & ) {
+            return true;
+            } ) ) {
+                if( it == nullptr ) {
+                    continue;
+                }
+                if( part_accepts( pt, *it ) ) {
+                    part_idx = i;
+                    refill = item_location( av, it );
+                    break;
+                }
             }
         }
     }
@@ -7702,12 +7862,22 @@ static bool mp_cmd_movement_mode( const netplay::intent_request &in )
     npc *av = av_session_npc( in.sid );
     if( av != nullptr ) {
         const move_mode_id mode( in.data );
-        if( mode.is_valid() ) {
+        if( mode.is_valid() && av->can_switch_to( mode ) ) {
+            // DDA MP v4.0a-307: charge the same switch cost as the stock
+            // movement-mode picker (can go negative; the round gate makes the
+            // client wait for the next turn).
+            const int cost = av->move_mode_switch_cost( av->current_movement_mode(), mode );
             av->set_movement_mode( mode );
+            auto pool_it = av_move_pool.find( in.sid );
+            if( pool_it != av_move_pool.end() ) {
+                pool_it->second -= cost;
+                av->set_moves( pool_it->second );
+            }
             av_send_status( in.sid );
             if( std::FILE *f = netplay::mp_diag_open( "netplay_tiles.log" ) ) {
-                std::fprintf( f, "movement mode sid=%d mode=%s\n",
-                              in.sid, mode.str().c_str() );
+                std::fprintf( f, "movement mode sid=%d mode=%s cost=%d pool=%d\n",
+                              in.sid, mode.str().c_str(), cost,
+                              pool_it != av_move_pool.end() ? pool_it->second : -9999 );
                 std::fclose( f );
             }
         }
@@ -7829,7 +7999,20 @@ static bool mp_cmd_reach_attack( const netplay::intent_request &in )
     map &here = get_map();
     const tripoint_bub_ms target = av->pos_bub() +
                                    tripoint_rel_ms( in.args[0], in.args[1], 0 );
-    if( here.inbounds( target ) ) {
+    const item_location mp_weapon = av->get_wielded_item();
+    const int mp_reach = mp_weapon ? mp_weapon->reach_range( *av ).first : 1;
+    const int mp_dist = std::max( std::abs( in.args[0] ), std::abs( in.args[1] ) );
+    Creature *mp_target_cr = here.inbounds( target ) ?
+                             get_creature_tracker().creature_at( target ) : nullptr;
+    if( !here.inbounds( target ) || mp_dist < 1 || mp_dist > mp_reach ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "Target out of reach." ),
+            static_cast<int>( m_info ) );
+    } else if( mp_target_cr == nullptr || !av->can_reach_attack( *mp_target_cr ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is nothing within reach." ),
+            static_cast<int>( m_info ) );
+    } else {
         const std::size_t msg_before = Messages::generation();
         av->reach_attack( target );
         av_mark_acted( in.sid );
@@ -7890,6 +8073,15 @@ static bool mp_cmd_butcher( const netplay::intent_request &in )
     const int dx = in.args.empty() ? 0 : in.args[0];
     const int dy = in.args.size() < 2 ? 0 : in.args[1];
     const int pick = in.args.size() < 3 ? 0 : in.args[2];
+    if( std::abs( dx ) > 1 || std::abs( dy ) > 1 ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You can't butcher there." ),
+            static_cast<int>( m_info ) );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return true;
+    }
     const std::size_t msg_before = Messages::generation();
     host_butcher_at( in.sid, *av,
                      av->pos_bub() + tripoint_rel_ms( dx, dy, 0 ), pick );
@@ -8040,7 +8232,8 @@ static bool mp_cmd_vehicle_refuel( const netplay::intent_request &in )
             mp_test_spawn_car( *av );
         }
     }
-    mp_vehicle_refuel( in.sid, *av );
+    const int want_part = in.args.empty() ? -1 : in.args[0];
+    mp_vehicle_refuel( in.sid, *av, want_part, in.data );
     av_mark_acted( in.sid );
     av_send_status( in.sid );
     av_send_session_picture( in.sid, av->pos_bub(), av );
@@ -8349,21 +8542,38 @@ static bool mp_cmd_fire( const netplay::intent_request &in )
     const int shots = std::max( 1, in.args[2] );
     const item_location gun = av->get_wielded_item();
     if( gun && gun->is_gun() ) {
-        const std::size_t msg_before = Messages::generation();
-        av->fire_gun( tgt, shots );
-        av_move_pool[in.sid] = std::max( 0, av->get_moves() );
-        av->set_moves( av_move_pool[in.sid] );
-        av_mark_acted( in.sid );
-        if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) &&
-            !netplay::long_wait_active() ) {
-            av_waiting_for_turn[in.sid] = true;
-            netplay::host_send_hover_to_sid(
-                in.sid, netplay::fork_text( "Waiting for other players..." ) );
+        map &here = get_map();
+        const int dist = std::max( std::abs( in.args[0] ), std::abs( in.args[1] ) );
+        const int range = gun->gun_range( av );
+        if( dist < 1 ) {
+            netplay::host_send_event_to_sid(
+                in.sid, netplay::fork_text( "You can't shoot yourself." ),
+                static_cast<int>( m_info ) );
+        } else if( range <= 0 || dist > range ) {
+            netplay::host_send_event_to_sid(
+                in.sid, netplay::fork_text( "Target out of range." ),
+                static_cast<int>( m_info ) );
+        } else if( !av->sees( here, tgt ) ) {
+            netplay::host_send_event_to_sid(
+                in.sid, netplay::fork_text( "You don't have a clear shot." ),
+                static_cast<int>( m_info ) );
         } else {
-            netplay::host_send_hover_to_sid( in.sid, "" );
+            const std::size_t msg_before = Messages::generation();
+            av->fire_gun( tgt, shots );
+            av_move_pool[in.sid] = std::max( 0, av->get_moves() );
+            av->set_moves( av_move_pool[in.sid] );
+            av_mark_acted( in.sid );
+            if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) &&
+                !netplay::long_wait_active() ) {
+                av_waiting_for_turn[in.sid] = true;
+                netplay::host_send_hover_to_sid(
+                    in.sid, netplay::fork_text( "Waiting for other players..." ) );
+            } else {
+                netplay::host_send_hover_to_sid( in.sid, "" );
+            }
+            av_send_session_picture( in.sid, av->pos_bub(), av );
+            mp_forward_new_messages( in.sid, msg_before );
         }
-        av_send_session_picture( in.sid, av->pos_bub(), av );
-        mp_forward_new_messages( in.sid, msg_before );
     } else {
         netplay::host_send_event_to_sid(
             in.sid, netplay::fork_text( "You are not wielding a gun." ),
@@ -8388,9 +8598,26 @@ static bool mp_cmd_chat( const netplay::intent_request &in )
     return true;
 }
 
+/* DDA MP v4.0a-307: NPC menus are adjacent-only, like the stock talk/trade
+ * paths. Reject arbitrary offsets sent by a client. */
+static bool mp_npc_target_ok( const netplay::intent_request &in )
+{
+    if( in.args.size() < 2 ) {
+        return false;
+    }
+    const int dx = in.args[0];
+    const int dy = in.args[1];
+    return std::abs( dx ) <= 1 && std::abs( dy ) <= 1 && !( dx == 0 && dy == 0 );
+}
+
 static bool mp_cmd_talk_npc( const netplay::intent_request &in )
 {
     if( in.args.size() < 2 ) {
+        return true;
+    }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
         return true;
     }
     npc *av = av_session_npc( in.sid );
@@ -8459,6 +8686,11 @@ static bool mp_cmd_mission_offers( const netplay::intent_request &in )
     if( in.args.size() < 2 ) {
         return true;
     }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
+        return true;
+    }
     npc *av = av_session_npc( in.sid );
     if( av == nullptr ) {
         return true;
@@ -8492,6 +8724,11 @@ static bool mp_cmd_mission_offers( const netplay::intent_request &in )
 static bool mp_cmd_mission_accept( const netplay::intent_request &in )
 {
     if( in.args.size() < 3 ) {
+        return true;
+    }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
         return true;
     }
     npc *av = av_session_npc( in.sid );
@@ -8537,6 +8774,11 @@ static bool mp_cmd_mission_turnin_list( const netplay::intent_request &in )
     if( in.args.size() < 2 ) {
         return true;
     }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
+        return true;
+    }
     npc *av = av_session_npc( in.sid );
     if( av == nullptr ) {
         return true;
@@ -8554,6 +8796,11 @@ static bool mp_cmd_mission_turnin_list( const netplay::intent_request &in )
 static bool mp_cmd_mission_turnin( const netplay::intent_request &in )
 {
     if( in.args.size() < 3 ) {
+        return true;
+    }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
         return true;
     }
     npc *av = av_session_npc( in.sid );
@@ -8642,6 +8889,11 @@ static bool mp_cmd_trade_list( const netplay::intent_request &in )
     if( in.args.size() < 2 ) {
         return true;
     }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
+        return true;
+    }
     npc *av = av_session_npc( in.sid );
     if( av == nullptr ) {
         return true;
@@ -8664,6 +8916,11 @@ static bool mp_cmd_trade_list( const netplay::intent_request &in )
 static bool mp_cmd_trade( const netplay::intent_request &in )
 {
     if( in.args.size() < 3 ) {
+        return true;
+    }
+    if( !mp_npc_target_ok( in ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That NPC is too far away." ), static_cast<int>( m_info ) );
         return true;
     }
     npc *av = av_session_npc( in.sid );

@@ -2026,11 +2026,27 @@ static void mp_run_pickup( const std::string &text )
             nodes = sel.nodes;
             equip = sel.equip;
         }
-        mp_inv_log( string_format( "pickup: rows=%d chosen=%d equip=%d",
+        // DDA MP v4.0a-307: address the exact host items by their stable uid;
+        // fall back to node indices if a row has no uid.
+        std::vector<std::string> uids;
+        bool all_uids = !nodes.empty();
+        for( const int node : nodes ) {
+            if( node < 0 || node >= static_cast<int>( pkt.entries.size() ) ||
+                pkt.entries[node].uid.empty() ) {
+                all_uids = false;
+                break;
+            }
+            uids.push_back( pkt.entries[node].uid );
+        }
+        if( !all_uids ) {
+            uids.clear();
+        }
+        mp_inv_log( string_format( "pickup: rows=%d chosen=%d uids=%d equip=%d",
                                    static_cast<int>( pkt.entries.size() ),
-                                   static_cast<int>( nodes.size() ), equip ) );
+                                   static_cast<int>( nodes.size() ),
+                                   static_cast<int>( uids.size() ), equip ) );
         if( !nodes.empty() ) {
-            netplay::client_send_pickup_action( pkt.header.generation, nodes, equip );
+            netplay::client_send_pickup_action( pkt.header.generation, nodes, equip, uids );
         }
     } catch( const std::exception &e ) {
         mp_inv_log( std::string( "pickup error: " ) + e.what() );

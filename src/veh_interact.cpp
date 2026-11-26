@@ -184,7 +184,13 @@ void veh_interact::assign_activity( map &here )
             return;
         }
         if( sel_cmd == VEHICLE_REFILL ) {
-            netplay::client_send_intent( "vehicle_refuel", 0, {} );
+            std::vector<int> mp_args;
+            if( pt != nullptr ) {
+                mp_args.push_back( veh->index_of_part( pt ) );
+            }
+            const std::string mp_uid = refill_target ?
+                refill_target->get_var( "mp_uid", std::string() ) : std::string();
+            netplay::client_send_intent( "vehicle_refuel", 0, mp_args, mp_uid );
             return;
         }
         if( sel_cmd == VEHICLE_REMOVE && pt != nullptr ) {
