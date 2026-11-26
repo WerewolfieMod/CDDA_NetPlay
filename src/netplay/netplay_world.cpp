@@ -9403,6 +9403,25 @@ static bool mp_cmd_test_vehicle_utility( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_manifest_check( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-326: after loading the host's mod packs the client reports
+    // its manifest hash. A mismatch means different mod versions/data.
+    const std::string host_hash = netplay::data_manifest_hash();
+    const bool ok = !in.data.empty() && in.data == host_hash;
+    mp_ctrl_log( string_format( "manifest check sid=%d ok=%d client=%s host=%s",
+                                in.sid, ok ? 1 : 0, in.data.c_str(), host_hash.c_str() ) );
+    if( !ok ) {
+        netplay::host_kick_session(
+            in.sid, netplay::fork_text(
+                "Data manifest mismatch; host and client loaded different mod data." ) );
+    } else {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "Data manifest OK." ), static_cast<int>( m_info ) );
+    }
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10243,6 +10262,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_turret_fire", mp_cmd_vehicle_turret_fire );
         r.emplace( "vehicle_activate_eoc", mp_cmd_vehicle_activate_eoc );
         r.emplace( "test_vehicle_utility", mp_cmd_test_vehicle_utility );
+        r.emplace( "manifest_check", mp_cmd_manifest_check );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

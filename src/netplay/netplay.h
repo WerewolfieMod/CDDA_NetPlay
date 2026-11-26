@@ -1117,6 +1117,12 @@ std::vector<std::string> client_host_mods();
 /// DDA MP v4.0a-123: the host world's options (world_default page), so the
 /// virtual client world matches the host's season length and similar rules.
 std::vector<std::pair<std::string, std::string>> client_host_world_options();
+/// DDA MP v4.0a-326: host data manifest (game/netplay versions, mod versions
+/// in load order and an FNV hash over them).
+std::string data_manifest_hash();
+std::string client_host_game_version();
+std::string client_host_netplay_version();
+std::string client_host_manifest_hash();
 
 /* ---- game-side glass ---- */
 void show_host_dialog();

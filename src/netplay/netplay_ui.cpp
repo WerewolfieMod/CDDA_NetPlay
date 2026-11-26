@@ -47,6 +47,7 @@
 #include "sdltiles.h"     // display_buffer_draw_scope (single-pass client frame)
 #include "game.h"        // g (fat client world data load)
 #include "line.h"        // line_to (aim trajectory)
+#include "version.h"     // VERSION for the data manifest
 #include "weather.h"      // host clock/weather for native lighting
 #include "map.h"         // get_map (client-side pickup selector scratch tile)
 #include "mapbuffer.h"   // synthetic client-side map bubble
@@ -415,6 +416,19 @@ static void fat_client_load_data()
     } catch( ... ) {
         debug_suppress_prompts( false );
         mp_fat_log( "tiles: fat client load EXCEPTION unknown" );
+    }
+    // DDA MP v4.0a-326: report the loaded data manifest once.
+    static bool mp_manifest_reported = false;
+    if( !mp_manifest_reported && netplay::client_is_connected() ) {
+        mp_manifest_reported = true;
+        const std::string local_hash = netplay::data_manifest_hash();
+        mp_fat_log( string_format( "tiles: manifest host=%s local=%s game=%s/%s netplay=%s/%s",
+                                   netplay::client_host_manifest_hash().c_str(),
+                                   local_hash.c_str(),
+                                   netplay::client_host_game_version().c_str(), VERSION,
+                                   netplay::client_host_netplay_version().c_str(),
+                                   "4.0a-326" ) );
+        netplay::client_send_intent( "manifest_check", 0, {}, local_hash );
     }
 }
 

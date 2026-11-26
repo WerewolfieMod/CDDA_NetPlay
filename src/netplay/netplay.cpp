@@ -6,6 +6,8 @@
 #include "netplay_region.h"
 #ifdef _WIN32
 #include "worldfactory.h" // world_generator (WELCOME world name)
+#include "mod_manager.h"  // mod versions for the data manifest
+#include "version.h"      // VERSION for the data manifest
 #endif
 
 /// DDA MP v4.0a-165: the client resolves typed event arguments (terrain,
@@ -61,6 +63,32 @@ namespace netplay
 {
 
 static_assert( sizeof( socket_t ) == 8, "socket_t width" );
+
+/// DDA MP v4.0a-326: bumped with the data-manifest handshake.
+static constexpr const char *NETPLAY_VERSION = "4.0a-326";
+
+std::string data_manifest_hash()
+{
+    std::string manifest = VERSION;
+    manifest += '|';
+    manifest += NETPLAY_VERSION;
+    if( world_generator != nullptr && world_generator->active_world != nullptr ) {
+        for( const mod_id &m : world_generator->active_world->active_mod_order ) {
+            manifest += '|';
+            manifest += m.str();
+            manifest += ':';
+            manifest += m->version;
+        }
+    }
+    uint64_t h = 1469598103934665603ULL;
+    for( const unsigned char c : manifest ) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    char out[17];
+    std::snprintf( out, sizeof( out ), "%016llx", static_cast<unsigned long long>( h ) );
+    return std::string( out );
+}
 
 /* ------------------------------------------------------------------ */
 /* internal axis-agnostic socket helpers                               */
@@ -363,6 +391,11 @@ struct netplay_state {
     std::string client_last_host_world;
     /* DDA MP v4.0a-122: host world mod ids from WELCOME. */
     std::vector<std::string> client_last_host_mods;
+    /* DDA MP v4.0a-326: data manifest from WELCOME. */
+    std::string client_last_host_game_version;
+    std::string client_last_host_netplay_version;
+    std::string client_last_host_manifest_hash;
+    std::vector<std::pair<std::string, std::string>> client_last_host_mod_versions;
     /* DDA MP v4.0a-123: host world options from WELCOME. */
     std::vector<std::pair<std::string, std::string>> client_last_host_world_options;
     /* DDA MP v4.0: our session id from WELCOME (avatar binding identity). */
@@ -636,6 +669,24 @@ std::vector<std::string> client_host_mods()
 {
     std::lock_guard<std::mutex> lk( state_mutex );
     return state.client_last_host_mods;
+}
+
+std::string client_host_game_version()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_game_version;
+}
+
+std::string client_host_netplay_version()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_netplay_version;
+}
+
+std::string client_host_manifest_hash()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_manifest_hash;
 }
 
 std::vector<std::pair<std::string, std::string>> client_host_world_options()
@@ -1404,10 +1455,22 @@ static void host_accept_loop()
         r.size = payload.size();
         const uint16_t proto_hi = r.get_u16();
         const std::string name = r.get_str();
-        if( !r.ok || proto_hi != /* NETPLAY_PROTOCOL */ 0x0003 ) {
+        if( !r.ok || proto_hi != /* NETPLAY_PROTOCOL */ 0x0004 ) {
             // deny
             std::vector<char> d;
-            put_str( d, "Protocol mismatch; DDA MP 0.1 expects protocol 3" );
+            put_str( d, "Protocol mismatch; DDA MP 0.1 expects protocol 4" );
+            send_all( peer, encode_frame( frame::DENY, d ) );
+            close_socket( peer );
+            continue;
+        }
+        const std::string client_game = r.get_str();
+        const std::string client_netplay = r.get_str();
+        if( !r.ok || client_game != VERSION || client_netplay != NETPLAY_VERSION ) {
+            std::vector<char> d;
+            put_str( d, string_format(
+                         "Data version mismatch; host game=%s netplay=%s, client game=%s netplay=%s",
+                         VERSION, NETPLAY_VERSION, client_game.c_str(),
+                         client_netplay.c_str() ) );
             send_all( peer, encode_frame( frame::DENY, d ) );
             close_socket( peer );
             continue;
@@ -1438,17 +1501,19 @@ static void host_accept_loop()
         }
 #endif
         std::vector<char> w;
-        put_u16( w, /* NETPLAY_PROTOCOL */ 0x0003 );
+        put_u16( w, /* NETPLAY_PROTOCOL */ 0x0004 );
         put_u32( w, static_cast<uint32_t>( sid ) );
         // DDA MP fat client: announce the host's active world so the client
         // can load the same mod data before rendering snapshots.
         std::string wname;
         std::vector<std::string> wmods;
+        std::vector<std::pair<std::string, std::string>> wmod_versions;
 #ifdef _WIN32
         if( world_generator != nullptr && world_generator->active_world != nullptr ) {
             wname = world_generator->active_world->world_name;
             for( const mod_id &m : world_generator->active_world->active_mod_order ) {
                 wmods.push_back( m.str() );
+                wmod_versions.emplace_back( m.str(), m->version );
             }
         }
 #endif
@@ -1479,6 +1544,17 @@ static void host_accept_loop()
             put_str( w, wopts[i].first );
             put_str( w, wopts[i].second );
         }
+        // DDA MP v4.0a-326: data manifest. The client validates its loaded mod
+        // versions against this and reports its own hash after loading.
+        put_str( w, VERSION );
+        put_str( w, NETPLAY_VERSION );
+        put_u16( w, static_cast<uint16_t>(
+                     std::min<std::size_t>( wmod_versions.size(), 0xffff ) ) );
+        for( std::size_t i = 0; i < wmod_versions.size() && i < 0xffff; ++i ) {
+            put_str( w, wmod_versions[i].first );
+            put_str( w, wmod_versions[i].second );
+        }
+        put_str( w, data_manifest_hash() );
         send_all( peer, encode_frame( frame::WELCOME, w ) );
 
         // Every accepted session now has a dedicated reader thread that
@@ -4150,6 +4226,26 @@ static void client_run( socket_t sock )
                         }
                     }
                 }
+                // DDA MP v4.0a-326: host data manifest.
+                state.client_last_host_game_version.clear();
+                state.client_last_host_netplay_version.clear();
+                state.client_last_host_manifest_hash.clear();
+                state.client_last_host_mod_versions.clear();
+                if( r.ok && r.off < r.size ) {
+                    state.client_last_host_game_version = r.get_str();
+                    state.client_last_host_netplay_version = r.get_str();
+                    const uint16_t nvers = r.get_u16();
+                    for( uint16_t i = 0; i < nvers && r.ok; ++i ) {
+                        const std::string id = r.get_str();
+                        const std::string version = r.get_str();
+                        if( r.ok ) {
+                            state.client_last_host_mod_versions.emplace_back( id, version );
+                        }
+                    }
+                    if( r.ok && r.off < r.size ) {
+                        state.client_last_host_manifest_hash = r.get_str();
+                    }
+                }
             }
         } else if( op == frame::AVATAR_LIST ) {
             // DDA MP v4.0: [u16 n][str name + u8 alive + u8 in_session]*
@@ -4581,8 +4677,10 @@ bool client_connect( const std::string &address_, int port )
 
     // HELLO
     std::vector<char> hello;
-    put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0003 );
+    put_u16( hello, /* NETPLAY_PROTOCOL */ 0x0004 );
     put_str( hello, "player" ); // v1: replace with a configured player name
+    put_str( hello, VERSION );
+    put_str( hello, NETPLAY_VERSION );
     if( !client_send_on( sock, frame::HELLO, hello ) ) {
         state.stop_client();
         return false;
