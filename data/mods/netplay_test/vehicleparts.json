@@ -6,5 +6,18 @@
     "name": { "str": "netplay tool station" },
     "description": "A test tool station that only accepts the netplay diagnostic tool.",
     "allowed_tools": [ "mp_test_tool" ]
+  },
+  {
+    "type": "vehicle_part",
+    "id": "mp_eoc_part",
+    "name": { "str": "netplay EOC module" },
+    "item": "mp_eoc_module",
+    "location": "on_roof",
+    "categories": [ "utility" ],
+    "durability": 100,
+    "description": "A diagnostic vehicle module that runs a test effect-on-condition when activated.",
+    "flags": [ "EOC_ACTIVATION" ],
+    "activatable_eoc": "EOC_MP_TEST_VEHICLE",
+    "variants": [ { "symbols": "#", "symbols_broken": "X" } ]
   }
 ]

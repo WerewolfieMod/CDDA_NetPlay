@@ -45,6 +45,7 @@
 #include "craft_reservation.h"
 #include "clzones.h"
 #include "effect.h"
+#include "effect_on_condition.h"
 #include "field.h"
 #include "field_type.h"
 #include "flag.h"
@@ -7277,6 +7278,7 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     const bool mp_turret_aim_test = std::getenv( "DDA_MP_TEST_TURRET_AIM" ) != nullptr;
     const bool mp_turret_test = std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr ||
                                 mp_turret_aim_test;
+    const bool mp_eoc_test = std::getenv( "DDA_MP_TEST_EOC" ) != nullptr;
     const bool mp_cart_test = mp_workbench_test || mp_veh_tool_test;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
@@ -7460,6 +7462,48 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 std::fprintf( f, "test turret part=%d pos=%d,%d\n",
                               turret_idx, ctrl_pos.x(), ctrl_pos.y() );
+                std::fclose( f );
+            }
+        }
+        if( mp_eoc_test ) {
+            // EOC test: module on the controls tile so the control menu shows
+            // the "Activate" row.
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.is_battery() ) {
+                    pt.ammo_set( itype_id( "battery" ), 1000 );
+                } else if( pt.is_tank() && pt.get_base().empty() ) {
+                    pt.ammo_set( itype_id( "gasoline" ), 200 );
+                }
+            }
+            point_rel_ms eoc_mount( 0, 0 );
+            tripoint_bub_ms ctrl_pos = veh->bub_part_pos( here, veh->part( 0 ) );
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                const vehicle_part &pt = veh->part( i );
+                if( pt.info().has_flag( "CONTROLS" ) ) {
+                    eoc_mount = pt.mount;
+                    ctrl_pos = veh->bub_part_pos( here, pt );
+                    break;
+                }
+            }
+            int eoc_idx = -1;
+            const vpart_info &eoc_info = vpart_id( "mp_eoc_part" ).obj();
+            for( const point &off : { point( 0, 0 ), point( 0, 1 ), point( 0, -1 ),
+                                      point( -1, 0 ), point( 1, 0 ) } ) {
+                const point_rel_ms mount( eoc_mount.x() + off.x, eoc_mount.y() + off.y );
+                if( veh->can_mount( mount, eoc_info ).success() ) {
+                    eoc_idx = veh->install_part( here, mount, vpart_id( "mp_eoc_part" ) );
+                    if( eoc_idx >= 0 ) {
+                        break;
+                    }
+                }
+            }
+            if( eoc_idx >= 0 ) {
+                av.setpos( here, ctrl_pos, false );
+            }
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "test eoc part=%d pos=%d,%d\n",
+                              eoc_idx, ctrl_pos.x(), ctrl_pos.y() );
                 std::fclose( f );
             }
         }
@@ -8092,6 +8136,70 @@ static bool mp_cmd_vehicle_turret_fire( const netplay::intent_request &in )
         av_send_session_picture( in.sid, av->pos_bub(), av );
         mp_forward_new_messages( in.sid, msg_before );
     }
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_activate_eoc( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-322: activate an EOC module on the authoritative vehicle.
+    // The dialogue/EOC runs with the session avatar as the talker.
+    if( in.args.empty() ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms p = mp_vehicle_menu_target( in.sid, *av );
+    const optional_vpart_position vp = here.veh_at( p );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no vehicle there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const int idx = in.args[0];
+    if( idx < 0 || idx >= veh.part_count() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "That module moved." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle_part &part = veh.part( idx );
+    if( !part.info().has_flag( "EOC_ACTIVATION" ) || !part.info().activatable_eoc ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "That module is not activatable." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    if( veh.bub_part_pos( here, idx ) != p ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "That module is not there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    try {
+        mp_quiet_remote_data quiet;
+        mp_player_character_scope scope( *av );
+        dialogue newDialog( get_talker_for( *av ), nullptr );
+        part.info().activatable_eoc.value()->activate( newDialog );
+    } catch( const std::exception &e ) {
+        mp_ctrl_log( string_format( "vehicle eoc failed: %s", e.what() ) );
+    } catch( ... ) {
+        mp_ctrl_log( "vehicle eoc failed" );
+    }
+    mp_ctrl_log( string_format( "vehicle eoc sid=%d part=%d pos=%d,%d var=%s",
+                                in.sid, idx, p.x(), p.y(),
+                                av->get_value( "mp_test_eoc" ).str().c_str() ) );
+    netplay::host_forward_new_messages( in.sid, msg_before );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
     if( !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
@@ -9893,6 +10001,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_smart_engine", mp_cmd_vehicle_smart_engine );
         r.emplace( "vehicle_turret_reload", mp_cmd_vehicle_turret_reload );
         r.emplace( "vehicle_turret_fire", mp_cmd_vehicle_turret_fire );
+        r.emplace( "vehicle_activate_eoc", mp_cmd_vehicle_activate_eoc );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

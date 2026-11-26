@@ -4485,8 +4485,12 @@ static void mp_run_vehicle_menu( const std::string &payload )
         }
         const std::string &wanted = targets[mp_test_pick];
         for( int i = 0; i < static_cast<int>( actions.size() ); ++i ) {
-            if( ( actions[i] != wanted && client_actions[i] != wanted ) ||
-                !menu.entries[i].enabled ) {
+            bool mp_match = actions[i] == wanted || client_actions[i] == wanted;
+            if( !mp_match && !wanted.empty() && wanted.back() == '*' ) {
+                const std::string prefix = wanted.substr( 0, wanted.size() - 1 );
+                mp_match = client_actions[i].rfind( prefix, 0 ) == 0;
+            }
+            if( !mp_match || !menu.entries[i].enabled ) {
                 continue;
             }
             ++mp_test_pick;
@@ -4513,6 +4517,10 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 mp_run_turret_reload();
             } else if( client_actions[i] == "turret_aim" ) {
                 mp_run_turret_aim();
+            } else if( client_actions[i].rfind( "activate_eoc:", 0 ) == 0 ) {
+                const int eoc_idx = std::atoi( client_actions[i].substr( 13 ).c_str() );
+                netplay::client_send_intent( "vehicle_activate_eoc", 0, { eoc_idx } );
+                mp_inv_log( string_format( "action: activate_eoc %d", eoc_idx ) );
             } else if( client_actions[i] == "examine_vehicle" ) {
                 if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
                     if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
@@ -4572,6 +4580,10 @@ static void mp_run_vehicle_menu( const std::string &payload )
             mp_run_turret_reload();
         } else if( ca == "turret_aim" ) {
             mp_run_turret_aim();
+        } else if( ca.rfind( "activate_eoc:", 0 ) == 0 ) {
+            const int eoc_idx = std::atoi( ca.substr( 13 ).c_str() );
+            netplay::client_send_intent( "vehicle_activate_eoc", 0, { eoc_idx } );
+            mp_inv_log( string_format( "action: activate_eoc %d", eoc_idx ) );
         } else if( ca == "examine_vehicle" ) {
             if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
                 if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
@@ -9437,6 +9449,37 @@ void run_view_loop()
                             } else if( mp_ta_phase == 3 && mp_ta_ms > 9000 ) {
                                 mp_inv_log( "test: turret aim done" );
                                 ++mp_ta_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "eoc_test" ) {
+                        static int mp_eoc_phase = 0;
+                        static auto mp_eoc_t0 = std::chrono::steady_clock::now();
+                        if( mp_eoc_phase == 0 ) {
+                            mp_eoc_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: eoc spawn" );
+                            ++mp_eoc_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_eoc_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_eoc_t0 ).count();
+                            if( mp_eoc_phase == 1 && mp_eoc_ms > 2500 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: eoc control" );
+                                ++mp_eoc_phase;
+                                sent = false;
+                            } else if( mp_eoc_phase == 2 && mp_eoc_ms > 5000 ) {
+                                netplay::client_send_intent( "vehicle_menu", 0, {} );
+                                mp_inv_log( "test: eoc menu request" );
+                                ++mp_eoc_phase;
+                                sent = false;
+                            } else if( mp_eoc_phase == 3 && mp_eoc_ms > 9000 ) {
+                                mp_inv_log( "test: eoc done" );
+                                ++mp_eoc_phase;
                                 sent = true;
                             } else {
                                 sent = false;

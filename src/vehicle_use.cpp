@@ -2474,6 +2474,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
     for( const vpart_reference &vp : this->get_avail_parts( "EOC_ACTIVATION" ) ) {
         vehicle_part &part = vp.part();
         menu.add( string_format( _( "Activate  %s" ), vp.part().name() ) )
+        .client_action( "activate_eoc:" + std::to_string( vp.part_index() ) )
         .on_submit( [&part] {
             dialogue newDialog( get_talker_for( get_player_character() ), nullptr );
             part.info().activatable_eoc.value()->activate( newDialog );

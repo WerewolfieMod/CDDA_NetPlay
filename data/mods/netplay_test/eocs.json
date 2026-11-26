@@ -1,0 +1,13 @@
+[
+  {
+    "type": "effect_on_condition",
+    "id": "EOC_MP_TEST_VEHICLE",
+    "effect": [
+      {
+        "set_string_var": "activated",
+        "target_var": { "u_val": "mp_test_eoc" }
+      },
+      { "u_message": "Netplay EOC activated." }
+    ]
+  }
+]

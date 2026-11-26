@@ -26,5 +26,18 @@
       "msg": "You reset the netplay test tool.",
       "target": "mp_test_tool"
     }
+  },
+  {
+    "id": "mp_eoc_module",
+    "type": "ITEM",
+    "subtypes": [ "TOOL" ],
+    "category": "veh_parts",
+    "name": { "str": "netplay EOC module" },
+    "description": "A diagnostic vehicle module that runs a test effect-on-condition when activated.",
+    "symbol": "#",
+    "color": "light_green",
+    "weight": "1 kg",
+    "volume": "1 L",
+    "material": [ "steel" ]
   }
 ]
