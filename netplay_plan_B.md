@@ -182,7 +182,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-2 | Перехват мутаций (activities/map/vehicle/item/character/dialogue/EOC) | client | P3-1/P1 | UI не меняет мир напрямую | TODO |
 | P3-3 | Перевести native inventory/@/craft/pickup на command bus | client | P1/P3-2 | actions идут через registry | PARTIAL |
 | P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI; `e` открывает `interact_with`-меню, `EXAMINE_VEHICLE` — нативный `veh_interact`; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew через command bus; `DDA_MP_DIRECT_VEH_INTERACT` — прямой экран) |
-| P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | PARTIAL (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK/USE_TOOL/SMART_ENGINE/TURRET_RELOAD; turret aim/EOC disabled) |
+| P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | PARTIAL (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK/USE_TOOL/SMART_ENGINE/TURRET_RELOAD/TURRET_AIM; EOC disabled) |
 | P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (auto-target) |
 | P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | TODO |
 | P3-8 | Native item menu (`inventory_item_menu`) | `game_inventory` | P2-3 | заменить `mp_client_item_menu` | PARTIAL |
@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-320`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом), workbench, `Use <tool>`, smart controller и turret reload (проверено рантаймом). Меню передаёт точную клетку (`target_dx/dy`); adjacent examine по-прежнему требует, чтобы машина была зеркалирована. Пункты 1.1/1.3 закрыты; 1.2 остаётся частично: turret aim, EOC. Долг: клиент зеркалит только машину под аватаром, поэтому examine машины снаружи (без посадки) всё ещё уходит на host — нужен стрим ближайших машин или direction prompt.
+Статус на `ddamp-v4.0a-321`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом), workbench, `Use <tool>`, smart controller, turret reload и turret aim (проверено рантаймом). Меню передаёт точную клетку (`target_dx/dy`); adjacent examine по-прежнему требует, чтобы машина была зеркалирована. Пункты 1.1/1.3 закрыты; 1.2 остаётся частично: EOC. Долг: клиент зеркалит только машину под аватаром, поэтому examine машины снаружи (без посадки) всё ещё уходит на host — нужен стрим ближайших машин или direction prompt.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -529,6 +529,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-318 | P3-5: «Use <tool>» на `VEH_TOOLS` — client action `use_tool:<itype>` + intent `vehicle_use_tool`; host создаёт pseudo-tool, заряжает от машины и вызывает ванильный `use_vehicle_tool` на сессионном аватаре. Плюс таргет меню по соседней клетке: `vehicle_menu_here` принимает dx,dy, offset хранится на сессию и используется select/faucet/lockpick; клиентский examine предпочитает соседнюю клетку с `VEH_TOOLS`/`WORKBENCH` | tool suite: `test station part=24 mount=0,1 tool=mp_test_tool`; row 2 `client=use_tool:mp_test_tool` key=84 enabled=1; client `You use the netplay test tool.`; host `vehicle tool sid=1 tool=mp_test_tool pos=63,69 ok=1`; workbench: `vehicle_menu_here 0,1`, меню 0-2 enabled; vehicle suite: install/siphon без регрессий |
 | 2026-11-26 | ddamp-v4.0a-319 | P3-5: smart controller — client action `smart_engine` открывает нативный `smart_controller_ui` на клиенте; intent `vehicle_smart_engine` передаёт enabled/lo/hi, host пишет `smart_controller_cfg` и включает все `SMART_ENGINE_CONTROLLER` | smart suite: `test smart engine part=79 pos=64,63`; row 10 `action=CONTROL_SMART_ENGINE client=smart_engine enabled=1`; client `enabled=1 lo=10 hi=70`; host `vehicle smart engine ... parts=1` |
 | 2026-11-26 | ddamp-v4.0a-320 | P3-5: turret reload — клиент выбирает магазин нативным `select_ammo` на зеркале, отправляет uid; host строит `reload_option` и запускает `reload_activity_actor` на сессионном аватаре. Меню теперь передаёт `target_dx/dy`, client actions используют точную клетку меню. Тестовая машина: `turret_mount` + `turret_m249` + `stanag10` в рюкзаке | turret suite: `test turret part=80`; row 9 `action=RELOAD_TURRET client=turret_reload`; `turret_reload: target 66,64 menu=1`; host `vehicle turret reload ... ok=1 activity=1`; после завершения `mag=1 ammo=10 activity=0` |
+| 2026-11-26 | ddamp-v4.0a-321 | P3-5: turret aim — client action `turret_aim` открывает reticle; подтверждение шлёт `vehicle_turret_fire`; host проверяет ready/range/LOS и вызывает `turret_data::fire` на сессионном аватаре. Тестовая машина заряжает магазин в turret m249 | turret aim suite: row 15 `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 
 ### 9.3. Что протестировано
 
@@ -571,10 +572,11 @@ JSON/mapgen:
 | 2026-11-26 | P3-5 | Use vehicle tool через соседнюю клетку | `vehicle_menu_here 0,1`; row `use_tool:mp_test_tool` enabled; host `vehicle tool ... ok=1`; client `You use the netplay test tool.`; workbench/vehicle suites без регрессий |
 | 2026-11-26 | P3-5 | Smart controller settings | `test smart engine part=79`; row `CONTROL_SMART_ENGINE client=smart_engine`; client `enabled=1 lo=10 hi=70`; host `vehicle smart engine ... parts=1` |
 | 2026-11-26 | P3-5 | Turret reload через client ammo selector | меню target `66,64`; row `RELOAD_TURRET client=turret_reload`; host `vehicle turret reload ... ok=1`; после activity `mag=1 ammo=10 activity=0` |
+| 2026-11-26 | P3-5 | Turret aim/fire | row `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 
 ### 9.4. Следующие 5 задач
 
-1. P3-5: remaining `^` rows — turret aim, EOC.
+1. P3-5: remaining `^` row — EOC activation.
 2. Runtime-тест planter/washing machine/dishwasher на машине с этими деталями.
 3. Vehicle examine снаружи: стрим ближайших машин или клиентский direction prompt (сейчас зеркалится только машина под аватаром).
 4. P3-6: native `game::examine`/`iexamine` без uilist-заглушки.

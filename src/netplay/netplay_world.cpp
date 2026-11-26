@@ -7274,7 +7274,9 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     const bool mp_workbench_test = std::getenv( "DDA_MP_TEST_WORKBENCH" ) != nullptr;
     const bool mp_veh_tool_test = std::getenv( "DDA_MP_TEST_VEH_TOOL" ) != nullptr;
     const bool mp_smart_test = std::getenv( "DDA_MP_TEST_SMART_ENGINE" ) != nullptr;
-    const bool mp_turret_test = std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr;
+    const bool mp_turret_aim_test = std::getenv( "DDA_MP_TEST_TURRET_AIM" ) != nullptr;
+    const bool mp_turret_test = std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr ||
+                                mp_turret_aim_test;
     const bool mp_cart_test = mp_workbench_test || mp_veh_tool_test;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
@@ -7445,6 +7447,14 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                 }
             }
             if( turret_idx >= 0 ) {
+                if( mp_turret_aim_test ) {
+                    turret_data loaded = veh->turret_query( veh->part( turret_idx ) );
+                    if( loaded ) {
+                        item magazine( itype_id( "stanag10" ) );
+                        magazine.ammo_set( itype_id( "556" ), 10 );
+                        loaded.base()->put_in( magazine, pocket_type::MAGAZINE_WELL );
+                    }
+                }
                 av.setpos( here, ctrl_pos, false );
             }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
@@ -8004,6 +8014,84 @@ static bool mp_cmd_vehicle_turret_reload( const netplay::intent_request &in )
     av_mark_acted( in.sid );
     av_send_status( in.sid );
     av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_turret_fire( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-321: fire the turret at the menu tile at a client-chosen
+    // offset. Range/LOS are checked on the authoritative map.
+    if( in.args.size() < 2 ) {
+        return true;
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms p = mp_vehicle_menu_target( in.sid, *av );
+    const optional_vpart_position vp = here.veh_at( p );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no vehicle there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    turret_data turret = veh.turret_query( &here, p );
+    if( !turret ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "There is no turret there." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    if( turret.query() != turret_data::status::ready ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "The turret is not ready to fire." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const tripoint_bub_ms target =
+        av->pos_bub() + tripoint_rel_ms( in.args[0], in.args[1], 0 );
+    const int dist = std::max( std::abs( in.args[0] ), std::abs( in.args[1] ) );
+    if( dist < 1 ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You can't aim there." ),
+            static_cast<int>( m_info ) );
+    } else if( !turret.in_range( here.get_abs( target ) ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "Target out of range." ),
+            static_cast<int>( m_info ) );
+    } else if( !av->sees( here, target ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You don't have a clear shot." ),
+            static_cast<int>( m_info ) );
+    } else {
+        const std::size_t msg_before = Messages::generation();
+        const int shots = turret.fire( *av, &here, target );
+        turret_data after = veh.turret_query( &here, p );
+        mp_ctrl_log( string_format(
+                         "vehicle turret fire sid=%d pos=%d,%d target=%d,%d shots=%d ammo=%d",
+                         in.sid, p.x(), p.y(), in.args[0], in.args[1], shots,
+                         after ? after.ammo_remaining() : 0 ) );
+        av_move_pool[in.sid] = std::max( 0, av->get_moves() );
+        av->set_moves( av_move_pool[in.sid] );
+        av_mark_acted( in.sid );
+        if( av_move_pool[in.sid] <= 0 && !netplay::host_session_afk( in.sid ) &&
+            !netplay::long_wait_active() ) {
+            av_waiting_for_turn[in.sid] = true;
+            netplay::host_send_hover_to_sid(
+                in.sid, netplay::fork_text( "Waiting for other players..." ) );
+        } else {
+            netplay::host_send_hover_to_sid( in.sid, "" );
+        }
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+        mp_forward_new_messages( in.sid, msg_before );
+    }
     if( !netplay::host_avatar_keys_pending() ) {
         g->mp_anchor_map_on( get_avatar() );
     }
@@ -9804,6 +9892,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_use_tool", mp_cmd_vehicle_use_tool );
         r.emplace( "vehicle_smart_engine", mp_cmd_vehicle_smart_engine );
         r.emplace( "vehicle_turret_reload", mp_cmd_vehicle_turret_reload );
+        r.emplace( "vehicle_turret_fire", mp_cmd_vehicle_turret_fire );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

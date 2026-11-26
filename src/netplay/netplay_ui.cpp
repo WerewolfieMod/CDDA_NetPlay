@@ -1162,6 +1162,9 @@ static std::string mp_smash_text;
 /// DDA MP v4.0a-246: the fire cursor is aimed with a reach weapon (spear)
 /// rather than a gun; confirm sends a reach attack instead of a shot.
 static bool mp_fire_reach = false;
+/// DDA MP v4.0a-321: the same cursor aimed at a vehicle turret sends a turret
+/// fire command instead of the avatar's weapon shot.
+static bool mp_fire_turret = false;
 static bool mp_look_fast_scroll = false;
 
 /* Tile under the look/fire/throw reticle. The snapshot origin is the pivot
@@ -1196,6 +1199,7 @@ static void mp_begin_client_fire()
     // DDA MP v4.0a-246: the host's fire() uses a reach weapon (spear) for a
     // reach attack target UI; mirror that with the client's own reticle.
     mp_fire_reach = false;
+    mp_fire_turret = false;
     if( weapon->is_gun() ) {
         // gun target UI
     } else if( weapon->current_reach_range( get_avatar() ).first > 1 ) {
@@ -4339,6 +4343,48 @@ static void mp_run_turret_reload()
     mp_send_turret_reload( uid );
 }
 
+static void mp_send_turret_fire( int dx, int dy )
+{
+    netplay::client_send_intent( "vehicle_turret_fire", 0, { dx, dy } );
+    mp_inv_log( string_format( "action: turret_fire %d,%d", dx, dy ) );
+}
+
+static void mp_run_turret_aim()
+{
+    const std::optional<tripoint_bub_ms> ta_pos = mp_action_target();
+    if( !ta_pos ) {
+        mp_inv_log( "turret_aim: no vehicle" );
+        return;
+    }
+    const optional_vpart_position ta_vp = get_map().veh_at( *ta_pos );
+    if( !ta_vp ) {
+        mp_inv_log( "turret_aim: no vehicle part" );
+        return;
+    }
+    turret_data turret = ta_vp->vehicle().turret_query( ta_vp->pos_abs() );
+    if( !turret ) {
+        mp_inv_log( "turret_aim: no turret" );
+        return;
+    }
+    if( turret.query() != turret_data::status::ready ) {
+        mp_inv_log( "turret_aim: turret not ready" );
+        return;
+    }
+    if( const char *test_ta = std::getenv( "DDA_MP_TEST_TURRET_AIM" );
+        test_ta != nullptr && test_ta[0] != '\0' ) {
+        // Deterministic target for the automated run; the cursor path below
+        // is the production one.
+        mp_send_turret_fire( 3, 0 );
+        return;
+    }
+    mp_fire_reach = false;
+    mp_fire_turret = true;
+    mp_cursor = mp_cursor_mode::fire;
+    mp_cursor_dx = 0;
+    mp_cursor_dy = 0;
+    mp_inv_log( string_format( "turret_aim: cursor from %d,%d", ta_pos->x(), ta_pos->y() ) );
+}
+
 /* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
  * labels/descriptions/flags of its own build_interact_menu() and runs the
  * selected row for this session avatar. Entries that need a host-side modal
@@ -4465,6 +4511,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 mp_run_smart_engine();
             } else if( client_actions[i] == "turret_reload" ) {
                 mp_run_turret_reload();
+            } else if( client_actions[i] == "turret_aim" ) {
+                mp_run_turret_aim();
             } else if( client_actions[i] == "examine_vehicle" ) {
                 if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
                     if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
@@ -4522,6 +4570,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
             mp_run_smart_engine();
         } else if( ca == "turret_reload" ) {
             mp_run_turret_reload();
+        } else if( ca == "turret_aim" ) {
+            mp_run_turret_aim();
         } else if( ca == "examine_vehicle" ) {
             if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_action_target() ) {
                 if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
@@ -9361,6 +9411,37 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "turret_aim_test" ) {
+                        static int mp_ta_phase = 0;
+                        static auto mp_ta_t0 = std::chrono::steady_clock::now();
+                        if( mp_ta_phase == 0 ) {
+                            mp_ta_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: turret aim spawn" );
+                            ++mp_ta_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_ta_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_ta_t0 ).count();
+                            if( mp_ta_phase == 1 && mp_ta_ms > 2500 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: turret aim control" );
+                                ++mp_ta_phase;
+                                sent = false;
+                            } else if( mp_ta_phase == 2 && mp_ta_ms > 5000 ) {
+                                netplay::client_send_intent( "vehicle_menu", 0, {} );
+                                mp_inv_log( "test: turret aim menu request" );
+                                ++mp_ta_phase;
+                                sent = false;
+                            } else if( mp_ta_phase == 3 && mp_ta_ms > 9000 ) {
+                                mp_inv_log( "test: turret aim done" );
+                                ++mp_ta_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "wield" ) {
                         // Carried items live inside container pockets, so walk
                         // the top-level location tree instead of inv_dump().
@@ -10060,6 +10141,7 @@ void run_view_loop()
                         mp_view_dz = 0;
                         netplay::client_request_snapshot( mp_cursor_dx, mp_cursor_dy, 0 );
                     }
+                    mp_fire_turret = false;
                     mp_cursor = mp_cursor_mode::none;
                     continue;
                 }
@@ -10144,7 +10226,10 @@ void run_view_loop()
                         mp_inv_log( string_format( "smash: target %d,%d",
                                                    mp_cursor_dx, mp_cursor_dy ) );
                     } else if( mp_cursor == mp_cursor_mode::fire ) {
-                        if( mp_fire_reach ) {
+                        if( mp_fire_turret ) {
+                            mp_send_turret_fire( mp_cursor_dx, mp_cursor_dy );
+                            mp_fire_turret = false;
+                        } else if( mp_fire_reach ) {
                             netplay::client_send_intent(
                                 "reach_attack", 0, { mp_cursor_dx, mp_cursor_dy } );
                             mp_inv_log( string_format( "reach: target %d,%d",

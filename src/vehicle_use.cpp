@@ -2635,6 +2635,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
 
         menu.add( _( "Aim individual turret" ) )
         .hotkey( "TURRET_SINGLE_FIRE" )
+        .client_action( "turret_aim" )
         .on_submit( [this] { turrets_aim_and_fire_single(); } );
     }
 
