@@ -6,15 +6,19 @@
 
 #include "avatar.h"
 #include "cata_scope_helpers.h"
+#include "character.h"
 #include "color.h"
 #include "debug.h"
 #include "game.h"
 #include "game_constants.h"
 #include "input_enums.h"
+#include "json.h"
+#include "json_loader.h"
 #include "localized_comparator.h"
 #include "map.h"
 #include "map_scale_constants.h"
 #include "memory_fast.h"
+#include "netplay/netplay.h"
 #include "options.h"
 #include "player_activity.h"
 #include "point.h"
@@ -148,6 +152,7 @@ void veh_shape::change_part_shape( vpart_reference vpr ) const
     vehicle_part &part = vpr.part();
     const vpart_info &vpi = part.info();
     veh_menu menu( this->veh, _( "Choose cosmetic variant:" ) );
+    const std::string previous_variant = part.variant;
     std::string chosen_variant = part.variant; // support for cancel
 
     for( const auto &[vvid, vv] : vpi.variants ) {
@@ -173,6 +178,14 @@ void veh_shape::change_part_shape( vpart_reference vpr ) const
     menu.query();
 
     part.variant = chosen_variant;
+    // DDA MP v4.0a-306: the client edits a mirror vehicle. Forward the chosen
+    // cosmetic variant to the host instead of keeping a mirror-only change.
+    if( netplay::client_is_connected() && get_player_character_override() == nullptr &&
+        chosen_variant != previous_variant ) {
+        netplay::client_send_intent( "vehicle_shape", 0,
+                                     { static_cast<int>( vpr.part_index() ) },
+                                     chosen_variant );
+    }
 }
 
 tripoint_bub_ms veh_shape::get_cursor_pos() const

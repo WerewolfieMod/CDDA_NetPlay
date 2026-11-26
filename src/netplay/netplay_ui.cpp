@@ -4485,11 +4485,13 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_view_dz = 0;
             break;
         case ACTION_EXAMINE: {
-            // DDA MP v4.0a-302: native vehicle screen on the mirror object.
-            // Gated until the complete vehicle command set is migrated; the
-            // legacy remote uilist remains the default.
-            if( mp_native_avatar_ready &&
-                std::getenv( "DDA_MP_NATIVE_VEH_INTERACT" ) != nullptr ) {
+            // DDA MP v4.0a-306: every vehicle action now goes through the
+            // command bus, so the native screen is the default. Set
+            // DDA_MP_LEGACY_VEH_INTERACT=1 to fall back to the old remote
+            // uilist bridge (diagnostics only).
+            static const bool mp_legacy_veh_interact =
+                std::getenv( "DDA_MP_LEGACY_VEH_INTERACT" ) != nullptr;
+            if( mp_native_avatar_ready && !mp_legacy_veh_interact ) {
                 if( const optional_vpart_position mp_vp =
                         get_map().veh_at( get_avatar().pos_bub() ) ) {
                     mp_inv_log( "action: native veh_interact" );
@@ -8593,12 +8595,23 @@ void run_view_loop()
                 test_veh != nullptr && test_veh[0] != '\0' ) {
                 static bool mp_test_veh_asked = false;
                 static bool mp_test_veh_opened = false;
+                static int mp_test_veh_view_frames = 0;
                 if( !mp_test_veh_opened ) {
-                    if( get_map().veh_at( get_avatar().pos_bub() ) ) {
+                    // Wait until the netplay map canvas is actually up; opening
+                    // the native vehicle UI while the client still shows the
+                    // title screen leaves the window black.
+                    const bool mp_veh_view_ready =
+                        mp_have_picture && static_cast<bool>( g->w_terrain );
+                    if( mp_veh_view_ready ) {
+                        ++mp_test_veh_view_frames;
+                    }
+                    if( mp_veh_view_ready && mp_test_veh_view_frames > 20 &&
+                        get_map().veh_at( get_avatar().pos_bub() ) ) {
                         mp_test_veh_opened = true;
                         mp_inv_log( "test: native veh_interact open" );
                         mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
-                    } else if( !mp_test_veh_asked && mp_native_avatar_ready ) {
+                    } else if( !mp_test_veh_asked && mp_native_avatar_ready &&
+                               mp_veh_view_ready ) {
                         mp_test_veh_asked = true;
                         netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
                         mp_inv_log( "test: native veh_interact spawn car" );
@@ -8785,6 +8798,157 @@ void run_view_loop()
                                 netplay::client_send_intent(
                                     "vehicle_remove", 0,
                                     { mp_veh.part_count() - 1 } );
+                            } else {
+                                sent = false;
+                            }
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "vehicle_unload" ) {
+                        if( get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            netplay::client_send_intent( "vehicle_unload", 0, {} );
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "vehicle_siphon" ) {
+                        if( const optional_vpart_position mp_vp =
+                                get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            const vehicle &mp_veh = mp_vp->vehicle();
+                            int tank = -1;
+                            for( int i = 0; i < mp_veh.part_count(); ++i ) {
+                                const vehicle_part &pt = mp_veh.part( i );
+                                if( pt.is_tank() && !pt.get_base().empty() &&
+                                    pt.get_base().only_item().made_of( phase_id::LIQUID ) ) {
+                                    tank = i;
+                                    break;
+                                }
+                            }
+                            if( tank >= 0 ) {
+                                netplay::client_send_intent( "vehicle_siphon", 0, { tank } );
+                            } else {
+                                sent = false;
+                            }
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "vehicle_shape" ) {
+                        if( const optional_vpart_position mp_vp =
+                                get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            const vehicle &mp_veh = mp_vp->vehicle();
+                            std::string variant;
+                            int part_idx = -1;
+                            for( int i = 0; i < mp_veh.part_count() && part_idx < 0; ++i ) {
+                                const vehicle_part &pt = mp_veh.part( i );
+                                for( const auto &v : pt.info().variants ) {
+                                    if( v.first != pt.variant ) {
+                                        variant = v.first;
+                                        part_idx = i;
+                                        break;
+                                    }
+                                }
+                            }
+                            if( part_idx >= 0 ) {
+                                netplay::client_send_intent( "vehicle_shape", 0,
+                                                             { part_idx }, variant );
+                            } else {
+                                sent = false;
+                            }
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "vehicle_crew" ) {
+                        if( const optional_vpart_position mp_vp =
+                                get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            const vehicle &mp_veh = mp_vp->vehicle();
+                            int seat = -1;
+                            for( int i = 0; i < mp_veh.part_count(); ++i ) {
+                                if( mp_veh.part( i ).is_seat() ) {
+                                    seat = i;
+                                    break;
+                                }
+                            }
+                            if( seat >= 0 ) {
+                                netplay::client_send_intent( "vehicle_crew", 0, { seat, 0 } );
+                            } else {
+                                sent = false;
+                            }
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "vehicle_install" ) {
+                        if( get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            netplay::client_send_intent( "vehicle_install", 0,
+                                                         { 0, 0 }, "beeper" );
+                        } else {
+                            sent = false;
+                        }
+                    } else if( action_name == "vehicle_suite" ) {
+                        static int mp_suite_step = 0;
+                        static std::chrono::steady_clock::time_point mp_suite_last{};
+                        if( const optional_vpart_position mp_vp =
+                                get_map().veh_at( get_avatar().pos_bub() ) ) {
+                            const auto mp_suite_now = std::chrono::steady_clock::now();
+                            if( mp_suite_step == 0 ||
+                                mp_suite_now - mp_suite_last >= std::chrono::milliseconds( 700 ) ) {
+                                mp_suite_last = mp_suite_now;
+                                const vehicle &mp_veh = mp_vp->vehicle();
+                                if( mp_suite_step == 0 ) {
+                                    netplay::client_send_intent( "vehicle_unload", 0, {} );
+                                    ++mp_suite_step;
+                                } else if( mp_suite_step == 1 ) {
+                                    std::string variant;
+                                    int shape_idx = -1;
+                                    for( int i = 0; i < mp_veh.part_count() && shape_idx < 0; ++i ) {
+                                        const vehicle_part &pt = mp_veh.part( i );
+                                        for( const auto &v : pt.info().variants ) {
+                                            if( v.first != pt.variant ) {
+                                                variant = v.first;
+                                                shape_idx = i;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if( shape_idx >= 0 ) {
+                                        netplay::client_send_intent( "vehicle_shape", 0,
+                                                                     { shape_idx }, variant );
+                                    }
+                                    ++mp_suite_step;
+                                } else if( mp_suite_step == 2 ) {
+                                    int seat = -1;
+                                    for( int i = 0; i < mp_veh.part_count(); ++i ) {
+                                        if( mp_veh.part( i ).is_seat() ) {
+                                            seat = i;
+                                            break;
+                                        }
+                                    }
+                                    if( seat >= 0 ) {
+                                        netplay::client_send_intent( "vehicle_crew", 0,
+                                                                     { seat, 0 } );
+                                    }
+                                    ++mp_suite_step;
+                                } else if( mp_suite_step == 3 ) {
+                                    netplay::client_send_intent( "vehicle_install", 0,
+                                                                 { 0, 0 }, "beeper" );
+                                    ++mp_suite_step;
+                                } else if( mp_suite_step == 4 ) {
+                                    int tank = -1;
+                                    for( int i = 0; i < mp_veh.part_count(); ++i ) {
+                                        const vehicle_part &pt = mp_veh.part( i );
+                                        if( pt.is_tank() && !pt.get_base().empty() &&
+                                            pt.get_base().only_item().made_of( phase_id::LIQUID ) ) {
+                                            tank = i;
+                                            break;
+                                        }
+                                    }
+                                    if( tank >= 0 ) {
+                                        netplay::client_send_intent( "vehicle_siphon", 0, { tank } );
+                                    }
+                                    ++mp_suite_step;
+                                }
+                                // Keep this hook active until every suite step
+                                // has been sent; the outer one-shot flag only
+                                // latches when `sent` stays true.
+                                sent = mp_suite_step > 4;
                             } else {
                                 sent = false;
                             }

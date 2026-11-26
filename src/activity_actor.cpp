@@ -11840,7 +11840,10 @@ void vehicle_activity_actor::complete_vehicle( player_activity &act, Character &
             }
             ::vehicle_part &vp_new = veh.part( partnum );
             here.add_vehicle_to_cache( &veh );
-            if( vp_new.info().variants.size() > 1 ) {
+            // DDA MP v4.0a-306: an install completed for a remote session is
+            // driven by an NPC on the host; the cosmetic-variant picker is a
+            // client-side screen, so don't open it here.
+            if( vp_new.info().variants.size() > 1 && !you.is_npc() ) {
                 veh_shape( here, veh ).change_part_shape( vpart_reference( veh, partnum ) );
             }
 
@@ -11851,7 +11854,9 @@ void vehicle_activity_actor::complete_vehicle( player_activity &act, Character &
             if( vpinfo.has_flag( VPFLAG_CONE_LIGHT ) ||
                 vpinfo.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ||
                 vpinfo.has_flag( VPFLAG_HALF_CIRCLE_LIGHT ) ) {
-                orient_part( here, &veh, vpinfo, partnum, q );
+                if( !you.is_npc() ) {
+                    orient_part( here, &veh, vpinfo, partnum, q );
+                }
             }
 
             const tripoint_bub_ms vehp = veh.pos_bub( here ) + tripoint_rel_ms( q, 0 );

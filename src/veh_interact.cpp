@@ -39,6 +39,8 @@
 #include "item.h"
 #include "item_uid.h"
 #include "itype.h"
+#include "json.h"
+#include "json_loader.h"
 #include "line.h"
 #include "map.h"
 #include "map_selector.h"
@@ -195,7 +197,24 @@ void veh_interact::assign_activity( map &here )
                                          { veh->index_of_part( pt ) } );
             return;
         }
-        if( sel_cmd != VEHICLE_QUIT && sel_cmd != VEHICLE_SHAPE ) {
+        if( sel_cmd == VEHICLE_INSTALL && vp != nullptr ) {
+            netplay::client_send_intent( "vehicle_install", 0,
+                                         { cursor_vp_mount.x(), cursor_vp_mount.y() },
+                                         vp->id.str() );
+            return;
+        }
+        if( sel_cmd == VEHICLE_SHAPE ) {
+            if( !parts_here.empty() ) {
+                const vpart_reference part_here( *veh, parts_here[0] );
+                const vpart_reference displayed_part( *veh,
+                                                      veh->part_displayed_at( part_here.mount_pos() ) );
+                player_character.set_moves( 0 );
+                player_character.assign_activity(
+                    veh_shape( here, *veh ).start( displayed_part.pos_bub( here ) ) );
+            }
+            return;
+        }
+        if( sel_cmd != VEHICLE_QUIT ) {
             popup( _( "This vehicle action is not available on the netplay client yet." ) );
         }
         return;
@@ -643,7 +662,7 @@ void veh_interact::do_main_loop( map &here )
             }
         } else if( action == "SIPHON" ) {
             if( mp_client_mirror_vehicle() ) {
-                popup( _( "Siphoning is not available on the netplay client yet." ) );
+                do_siphon( here );
             } else if( veh->handle_potential_theft( player_character ) ) {
                 do_siphon( here );
                 // Siphoning may have started a player activity. If so, we should close the
@@ -657,19 +676,45 @@ void veh_interact::do_main_loop( map &here )
             }
         } else if( action == "UNLOAD" ) {
             if( mp_client_mirror_vehicle() ) {
-                popup( _( "Unloading is not available on the netplay client yet." ) );
+                std::vector<itype_id> fuels;
+                for( const auto &e : veh->fuels_left() ) {
+                    const itype *type = item::find_type( e.first );
+                    if( e.first == fuel_type_battery || type->phase != phase_id::SOLID ) {
+                        continue;
+                    }
+                    fuels.push_back( e.first );
+                }
+                if( fuels.empty() ) {
+                    popup( _( "The vehicle has no solid fuel left to remove." ) );
+                } else {
+                    itype_id fuel = fuels.front();
+                    if( fuels.size() > 1 ) {
+                        uilist smenu;
+                        smenu.text = _( "Remove what?" );
+                        for( const itype_id &f : fuels ) {
+                            smenu.addentry( item::nname( f ) );
+                        }
+                        smenu.query();
+                        if( smenu.ret >= 0 &&
+                            static_cast<size_t>( smenu.ret ) < fuels.size() ) {
+                            fuel = fuels[smenu.ret];
+                        } else {
+                            fuel = itype_id();
+                        }
+                    }
+                    if( !fuel.is_empty() ) {
+                        netplay::client_send_intent( "vehicle_unload", 0, {},
+                                                     fuel.str() );
+                    }
+                }
             } else if( veh->handle_potential_theft( player_character ) ) {
                 finish = do_unload( here );
             }
         } else if( action == "CHANGE_SHAPE" ) {
-            if( mp_client_mirror_vehicle() ) {
-                popup( _( "Changing the vehicle shape is not available on the netplay client yet." ) );
-            } else {
-                sel_cmd = VEHICLE_SHAPE;
-            }
+            sel_cmd = VEHICLE_SHAPE;
         } else if( action == "ASSIGN_CREW" ) {
             if( mp_client_mirror_vehicle() ) {
-                popup( _( "Assigning crew is not available on the netplay client yet." ) );
+                do_assign_crew( here );
             } else if( owned_by_player ) {
                 do_assign_crew( here );
             } else {
@@ -2606,6 +2651,11 @@ void veh_interact::do_siphon( map &here )
     };
 
     auto act = [&]( map & here, const vehicle_part & pt ) {
+        if( mp_client_mirror_vehicle() ) {
+            netplay::client_send_intent( "vehicle_siphon", 0,
+                                         { veh->index_of_part( &pt ) } );
+            return;
+        }
         on_out_of_scope restore_ui( [&]() {
             hide_ui( here, false );
         } );
@@ -2644,6 +2694,50 @@ bool veh_interact::do_unload( map &here )
 
 void veh_interact::do_assign_crew( map &here )
 {
+    if( mp_client_mirror_vehicle() ) {
+        restore_on_out_of_scope prev_title( title );
+        title = _( "Assign crew positions:" );
+
+        auto sel = []( const map &, const vehicle_part & pt ) {
+            return pt.is_seat();
+        };
+
+        auto act = [&]( map &, vehicle_part & pt ) {
+            uilist menu;
+            menu.text = _( "Select crew member" );
+            const int idx = veh->index_of_part( &pt );
+
+            if( pt.crew() ) {
+                menu.addentry( 0, true, 'c', _( "Clear assignment" ) );
+            }
+            netplay::snapshot snap;
+            if( netplay::client_receive( snap ) ) {
+                for( const netplay::snapshot::creature_frame &cf : snap.creatures ) {
+                    if( cf.kind != 1 ) {
+                        continue;
+                    }
+                    JsonValue jv = json_loader::from_string( cf.json );
+                    const JsonObject jo = jv.get_object();
+                    const int id = jo.get_int( "id", -1 );
+                    const std::string name = jo.get_string( "name", "NPC" );
+                    if( id > 0 ) {
+                        menu.addentry( id, true, -1, name );
+                    }
+                }
+            }
+
+            menu.query();
+            if( menu.ret == 0 ) {
+                netplay::client_send_intent( "vehicle_crew", 0, { idx, 0 } );
+            } else if( menu.ret > 0 ) {
+                netplay::client_send_intent( "vehicle_crew", 0, { idx, menu.ret } );
+            }
+        };
+
+        overview( here, sel, act );
+        return;
+    }
+
     if( cant_do( here, VEHICLE_ASSIGN_CREW ) != task_reason::CAN_DO ) {
         msg = _( "Need at least one seat and an ally to assign crew members." );
         return;

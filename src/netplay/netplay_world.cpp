@@ -49,7 +49,9 @@
 #include "field_type.h"
 #include "flag.h"
 #include "game.h"
+#include "game_constants.h"
 #include "gates.h"
+#include "handle_liquid.h"
 #include "item.h"
 #include "item_group.h"
 #include "itype.h"
@@ -121,6 +123,10 @@ static constexpr int FRAMEH = 25 + 7; // +3 tiles above / below, +1 to fill the 
 
 /// File-local corpse marker, same pattern as cata_tiles.cpp / item.cpp.
 static const itype_id itype_corpse( "corpse" );
+/// Vehicle command constants (solid fuel unload, install test shortcut).
+static const itype_id fuel_type_battery( "battery" );
+static const itype_id itype_plut_cell( "plut_cell" );
+static const trait_id trait_DEBUG_HS( "DEBUG_HS" );
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -6953,6 +6959,11 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         can.put_in( gas, pocket_type::CONTAINER );
         const int can_stacks = can.num_item_stacks();
         av.i_add_or_drop( can );
+        // A spare beeper for the automated install command: complete_vehicle
+        // consumes the base part item, and DEBUG_HS only skips the requirement
+        // check, not consume_items().
+        item beeper_item( itype_id( "beeper" ) );
+        av.i_add_or_drop( beeper_item );
         std::string inv;
         int inv_count = 0;
         for( item *it : av.inv_dump() ) {
@@ -7348,6 +7359,239 @@ static bool mp_cmd_vehicle_relabel( const netplay::intent_request &in )
             }
             av_send_session_picture( in.sid, av->pos_bub(), av );
         }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_siphon( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.empty() ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const int idx = in.args[0];
+    if( idx < 0 || idx >= veh.part_count() ) {
+        return true;
+    }
+    vehicle_part &pt = veh.part( idx );
+    int drained = 0;
+    const item &base = pt.get_base();
+    const int base_charges = base.empty() ? -1 : base.legacy_front().charges;
+    if( pt.is_tank() && !base.empty() ) {
+        item liquid( base.legacy_front() );
+        const int charges = liquid.charges;
+        if( charges > 0 ) {
+            // handle_npc_liquid takes the item by value and always handles the
+            // whole amount (containers, then a spill), so the tank drains fully.
+            liquid_handler::handle_npc_liquid( liquid, *av );
+            drained = charges;
+            veh.drain( get_map(), idx, drained );
+        }
+    }
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f,
+                      "vehicle siphon sid=%d part=%d drained=%d tank=%d base_empty=%d base_charges=%d type=%s\n",
+                      in.sid, idx, drained, pt.is_tank() ? 1 : 0,
+                      base.empty() ? 1 : 0, base_charges, base.typeId().str().c_str() );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_unload( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    map &here = get_map();
+    vehicle &veh = vp->vehicle();
+    std::vector<itype_id> fuels;
+    for( const auto &e : veh.fuels_left() ) {
+        const itype *type = item::find_type( e.first );
+        if( e.first == fuel_type_battery || type->phase != phase_id::SOLID ) {
+            continue;
+        }
+        fuels.push_back( e.first );
+    }
+    if( fuels.empty() ) {
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "vehicle unload sid=%d fuel=none removed=0\n", in.sid );
+            std::fclose( f );
+        }
+        netplay::host_send_event_to_sid(
+            in.sid, fork_text( "The vehicle has no solid fuel left to remove." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    itype_id fuel = in.data.empty() ? fuels.front() : itype_id( in.data );
+    if( std::find( fuels.begin(), fuels.end(), fuel ) == fuels.end() ) {
+        fuel = fuels.front();
+    }
+    int qty = veh.fuel_left( here, fuel );
+    int removed = 0;
+    if( fuel == itype_plut_cell ) {
+        if( qty >= PLUTONIUM_CHARGES ) {
+            const int cells = qty / PLUTONIUM_CHARGES;
+            item plutonium( fuel, calendar::turn, cells );
+            av->i_add_or_drop( plutonium );
+            removed = cells * PLUTONIUM_CHARGES;
+            veh.drain( here, fuel, removed );
+        }
+    } else if( qty > 0 ) {
+        item solid_fuel( fuel, calendar::turn, qty );
+        av->i_add_or_drop( solid_fuel );
+        removed = qty;
+        veh.drain( here, fuel, qty );
+    }
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "vehicle unload sid=%d fuel=%s removed=%d\n",
+                      in.sid, fuel.str().c_str(), removed );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_shape( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.empty() || in.data.empty() ) {
+        return true;
+    }
+    if( const optional_vpart_position vp = get_map().veh_at( av->pos_bub() ) ) {
+        const int idx = in.args[0];
+        if( idx >= 0 && idx < vp->vehicle().part_count() ) {
+            vehicle_part &pt = vp->vehicle().part( idx );
+            const auto variant = pt.info().variants.find( in.data );
+            if( variant != pt.info().variants.end() ) {
+                pt.variant = in.data;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "vehicle shape sid=%d part=%d variant=%s\n",
+                                  in.sid, idx, in.data.c_str() );
+                    std::fclose( f );
+                }
+                av_send_session_picture( in.sid, av->pos_bub(), av );
+            }
+        }
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_crew( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.size() < 2 ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const int idx = in.args[0];
+    const int npc_id = in.args[1];
+    if( idx < 0 || idx >= veh.part_count() ) {
+        return true;
+    }
+    vehicle_part &pt = veh.part( idx );
+    if( !pt.is_seat() ) {
+        return true;
+    }
+    bool assigned = false;
+    if( npc_id == 0 ) {
+        pt.unset_crew();
+        assigned = true;
+    } else if( npc *who = g->critter_by_id<npc>( character_id( npc_id ) ) ) {
+        assigned = veh.assign_seat( pt, *who );
+    }
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "vehicle crew sid=%d part=%d npc=%d assigned=%d\n",
+                      in.sid, idx, npc_id, assigned ? 1 : 0 );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_install( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    const point_rel_ms mount = in.args.size() >= 2 ?
+                               point_rel_ms( in.args[0], in.args[1] ) : point_rel_ms::zero;
+    const vpart_id part_id( in.data );
+    if( !part_id.is_valid() ) {
+        return true;
+    }
+    const vpart_info &vpi = part_id.obj();
+    if( std::getenv( "DDA_MP_TEST_SPAWN_CAR" ) != nullptr ) {
+        av->set_mutation( trait_DEBUG_HS );
+    }
+    time_duration time = vpi.install_time( *av );
+    if( av->has_trait( trait_DEBUG_HS ) ) {
+        time = 1_seconds;
+    }
+    const point_rel_ms q = veh.coord_translate( mount );
+    av->set_moves( 100 );
+    av->assign_activity( vehicle_activity_actor(
+                             VEHICLE_INSTALL, time, &veh, veh.pos_abs() + q,
+                             tripoint_rel_ms( mount, 0 ), 0, part_id,
+                             item_location() ) );
+    // Test shortcut: finish the short activity immediately so the automated
+    // run can assert the installed part without extra turns.
+    if( std::getenv( "DDA_MP_TEST_SPAWN_CAR" ) != nullptr ) {
+        static const activity_id mp_act_vehicle( "ACT_VEHICLE" );
+        // The automated avatar has the base part but not every tool component,
+        // and DEBUG_HS only bypasses the requirement check. Keep any stray
+        // debugmsg from blocking the unattended host.
+        debug_suppress_prompts( true );
+        for( int guard = 0; guard < 10 && av->activity &&
+             av->activity.id() == mp_act_vehicle; ++guard ) {
+            av->process_activity();
+        }
+        debug_suppress_prompts( false );
+    }
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    int installed = -1;
+    for( int i = 0; i < veh.part_count(); ++i ) {
+        if( veh.part( i ).info().id == part_id ) {
+            installed = i;
+            break;
+        }
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f,
+                      "vehicle install sid=%d part=%s mount=%d,%d time=%d installed=%d parts=%d activity=%d\n",
+                      in.sid, in.data.c_str(), mount.x(), mount.y(),
+                      to_turns<int>( time ), installed, veh.part_count(),
+                      av->activity ? 1 : 0 );
+        std::fclose( f );
     }
     return true;
 }
@@ -8577,6 +8821,11 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_relabel", mp_cmd_vehicle_relabel );
         r.emplace( "vehicle_remove", mp_cmd_vehicle_remove );
         r.emplace( "vehicle_mend", mp_cmd_vehicle_mend );
+        r.emplace( "vehicle_siphon", mp_cmd_vehicle_siphon );
+        r.emplace( "vehicle_unload", mp_cmd_vehicle_unload );
+        r.emplace( "vehicle_shape", mp_cmd_vehicle_shape );
+        r.emplace( "vehicle_crew", mp_cmd_vehicle_crew );
+        r.emplace( "vehicle_install", mp_cmd_vehicle_install );
         r.emplace( "suicide", mp_cmd_suicide );
         r.emplace( "sort_armor", mp_cmd_sort_armor );
         r.emplace( "movement_mode", mp_cmd_movement_mode );
