@@ -1123,6 +1123,7 @@ std::string data_manifest_hash();
 std::string client_host_game_version();
 std::string client_host_netplay_version();
 std::string client_host_manifest_hash();
+std::string client_host_tileset();
 std::vector<std::pair<std::string, std::string>> client_host_mod_versions();
 /// DDA MP v4.0a-327: surface a client-side join failure (missing mod,
 /// version drift) through the same popup path as a host kick.

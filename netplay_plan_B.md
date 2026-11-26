@@ -223,7 +223,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
 | P6-1 | `HELLO`: game/netplay version, mod list/order/versions, data hash | protocol | P1 | несовместимый клиент отклонён | DONE (protocol v4: HELLO game/netplay; WELCOME mod versions + FNV hash; client `manifest_check`) |
-| P6-2 | Data/tileset manifest; id validation; fallback | client | P6-1 | нет missing-id крашей | PARTIAL (моды/версии/hash проверяются до и после загрузки с понятной ошибкой; tileset manifest ещё нет) |
+| P6-2 | Data/tileset manifest; id validation; fallback | client | P6-1 | нет missing-id крашей | PARTIAL (моды/версии/hash и tileset id проверяются; content-hash tileset ещё нет) |
 | P6-3 | Save/world/character compatibility | session | P6-1 | reconnect/старые сейвы | TODO |
 
 ### P7. Robustness/security/performance
@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-327`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. Соседняя машина стримится по запросу host-скана; направление выбирается эвристикой, без direction prompt. Протокол — v4 с data manifest: HELLO game/netplay, WELCOME mod versions + hash, preflight missing/version check, post-load `manifest_check`; ошибки показываются как join error. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC. Planter: query_seed UI остаётся только build-tested; tileset manifest ещё нет.
+Статус на `ddamp-v4.0a-328`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. Соседняя машина стримится по запросу host-скана; направление выбирается эвристикой, без direction prompt. Протокол — v4 с data manifest: HELLO game/netplay, WELCOME mod versions + hash + tileset id, preflight missing/version check, post-load `manifest_check`; ошибки показываются как join error. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC. Planter: query_seed UI остаётся только build-tested (второй bridged query_int не доходит в тесте).
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -536,6 +536,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-325 | P3-5/P3-6: examine машины снаружи. Клиент замечает соседние streamed vparts и шлёт `vehicle_menu_here {-128,-128}`; host выбирает соседнюю клетку (приоритет `VEH_TOOLS`/`WORKBENCH`), стримит её vehicle JSON и строит меню. Добавлен mirror-fallback для `veh_at` на границе submap; client actions используют точную клетку меню | suite: `test outside pos=...`; client `vehicle_menu_here scan adjacent`; menu `EXAMINE_VEHICLE`; `vehicle: mirror applied ... veh_at=0 p0=target`; `examine_vehicle -> native` |
 | 2026-11-26 | ddamp-v4.0a-326 | P6-1/P6-2: протокол v4 и data manifest. HELLO несёт game/netplay версии; WELCOME — manifest активных модов с версиями и FNV-hash; клиент после загрузки модов шлёт `manifest_check`, host сверяет hash и кикает при несовпадении. Старый клиент получает DENY с версиями | audit suite: `manifest check sid=1 ok=1 client=... host=...`; client `Data manifest OK.`; pickup без регрессий |
 | 2026-11-26 | ddamp-v4.0a-327 | P6-2: preflight-валидация host-модов до загрузки. Клиент проверяет наличие каждого мода и версии из WELCOME; при mismatch пишет понятную ошибку в join error и отключается; после загрузки локальный hash сравнивается с host hash | missing-mod suite: `tiles: Missing mod data: missing_mod_netplay_test. Install the same mods as the host.`; host sessions=0 |
+| 2026-11-27 | ddamp-v4.0a-328 | P6-2: tileset в WELCOME. Host отправляет id текущего tileset (`TILES`), клиент сохраняет и логирует host/local после загрузки данных | audit suite: `tiles: manifest ... netplay=4.0a-328`; `tiles: tileset host=UltimateCataclysm local=UltimateCataclysm`; pickup без регрессий |
 
 ### 9.3. Что протестировано
 
@@ -580,6 +581,7 @@ JSON/mapgen:
 | 2026-11-26 | P3-5 | Turret reload через client ammo selector | меню target `66,64`; row `RELOAD_TURRET client=turret_reload`; host `vehicle turret reload ... ok=1`; после activity `mag=1 ammo=10 activity=0` |
 | 2026-11-26 | P6-1/P6-2 | Protocol v4 data manifest | `manifest check sid=1 ok=1 client=... host=...`; client `Data manifest OK.`; pickup без регрессий |
 | 2026-11-26 | P6-2 | Missing host mod preflight | `tiles: Missing mod data: missing_mod_netplay_test. Install the same mods as the host.`; клиент отключается до загрузки, host sessions=0 |
+| 2026-11-27 | P6-2 | Tileset manifest | `tiles: manifest ... netplay=4.0a-328/4.0a-328`; `tiles: tileset host=UltimateCataclysm local=UltimateCataclysm` |
 | 2026-11-26 | P3-5 | Turret aim/fire | row `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 | 2026-11-26 | P3-5 | EOC activation | row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
 | 2026-11-26 | P3-5 | Mass/auto turret aim | all-manual: `mode=1 turrets=1 shots=4`; auto: `targeted=1 enabled=1 power_disabled=0` |

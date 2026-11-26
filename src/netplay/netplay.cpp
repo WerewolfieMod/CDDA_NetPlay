@@ -7,6 +7,7 @@
 #ifdef _WIN32
 #include "worldfactory.h" // world_generator (WELCOME world name)
 #include "mod_manager.h"  // mod versions for the data manifest
+#include "options.h"      // TILES for the data manifest
 #include "version.h"      // VERSION for the data manifest
 #endif
 
@@ -65,7 +66,7 @@ namespace netplay
 static_assert( sizeof( socket_t ) == 8, "socket_t width" );
 
 /// DDA MP v4.0a-326: bumped with the data-manifest handshake.
-static constexpr const char *NETPLAY_VERSION = "4.0a-327";
+static constexpr const char *NETPLAY_VERSION = "4.0a-328";
 
 std::string data_manifest_hash()
 {
@@ -395,6 +396,7 @@ struct netplay_state {
     std::string client_last_host_game_version;
     std::string client_last_host_netplay_version;
     std::string client_last_host_manifest_hash;
+    std::string client_last_host_tileset;
     std::vector<std::pair<std::string, std::string>> client_last_host_mod_versions;
     /* DDA MP v4.0a-123: host world options from WELCOME. */
     std::vector<std::pair<std::string, std::string>> client_last_host_world_options;
@@ -687,6 +689,12 @@ std::string client_host_manifest_hash()
 {
     std::lock_guard<std::mutex> lk( state_mutex );
     return state.client_last_host_manifest_hash;
+}
+
+std::string client_host_tileset()
+{
+    std::lock_guard<std::mutex> lk( state_mutex );
+    return state.client_last_host_tileset;
 }
 
 std::vector<std::pair<std::string, std::string>> client_host_mod_versions()
@@ -1568,6 +1576,11 @@ static void host_accept_loop()
             put_str( w, wmod_versions[i].second );
         }
         put_str( w, data_manifest_hash() );
+        std::string wtileset;
+        if( get_options().has_option( "TILES" ) ) {
+            wtileset = get_option<std::string>( "TILES" );
+        }
+        put_str( w, wtileset );
         send_all( peer, encode_frame( frame::WELCOME, w ) );
 
         // Every accepted session now has a dedicated reader thread that
@@ -4243,6 +4256,7 @@ static void client_run( socket_t sock )
                 state.client_last_host_game_version.clear();
                 state.client_last_host_netplay_version.clear();
                 state.client_last_host_manifest_hash.clear();
+                state.client_last_host_tileset.clear();
                 state.client_last_host_mod_versions.clear();
                 if( r.ok && r.off < r.size ) {
                     state.client_last_host_game_version = r.get_str();
@@ -4257,6 +4271,9 @@ static void client_run( socket_t sock )
                     }
                     if( r.ok && r.off < r.size ) {
                         state.client_last_host_manifest_hash = r.get_str();
+                    }
+                    if( r.ok && r.off < r.size ) {
+                        state.client_last_host_tileset = r.get_str();
                     }
                 }
             }

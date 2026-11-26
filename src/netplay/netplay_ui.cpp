@@ -465,7 +465,14 @@ static void fat_client_load_data()
                                    local_hash.c_str(),
                                    netplay::client_host_game_version().c_str(), VERSION,
                                    netplay::client_host_netplay_version().c_str(),
-                                   "4.0a-327" ) );
+                                   "4.0a-328" ) );
+        std::string local_tileset;
+        if( get_options().has_option( "TILES" ) ) {
+            local_tileset = get_option<std::string>( "TILES" );
+        }
+        mp_fat_log( string_format( "tiles: tileset host=%s local=%s",
+                                   netplay::client_host_tileset().c_str(),
+                                   local_tileset.c_str() ) );
         if( !host_hash.empty() && host_hash != local_hash ) {
             const std::string msg = string_format(
                                         "Data manifest mismatch: host=%s local=%s. Use the same mods and versions as the host.",
