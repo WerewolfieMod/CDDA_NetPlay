@@ -7281,6 +7281,7 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
     const bool mp_turret_test = std::getenv( "DDA_MP_TEST_TURRET" ) != nullptr ||
                                 mp_turret_aim_test;
     const bool mp_eoc_test = std::getenv( "DDA_MP_TEST_EOC" ) != nullptr;
+    const bool mp_utility_test = std::getenv( "DDA_MP_TEST_UTILITY" ) != nullptr;
     const bool mp_cart_test = mp_workbench_test || mp_veh_tool_test;
     static const point offsets[] = {
         { 2, 0 }, { 0, 2 }, { -2, 0 }, { 0, -2 }, { 3, 0 }, { 0, 3 }
@@ -7292,7 +7293,8 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
         if( !here.inbounds( p ) || here.veh_at( p ) ) {
             continue;
         }
-        veh = here.add_vehicle( vproto_id( mp_cart_test ? "golf_cart" : "car" ),
+        veh = here.add_vehicle( vproto_id( mp_utility_test ? "mp_utility_cart" :
+                                           mp_cart_test ? "golf_cart" : "car" ),
                                 p, 0_degrees,
                                 0, damaged ? veh_spawn_status::DEFAULT_LIGHT_DMG
                                 : veh_spawn_status::PRISTINE, false, true );
@@ -7517,6 +7519,38 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 std::fprintf( f, "test eoc part=%d pos=%d,%d\n",
                               eoc_idx, ctrl_pos.x(), ctrl_pos.y() );
+                std::fclose( f );
+            }
+        }
+        if( mp_utility_test ) {
+            // Washer/dishwasher runtime test vehicle: water tank, battery,
+            // filthy cargo and detergent.
+            tripoint_bub_ms ctrl_pos = veh->bub_part_pos( here, veh->part( 0 ) );
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.info().has_flag( "CONTROLS" ) ) {
+                    ctrl_pos = veh->bub_part_pos( here, pt );
+                } else if( pt.is_battery() ) {
+                    pt.ammo_set( itype_id( "battery" ), 5000 );
+                } else if( pt.is_tank() ) {
+                    pt.ammo_set( itype_water_clean, 200 );
+                } else if( pt.info().has_flag( "WASHING_MACHINE" ) ) {
+                    item clothes( itype_id( "backpack" ) );
+                    clothes.set_flag( flag_FILTHY );
+                    veh->get_items( pt ).insert( here, clothes );
+                } else if( pt.info().has_flag( "DISHWASHER" ) ) {
+                    item dish( itype_id( "screwdriver" ) );
+                    dish.set_flag( flag_FILTHY );
+                    veh->get_items( pt ).insert( here, dish );
+                }
+            }
+            for( int i = 0; i < 5; ++i ) {
+                item detergent_item( itype_id( "detergent" ) );
+                av.i_add_or_drop( detergent_item );
+            }
+            av.setpos( here, ctrl_pos, false );
+            if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                std::fprintf( f, "test utility pos=%d,%d\n", ctrl_pos.x(), ctrl_pos.y() );
                 std::fclose( f );
             }
         }
@@ -9221,6 +9255,57 @@ static bool mp_cmd_vehicle_refuel( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_vehicle_utility( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-324: runtime exercise of the washer/dishwasher callbacks on
+    // the session avatar (the menu rows themselves are already safe actions).
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( !vp ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "You are not in a vehicle." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    int wm = -1;
+    int dw = -1;
+    for( int i = 0; i < veh.part_count(); ++i ) {
+        if( veh.part( i ).info().has_flag( "WASHING_MACHINE" ) ) {
+            wm = i;
+        } else if( veh.part( i ).info().has_flag( "DISHWASHER" ) ) {
+            dw = i;
+        }
+    }
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    {
+        mp_quiet_remote_data quiet;
+        mp_player_character_scope scope( *av );
+        if( wm >= 0 ) {
+            veh.use_washing_machine( here, wm );
+        }
+        if( dw >= 0 ) {
+            veh.use_dishwasher( here, dw );
+        }
+    }
+    mp_ctrl_log( string_format(
+                     "test utility sid=%d wm=%d/%d dw=%d/%d", in.sid,
+                     wm, wm >= 0 && veh.part( wm ).enabled ? 1 : 0,
+                     dw, dw >= 0 && veh.part( dw ).enabled ? 1 : 0 ) );
+    netplay::host_forward_new_messages( in.sid, msg_before );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10060,6 +10145,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_turret_reload", mp_cmd_vehicle_turret_reload );
         r.emplace( "vehicle_turret_fire", mp_cmd_vehicle_turret_fire );
         r.emplace( "vehicle_activate_eoc", mp_cmd_vehicle_activate_eoc );
+        r.emplace( "test_vehicle_utility", mp_cmd_test_vehicle_utility );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

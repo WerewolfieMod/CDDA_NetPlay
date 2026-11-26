@@ -9499,6 +9499,32 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "utility_test" ) {
+                        static int mp_ut_phase = 0;
+                        static auto mp_ut_t0 = std::chrono::steady_clock::now();
+                        if( mp_ut_phase == 0 ) {
+                            mp_ut_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: utility spawn" );
+                            ++mp_ut_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_ut_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_ut_t0 ).count();
+                            if( mp_ut_phase == 1 && mp_ut_ms > 2500 ) {
+                                netplay::client_send_intent( "test_vehicle_utility", 0, {} );
+                                mp_inv_log( "test: utility use" );
+                                ++mp_ut_phase;
+                                sent = false;
+                            } else if( mp_ut_phase == 2 && mp_ut_ms > 6000 ) {
+                                mp_inv_log( "test: utility done" );
+                                ++mp_ut_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "wield" ) {
                         // Carried items live inside container pockets, so walk
                         // the top-level location tree instead of inv_dump().

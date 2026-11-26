@@ -1,0 +1,17 @@
+[
+  {
+    "id": "mp_utility_cart",
+    "type": "vehicle",
+    "name": "Netplay Utility Cart",
+    "blueprint": [
+      [ "o|" ],
+      [ "o|" ]
+    ],
+    "parts": [
+      { "x": 0, "y": 0, "parts": [ "frame#vertical_T_left", "reclining_seat", "controls" ] },
+      { "x": 0, "y": 1, "parts": [ "frame#vertical_T_right", "washing_machine", "storage_battery" ] },
+      { "x": -1, "y": 0, "parts": [ "frame#vertical_2", "dishwasher" ] },
+      { "x": -1, "y": 1, "parts": [ "frame#vertical_2", "tank" ] }
+    ]
+  }
+]
