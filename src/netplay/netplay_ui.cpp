@@ -4221,10 +4221,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
                                   menu.entries[i].hotkey->get_first_input() : -1;
             const int mp_ev_type = menu.entries[i].hotkey ?
                                    static_cast<int>( menu.entries[i].hotkey->type ) : -1;
-            mp_inv_log( string_format( "vehicle menu row %d enabled=%d key=%d evkey=%d evtype=%d action=%s text=%s",
+            mp_inv_log( string_format( "vehicle menu row %d enabled=%d key=%d evkey=%d evtype=%d action=%s client=%s text=%s",
                                        i, menu.entries[i].enabled ? 1 : 0, keys[i],
                                        mp_ev_key, mp_ev_type,
                                        actions[i].c_str(),
+                                       client_actions[i].c_str(),
                                        menu.entries[i].txt.c_str() ) );
         }
         if( mp_test_pick >= static_cast<int>( targets.size() ) ) {
@@ -4257,7 +4258,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
             } else if( client_actions[i] == "examine_vehicle" ) {
                 if( const optional_vpart_position mp_vp =
                         get_map().veh_at( get_avatar().pos_bub() ) ) {
+                    mp_inv_log( "action: examine_vehicle -> native" );
                     g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                    mp_inv_log( "action: examine_vehicle closed" );
+                } else {
+                    mp_inv_log( "action: examine_vehicle no vehicle" );
                 }
             } else {
                 netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
@@ -4301,7 +4306,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
         } else if( ca == "examine_vehicle" ) {
             if( const optional_vpart_position mp_vp =
                     get_map().veh_at( get_avatar().pos_bub() ) ) {
+                mp_inv_log( "action: examine_vehicle -> native" );
                 g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
+                mp_inv_log( "action: examine_vehicle closed" );
+            } else {
+                mp_inv_log( "action: examine_vehicle no vehicle" );
             }
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
