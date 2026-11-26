@@ -4210,6 +4210,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 if( !uid.empty() ) {
                     netplay::client_send_intent( "vehicle_faucet_fill", 0, {}, uid );
                 }
+            } else if( client_actions[i] == "lockpick" ) {
+                netplay::client_send_intent( "vehicle_lockpick", 0, {} );
             } else {
                 netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
             }
@@ -4245,6 +4247,8 @@ static void mp_run_vehicle_menu( const std::string &payload )
             if( !uid.empty() ) {
                 netplay::client_send_intent( "vehicle_faucet_fill", 0, {}, uid );
             }
+        } else if( ca == "lockpick" ) {
+            netplay::client_send_intent( "vehicle_lockpick", 0, {} );
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
         }

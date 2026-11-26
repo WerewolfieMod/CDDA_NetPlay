@@ -55,6 +55,7 @@
 #include "item.h"
 #include "item_group.h"
 #include "itype.h"
+#include "iexamine.h"
 #include "input_context.h"
 #include "json.h"
 #include "json_loader.h"
@@ -6747,6 +6748,8 @@ static void mp_send_vehicle_menu( int sid, npc &av )
                 client_action = "engines";
             } else if( it._hotkey_action.value() == "FAUCET_FILL" ) {
                 client_action = "faucet_fill";
+            } else if( it._hotkey_action.value() == "LOCKPICK" ) {
+                client_action = "lockpick";
             }
         }
         const bool client_handled = !client_action.empty();
@@ -7838,6 +7841,27 @@ static bool mp_cmd_vehicle_faucet_fill( const netplay::intent_request &in )
         std::fprintf( f, "vehicle faucet fill sid=%d part=%d filled=%d uid=%s\n",
                       in.sid, tank_idx, filled, in.data.c_str() );
         std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_lockpick( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-314: pick-only path for a locked vehicle door. The stock
+    // iexamine::locked_object would call iuse::crowbar, whose pry branch opens
+    // a host-side map cursor (choose_adjacent_highlight).
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    iexamine::locked_object_pickable( *av, av->pos_bub() );
+    mp_forward_new_messages( in.sid, msg_before );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
     }
     return true;
 }
@@ -9376,6 +9400,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_mend", mp_cmd_vehicle_mend );
         r.emplace( "vehicle_siphon", mp_cmd_vehicle_siphon );
         r.emplace( "vehicle_faucet_fill", mp_cmd_vehicle_faucet_fill );
+        r.emplace( "vehicle_lockpick", mp_cmd_vehicle_lockpick );
         r.emplace( "vehicle_unload", mp_cmd_vehicle_unload );
         r.emplace( "vehicle_shape", mp_cmd_vehicle_shape );
         r.emplace( "vehicle_crew", mp_cmd_vehicle_crew );
