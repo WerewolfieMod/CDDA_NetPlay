@@ -6770,7 +6770,42 @@ static void mp_send_vehicle_menu( int sid, npc &av )
         js.member( "desc", desc );
         js.member( "enabled", enabled );
         js.member( "action", it._hotkey_action.value_or( "" ) );
-        js.member( "key", mp_vehicle_menu_key( it ) );
+        const int mp_key = mp_vehicle_menu_key( it );
+        // DDA MP v4.0a-313: send the full input_event (type/sequence/mods),
+        // not just the first input, so shifted/modified bindings survive.
+        int mp_key_type = -1;
+        std::string mp_key_seq;
+        int mp_key_mods = 0;
+        if( it._hotkey_action.has_value() && !it._hotkey_action->empty() ) {
+            const std::vector<input_event> mp_keys =
+                input_context( "VEHICLE" ).keys_bound_to( *it._hotkey_action,
+                        /* maximum_modifier_count = */ 1 );
+            if( !mp_keys.empty() ) {
+                const input_event &mp_ev = mp_keys.front();
+                mp_key_type = static_cast<int>( mp_ev.type );
+                for( size_t si = 0; si < mp_ev.sequence.size(); ++si ) {
+                    if( si > 0 ) {
+                        mp_key_seq += ',';
+                    }
+                    mp_key_seq += std::to_string( mp_ev.sequence[si] );
+                }
+                for( const keymod_t m : mp_ev.modifiers ) {
+                    if( m == keymod_t::ctrl ) {
+                        mp_key_mods |= 1;
+                    } else if( m == keymod_t::alt ) {
+                        mp_key_mods |= 2;
+                    } else if( m == keymod_t::shift ) {
+                        mp_key_mods |= 4;
+                    }
+                }
+            }
+        }
+        js.member( "key", mp_key );
+        if( mp_key_type >= 0 ) {
+            js.member( "key_type", mp_key_type );
+            js.member( "key_seq", mp_key_seq );
+            js.member( "key_mods", mp_key_mods );
+        }
         if( client_handled ) {
             js.member( "client_action", client_action );
         }

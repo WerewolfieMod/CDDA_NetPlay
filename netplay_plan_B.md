@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-312`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup, range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher. Пункты 1.1/1.3 закрыты переходом на native `veh_interact`; 1.2/7 остаются частично (P3-5): smart engine, turret aim/reload, use tool, workbench, EOC, lockpick.
+Статус на `ddamp-v4.0a-313`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup, range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge + planter, washing machine/dishwasher; пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`. Пункты 1.1/1.3 закрыты переходом на native `veh_interact`; 1.2 остаётся частично (P3-5): smart engine, turret aim/reload, use tool, workbench, EOC, lockpick.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -521,6 +521,7 @@ JSON/mapgen:
 | 2026-11-26 | ddamp-v4.0a-310 | Engine-start parity: вместо `start_engines_direct()` используется ванильный `start_engines()` activity (время/условия); сообщения activity пересылаются клиенту после завершения; тесты GOLF/HOTWIRE завершают activity синхронно | `take ... drv=1 engine=1 starting=1` (hotwire и golf); меню/ручник/гудок/трекинг без регрессий |
 | 2026-11-26 | ddamp-v4.0a-311 | P3-5: мост `query_int` (host prompt → client), включён `USE_PLANTER` (query_seed uilist + int); washing machine/dishwasher используют сессионного персонажа и включены в safe-меню | `test int prompt sid=1 ok=1 value=77`; planter/washer — сборка, без рантайм-прогона (нужны детали машины) |
 | 2026-11-26 | ddamp-v4.0a-312 | P3-5: faucet fill — клиентский выбор контейнера (`faucet_fill` client action) + intent `vehicle_faucet_fill`; тестовый сценарий `DDA_MP_TEST_FAUCET` (отдельный водяной бак, faucet part, пустая бутылка) | `vehicle menu row ... FAUCET_FILL enabled=1`; `vehicle faucet fill sid=1 part=80 filled=2`; клиент: `You fill the ... with water` |
+| 2026-11-26 | ddamp-v4.0a-313 | Аудит §7: bridged-меню `^` передаёт полный `input_event` (type/sequence/modifiers), клиент восстанавливает его в `uilist_entry.hotkey` | faucet suite: `key=101 evkey=101 evtype=2` (и все строки совпали); `FAUCET_FILL` и fill без регрессий |
 
 ### 9.3. Что протестировано
 
@@ -555,6 +556,7 @@ JSON/mapgen:
 | 2026-11-26 | P7-1 | Engine start через ванильную activity | hotwire/golf: `take ... drv=1 engine=1 starting=1`; меню/ручник/гудок/трекинг без регрессий |
 | 2026-11-26 | P3-5 | `query_int` bridge + auto-answer (`DDA_MP_TEST_PROMPT_INT`) | host `test int prompt sid=1 ok=1 value=77`; client `prompt: auto int 77` |
 | 2026-11-26 | P3-5 | Faucet fill через меню (`DDA_MP_TEST_FAUCET`) | `vehicle menu row ... FAUCET_FILL enabled=1`; `vehicle faucet fill sid=1 part=80 filled=2`; client `You fill the ... with water` |
+| 2026-11-26 | P3-5 | Полный `input_event` в bridged vehicle menu | все строки: `key == evkey`, `evtype=2`; `FAUCET_FILL` и fill без регрессий |
 
 ### 9.4. Следующие 5 задач
 

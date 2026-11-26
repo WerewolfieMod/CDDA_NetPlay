@@ -4121,8 +4121,37 @@ static void mp_run_vehicle_menu( const std::string &payload )
         int idx = 0;
         for( JsonObject e : jo.get_array( "entries" ) ) {
             const int mp_hotkey = e.has_int( "key" ) ? e.get_int( "key" ) : MENU_AUTOASSIGN;
-            menu.addentry( uilist_entry( idx, e.get_bool( "enabled" ), mp_hotkey,
-                                         e.get_string( "text" ), e.get_string( "desc" ) ) );
+            uilist_entry mp_entry( idx, e.get_bool( "enabled" ), mp_hotkey,
+                                   e.get_string( "text" ), e.get_string( "desc" ) );
+            // DDA MP v4.0a-313: restore the full host input_event so modified
+            // and shifted bindings match the host exactly.
+            if( e.has_int( "key_type" ) ) {
+                input_event mp_ev{};
+                mp_ev.type = static_cast<input_event_t>( e.get_int( "key_type" ) );
+                const std::string mp_seq =
+                    e.has_string( "key_seq" ) ? e.get_string( "key_seq" ) : std::string();
+                std::stringstream mp_ss( mp_seq );
+                std::string mp_part;
+                while( std::getline( mp_ss, mp_part, ',' ) ) {
+                    if( !mp_part.empty() ) {
+                        mp_ev.sequence.push_back( std::atoi( mp_part.c_str() ) );
+                    }
+                }
+                const int mp_mods = e.has_int( "key_mods" ) ? e.get_int( "key_mods" ) : 0;
+                if( mp_mods & 1 ) {
+                    mp_ev.modifiers.insert( keymod_t::ctrl );
+                }
+                if( mp_mods & 2 ) {
+                    mp_ev.modifiers.insert( keymod_t::alt );
+                }
+                if( mp_mods & 4 ) {
+                    mp_ev.modifiers.insert( keymod_t::shift );
+                }
+                if( !mp_ev.sequence.empty() ) {
+                    mp_entry.hotkey = mp_ev;
+                }
+            }
+            menu.addentry( mp_entry );
             keys.push_back( mp_hotkey );
             client_actions.push_back( e.has_string( "client_action" ) ?
                                       e.get_string( "client_action" ) : std::string() );
@@ -4148,8 +4177,13 @@ static void mp_run_vehicle_menu( const std::string &payload )
             }
         }
         for( int i = 0; i < static_cast<int>( actions.size() ); ++i ) {
-            mp_inv_log( string_format( "vehicle menu row %d enabled=%d key=%d action=%s text=%s",
+            const int mp_ev_key = menu.entries[i].hotkey ?
+                                  menu.entries[i].hotkey->get_first_input() : -1;
+            const int mp_ev_type = menu.entries[i].hotkey ?
+                                   static_cast<int>( menu.entries[i].hotkey->type ) : -1;
+            mp_inv_log( string_format( "vehicle menu row %d enabled=%d key=%d evkey=%d evtype=%d action=%s text=%s",
                                        i, menu.entries[i].enabled ? 1 : 0, keys[i],
+                                       mp_ev_key, mp_ev_type,
                                        actions[i].c_str(),
                                        menu.entries[i].txt.c_str() ) );
         }
