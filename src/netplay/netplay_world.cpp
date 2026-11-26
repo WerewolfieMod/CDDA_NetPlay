@@ -127,6 +127,8 @@ static const itype_id itype_corpse( "corpse" );
 static const itype_id fuel_type_battery( "battery" );
 static const itype_id fuel_type_animal( "animal" );
 static const itype_id itype_plut_cell( "plut_cell" );
+static const itype_id itype_water_clean( "water_clean" );
+static const itype_id itype_water( "water" );
 static const trait_id trait_DEBUG_HS( "DEBUG_HS" );
 
 /* ------------------------------------------------------------------ */
@@ -5226,7 +5228,8 @@ void host_pump_client_actions()
                         break;
                     }
                     if( std::getenv( "DDA_MP_TEST_GOLF" ) != nullptr ||
-                        std::getenv( "DDA_MP_TEST_HOTWIRE" ) != nullptr ) {
+                        std::getenv( "DDA_MP_TEST_HOTWIRE" ) != nullptr ||
+                        std::getenv( "DDA_MP_TEST_FAUCET" ) != nullptr ) {
                         // Test shortcut: finish the start activity immediately.
                         for( int guard = 0; guard < 10 && av->activity; ++guard ) {
                             av->set_moves( av->activity.moves_left + 100 );
@@ -6742,6 +6745,8 @@ static void mp_send_vehicle_menu( int sid, npc &av )
                 client_action = "items";
             } else if( it._hotkey_action.value() == "CONTROL_ENGINES" ) {
                 client_action = "engines";
+            } else if( it._hotkey_action.value() == "FAUCET_FILL" ) {
+                client_action = "faucet_fill";
             }
         }
         const bool client_handled = !client_action.empty();
@@ -7245,6 +7250,28 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
             item screwdriver( itype_id( "screwdriver" ) );
             av.i_add_or_drop( screwdriver );
         }
+        if( std::getenv( "DDA_MP_TEST_FAUCET" ) != nullptr ) {
+            // Faucet-fill test: install a faucet plus a dedicated water tank,
+            // keep the stock tank on gasoline so the engine still starts, and
+            // give the avatar an empty bottle.
+            veh->install_part( here, point_rel_ms( 0, 0 ), vpart_id( "water_faucet" ) );
+            const int water_tank = veh->install_part( here, point_rel_ms( 0, 0 ),
+                                                      vpart_id( "tank" ) );
+            for( int i = 0; i < veh->part_count(); ++i ) {
+                vehicle_part &pt = veh->part( i );
+                if( pt.is_battery() ) {
+                    pt.ammo_set( itype_id( "battery" ), 1000 );
+                } else if( pt.is_tank() ) {
+                    if( i == water_tank ) {
+                        pt.ammo_set( itype_water_clean, 200 );
+                    } else {
+                        pt.ammo_set( itype_id( "gasoline" ), 200 );
+                    }
+                }
+            }
+            item empty_bottle( itype_id( "bottle_plastic" ) );
+            av.i_add_or_drop( empty_bottle );
+        }
         std::string inv;
         int inv_count = 0;
         for( item *it : av.inv_dump() ) {
@@ -7702,6 +7729,79 @@ static bool mp_cmd_vehicle_siphon( const netplay::intent_request &in )
                       "vehicle siphon sid=%d part=%d drained=%d via_uid=%d tank=%d base_empty=%d base_charges=%d type=%s\n",
                       in.sid, idx, drained, in.data.empty() ? 0 : 1, pt.is_tank() ? 1 : 0,
                       base.empty() ? 1 : 0, base_charges, base.typeId().str().c_str() );
+        std::fclose( f );
+    }
+    return true;
+}
+
+static bool mp_cmd_vehicle_faucet_fill( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-312: fill a carried container from a vehicle water tank.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    const optional_vpart_position vp = get_map().veh_at( av->pos_bub() );
+    if( !vp ) {
+        return true;
+    }
+    vehicle &veh = vp->vehicle();
+    int tank_idx = -1;
+    item water;
+    for( const itype_id &preferred : { itype_water_clean, itype_water } ) {
+        for( int i = 0; i < veh.part_count() && tank_idx < 0; ++i ) {
+            vehicle_part &pt = veh.part( i );
+            if( !pt.is_tank() ) {
+                continue;
+            }
+            const item &base = pt.get_base();
+            if( base.empty() ) {
+                continue;
+            }
+            const item &liquid = base.legacy_front();
+            if( liquid.typeId() == preferred && liquid.made_of( phase_id::LIQUID ) ) {
+                tank_idx = i;
+                water = liquid;
+            }
+        }
+        if( tank_idx >= 0 ) {
+            break;
+        }
+    }
+    if( tank_idx < 0 || water.charges <= 0 ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "The vehicle has no water in its tanks." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    item_location cont = av_find_by_uid( *av, in.data );
+    int filled = 0;
+    if( !cont || !cont->is_watertight_container() ) {
+        netplay::host_send_event_to_sid(
+            in.sid, netplay::fork_text( "That container moved." ),
+            static_cast<int>( m_info ) );
+    } else {
+        const int cap = cont->get_remaining_capacity_for_liquid( water, false );
+        if( cap > 0 ) {
+            filled = cont->fill_with( water, std::min( cap, water.charges ) );
+            if( filled > 0 ) {
+                veh.drain( get_map(), tank_idx, filled );
+                netplay::host_send_event_fmt_to_sid(
+                    in.sid, "You fill the %s with water.", { cont->tname() },
+                    static_cast<int>( m_info ) );
+            }
+        } else {
+            netplay::host_send_event_to_sid(
+                in.sid, netplay::fork_text( "That container can't hold water." ),
+                static_cast<int>( m_info ) );
+        }
+    }
+    av_mark_acted( in.sid );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "vehicle faucet fill sid=%d part=%d filled=%d uid=%s\n",
+                      in.sid, tank_idx, filled, in.data.c_str() );
         std::fclose( f );
     }
     return true;
@@ -8374,7 +8474,11 @@ static bool mp_cmd_vehicle_refuel( const netplay::intent_request &in )
         }
     }
     const int want_part = in.args.empty() ? -1 : in.args[0];
-    mp_vehicle_refuel( in.sid, *av, want_part, in.data );
+    // The faucet test pre-fills the tank with water; do not add gasoline.
+    const char *mp_faucet_env = std::getenv( "DDA_MP_TEST_FAUCET" );
+    if( mp_faucet_env == nullptr || mp_faucet_env[0] == '\0' ) {
+        mp_vehicle_refuel( in.sid, *av, want_part, in.data );
+    }
     av_mark_acted( in.sid );
     av_send_status( in.sid );
     av_send_session_picture( in.sid, av->pos_bub(), av );
@@ -9236,6 +9340,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_remove", mp_cmd_vehicle_remove );
         r.emplace( "vehicle_mend", mp_cmd_vehicle_mend );
         r.emplace( "vehicle_siphon", mp_cmd_vehicle_siphon );
+        r.emplace( "vehicle_faucet_fill", mp_cmd_vehicle_faucet_fill );
         r.emplace( "vehicle_unload", mp_cmd_vehicle_unload );
         r.emplace( "vehicle_shape", mp_cmd_vehicle_shape );
         r.emplace( "vehicle_crew", mp_cmd_vehicle_crew );

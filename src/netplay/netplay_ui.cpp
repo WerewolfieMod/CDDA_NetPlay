@@ -4056,6 +4056,49 @@ static void mp_run_vehicle_info( const std::string &payload )
     mp_inv_log( "ui: vehicle info closed" );
 }
 
+/* DDA MP v4.0a-312: pick a carried watertight container for a liquid transfer.
+ * Test hooks can force the uid or auto-pick the first suitable container. */
+static std::string mp_pick_liquid_container( const itype_id &liquid_type )
+{
+    if( const char *test_uid = std::getenv( "DDA_MP_TEST_CONTAINER_UID" );
+        test_uid != nullptr && test_uid[0] != '\0' ) {
+        return test_uid;
+    }
+    item liquid( liquid_type );
+    std::vector<std::string> uids;
+    uilist menu;
+    menu.text = _( "Fill which container?" );
+    get_avatar().visit_items( [&]( const item_location &il ) {
+        if( !il || !il->is_watertight_container() ) {
+            return VisitResponse::NEXT;
+        }
+        const std::string uid = il->get_var( "mp_uid", std::string() );
+        const int cap = il->get_remaining_capacity_for_liquid( liquid, false );
+        if( uid.empty() || cap <= 0 ) {
+            return VisitResponse::NEXT;
+        }
+        uids.push_back( uid );
+        menu.addentry( static_cast<int>( uids.size() ) - 1, true, -1,
+                       string_format( "%s (%d)", il->tname(), cap ) );
+        return VisitResponse::NEXT;
+    } );
+    if( uids.empty() ) {
+        if( std::getenv( "DDA_MP_TEST_CONTAINER_AUTO" ) == nullptr ) {
+            popup( _( "You have no suitable container." ) );
+        }
+        return std::string();
+    }
+    if( const char *auto_pick = std::getenv( "DDA_MP_TEST_CONTAINER_AUTO" );
+        auto_pick != nullptr && auto_pick[0] != '\0' ) {
+        return uids.front();
+    }
+    menu.query();
+    if( menu.ret < 0 || menu.ret >= static_cast<int>( uids.size() ) ) {
+        return std::string();
+    }
+    return uids[menu.ret];
+}
+
 /* DDA MP v4.0a-282: the host-built vehicle interact menu. The host sends the
  * labels/descriptions/flags of its own build_interact_menu() and runs the
  * selected row for this session avatar. Entries that need a host-side modal
@@ -4128,6 +4171,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
                 netplay::client_send_client_action( ACTION_PICKUP );
             } else if( client_actions[i] == "engines" ) {
                 netplay::client_send_intent( "vehicle_engine_menu", 0, {} );
+            } else if( client_actions[i] == "faucet_fill" ) {
+                const std::string uid = mp_pick_liquid_container( itype_id( "water" ) );
+                if( !uid.empty() ) {
+                    netplay::client_send_intent( "vehicle_faucet_fill", 0, {}, uid );
+                }
             } else {
                 netplay::client_send_intent( "vehicle_menu_select", 0, { generation, i } );
             }
@@ -4158,6 +4206,11 @@ static void mp_run_vehicle_menu( const std::string &payload )
             netplay::client_send_client_action( ACTION_PICKUP );
         } else if( ca == "engines" ) {
             netplay::client_send_intent( "vehicle_engine_menu", 0, {} );
+        } else if( ca == "faucet_fill" ) {
+            const std::string uid = mp_pick_liquid_container( itype_id( "water" ) );
+            if( !uid.empty() ) {
+                netplay::client_send_intent( "vehicle_faucet_fill", 0, {}, uid );
+            }
         } else {
             netplay::client_send_intent( "vehicle_menu_select", 0, { generation, menu.ret } );
         }
@@ -8822,6 +8875,37 @@ void run_view_loop()
                             } else if( mp_hot_phase == 3 && mp_hot_ms > 8000 ) {
                                 mp_inv_log( "test: hotwire done" );
                                 ++mp_hot_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "faucet_test" ) {
+                        static int mp_faucet_phase = 0;
+                        static auto mp_faucet_t0 = std::chrono::steady_clock::now();
+                        if( mp_faucet_phase == 0 ) {
+                            mp_faucet_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: faucet spawn car" );
+                            ++mp_faucet_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_faucet_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_faucet_t0 ).count();
+                            if( mp_faucet_phase == 1 && mp_faucet_ms > 2500 ) {
+                                netplay::client_send_client_action( ACTION_CONTROL_VEHICLE );
+                                mp_inv_log( "test: faucet control" );
+                                ++mp_faucet_phase;
+                                sent = false;
+                            } else if( mp_faucet_phase == 2 && mp_faucet_ms > 5000 ) {
+                                netplay::client_send_intent( "vehicle_menu", 0, {} );
+                                mp_inv_log( "test: faucet menu request" );
+                                ++mp_faucet_phase;
+                                sent = false;
+                            } else if( mp_faucet_phase == 3 && mp_faucet_ms > 8500 ) {
+                                mp_inv_log( "test: faucet done" );
+                                ++mp_faucet_phase;
                                 sent = true;
                             } else {
                                 sent = false;
