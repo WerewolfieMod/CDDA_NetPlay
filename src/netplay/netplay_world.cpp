@@ -7549,10 +7549,12 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
             // Washer/dishwasher runtime test vehicle: water tank, battery,
             // filthy cargo and detergent.
             tripoint_bub_ms ctrl_pos = veh->bub_part_pos( here, veh->part( 0 ) );
+            point_rel_ms ctrl_mount( 0, 0 );
             for( int i = 0; i < veh->part_count(); ++i ) {
                 vehicle_part &pt = veh->part( i );
                 if( pt.info().has_flag( "CONTROLS" ) ) {
                     ctrl_pos = veh->bub_part_pos( here, pt );
+                    ctrl_mount = pt.mount;
                 } else if( pt.is_battery() ) {
                     pt.ammo_set( itype_id( "battery" ), 5000 );
                 } else if( pt.is_tank() ) {
@@ -7571,9 +7573,34 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                 item detergent_item( itype_id( "detergent" ) );
                 av.i_add_or_drop( detergent_item );
             }
+            item seeds( itype_id( "seed_wheat" ) );
+            av.i_add_or_drop( seeds );
+            int seed_part = -1;
+            const vpart_info &seed_info = vpart_id( "seed_drill" ).obj();
+            for( const point &off : { point( 1, 0 ), point( 1, 1 ), point( 0, 2 ),
+                                      point( 1, 2 ), point( -2, 0 ), point( -2, 1 ),
+                                      point( -1, 2 ) } ) {
+                const point_rel_ms mount( ctrl_mount.x() + off.x, ctrl_mount.y() + off.y );
+                if( veh->can_mount( mount, seed_info ).success() ) {
+                    seed_part = veh->install_part( here, mount, vpart_id( "seed_drill" ) );
+                    if( seed_part >= 0 ) {
+                        // Normal installs go through the activity actor, which
+                        // refreshes the map's vehicle cache; the direct test
+                        // install must do it too or veh_at misses the new tile.
+                        here.add_vehicle_to_cache( veh );
+                        break;
+                    }
+                }
+            }
             av.setpos( here, ctrl_pos, false );
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
-                std::fprintf( f, "test utility pos=%d,%d\n", ctrl_pos.x(), ctrl_pos.y() );
+                const tripoint_bub_ms seed_pos = seed_part >= 0 ?
+                                                 veh->bub_part_pos( here, seed_part ) :
+                                                 ctrl_pos;
+                const optional_vpart_position vp_seed = here.veh_at( seed_pos );
+                std::fprintf( f, "test utility pos=%d,%d seed=%d cargo=%d\n",
+                              ctrl_pos.x(), ctrl_pos.y(), seed_part,
+                              vp_seed && vp_seed->cargo().has_value() ? 1 : 0 );
                 std::fclose( f );
             }
         }
@@ -9371,11 +9398,14 @@ static bool mp_cmd_test_vehicle_utility( const netplay::intent_request &in )
     vehicle &veh = vp->vehicle();
     int wm = -1;
     int dw = -1;
+    int planter = -1;
     for( int i = 0; i < veh.part_count(); ++i ) {
         if( veh.part( i ).info().has_flag( "WASHING_MACHINE" ) ) {
             wm = i;
         } else if( veh.part( i ).info().has_flag( "DISHWASHER" ) ) {
             dw = i;
+        } else if( veh.part( i ).info().has_flag( "PLANTER" ) ) {
+            planter = i;
         }
     }
     g->mp_anchor_map_on( *av, true );
@@ -9389,11 +9419,32 @@ static bool mp_cmd_test_vehicle_utility( const netplay::intent_request &in )
         if( dw >= 0 ) {
             veh.use_dishwasher( here, dw );
         }
+        if( planter >= 0 ) {
+            veh.reload_seeds( &here, veh.bub_part_pos( here, planter ) );
+        }
+    }
+    int seed_count = 0;
+    for( int i = 0; i < veh.part_count(); ++i ) {
+        for( const item &it : veh.get_items( veh.part( i ) ) ) {
+            if( it.typeId() == itype_id( "seed_wheat" ) ) {
+                seed_count += it.count_by_charges() ? it.charges : it.count();
+            }
+        }
+    }
+    int ground_seeds = 0;
+    const tripoint_bub_ms planter_pos = planter >= 0 ?
+                                        veh.bub_part_pos( here, planter ) : av->pos_bub();
+    for( const item &it : here.i_at( planter_pos ) ) {
+        if( it.typeId() == itype_id( "seed_wheat" ) ) {
+            ground_seeds += it.count_by_charges() ? it.charges : it.count();
+        }
     }
     mp_ctrl_log( string_format(
-                     "test utility sid=%d wm=%d/%d dw=%d/%d", in.sid,
+                     "test utility sid=%d wm=%d/%d dw=%d/%d planter=%d seeds=%d ground=%d",
+                     in.sid,
                      wm, wm >= 0 && veh.part( wm ).enabled ? 1 : 0,
-                     dw, dw >= 0 && veh.part( dw ).enabled ? 1 : 0 ) );
+                     dw, dw >= 0 && veh.part( dw ).enabled ? 1 : 0,
+                     planter, seed_count, ground_seeds ) );
     netplay::host_forward_new_messages( in.sid, msg_before );
     av_send_status( in.sid );
     av_send_session_picture( in.sid, av->pos_bub(), av );
