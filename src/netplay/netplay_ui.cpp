@@ -7303,7 +7303,26 @@ static void mp_run_prompt( const netplay::prompt_request &pr )
             return;
         }
     }
-    if( pr.type == netplay::prompt_type::query_yn ) {
+    if( pr.type == netplay::prompt_type::direction ) {
+        // DDA MP v4.0a-332 test hook: answer a bridged direction without a
+        // human at the client.
+        if( const char *test_dir = std::getenv( "DDA_MP_TEST_PROMPT_DIR" );
+            test_dir != nullptr && test_dir[0] != '\0' ) {
+            ans.canceled = false;
+            ans.retval = 1;
+            ans.text = test_dir;
+            netplay::client_send_prompt_answer( ans );
+            mp_inv_log( std::string( "prompt: auto dir " ) + test_dir );
+            return;
+        }
+        const std::optional<tripoint_rel_ms> dir =
+            choose_direction( pr.text, pr.max_length != 0 );
+        ans.canceled = !dir;
+        ans.retval = dir ? 1 : 0;
+        if( dir ) {
+            ans.text = string_format( "%d,%d,%d", dir->x(), dir->y(), dir->z() );
+        }
+    } else if( pr.type == netplay::prompt_type::query_yn ) {
         ans.canceled = false;
         ans.retval = query_yn( "%s", pr.text ) ? 1 : 0;
     } else if( pr.type == netplay::prompt_type::string_input ) {
@@ -9515,6 +9534,19 @@ void run_view_loop()
                                 mp_pc_sent = true;
                                 netplay::client_send_intent( "test_prompt_chain", 0, {} );
                                 mp_inv_log( "test: prompt chain" );
+                            }
+                        }
+                    } else if( action_name == "direction_prompt" ) {
+                        static bool mp_dp_sent = false;
+                        static auto mp_dp_t0 = std::chrono::steady_clock::now();
+                        if( !mp_dp_sent ) {
+                            if( std::chrono::steady_clock::now() - mp_dp_t0 <
+                                std::chrono::seconds( 3 ) ) {
+                                sent = false;
+                            } else {
+                                mp_dp_sent = true;
+                                netplay::client_send_intent( "test_direction_prompt", 0, {} );
+                                mp_inv_log( "test: direction prompt" );
                             }
                         }
                     } else if( action_name == "hotwire" ) {

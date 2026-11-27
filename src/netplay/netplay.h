@@ -208,7 +208,8 @@ enum class prompt_type : uint8_t {
     query_yn = 0,    ///< text only; answer.retval = 1 yes / 0 no
     uilist = 1,      ///< title + entries; answer.retval/index
     string_input = 2, ///< title + value; answer.text
-    query_int = 3    ///< title + value; answer.text parsed as int
+    query_int = 3,   ///< title + value; answer.text parsed as int
+    direction = 4    ///< message; max_length = allow_vertical; answer.text = dx,dy,dz
 };
 struct prompt_entry {
     std::string txt;
@@ -792,6 +793,10 @@ std::optional<std::string> host_prompt_string( const std::string &title,
 /// owner/client gone or the prompt was canceled.
 std::optional<int> host_prompt_int( const std::string &text, int value,
                                     bool show_default );
+/// DDA MP v4.0a-332: ask the owning session for a direction (choose_direction).
+/// nullopt = no owner/client gone or the prompt was canceled.
+std::optional<tripoint_rel_ms> host_prompt_direction( const std::string &message,
+        bool allow_vertical );
 /// DDA MP: send local-frame creature facts for the aim panel.
 bool host_send_aim_targets_to_sid( int sid, const std::vector<aim_target> &list );
 /// Client side: latest aim target list.

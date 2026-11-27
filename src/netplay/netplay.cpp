@@ -66,7 +66,7 @@ namespace netplay
 static_assert( sizeof( socket_t ) == 8, "socket_t width" );
 
 /// DDA MP v4.0a-326: bumped with the data-manifest handshake.
-static constexpr const char *NETPLAY_VERSION = "4.0a-331";
+static constexpr const char *NETPLAY_VERSION = "4.0a-332";
 
 std::string data_manifest_hash()
 {
@@ -3258,6 +3258,38 @@ std::optional<int> host_prompt_int( const std::string &text, int value, bool sho
     } catch( ... ) {
         return std::nullopt;
     }
+}
+
+std::optional<tripoint_rel_ms> host_prompt_direction( const std::string &message,
+        bool allow_vertical )
+{
+    if( host_prompt_owner() == 0 || !host_is_running() ) {
+        return std::nullopt;
+    }
+    prompt_request pr;
+    pr.type = prompt_type::direction;
+    pr.text = message;
+    pr.max_length = allow_vertical ? 1 : 0;
+    {
+        std::lock_guard<std::mutex> lk( state.prompt_mutex );
+        pr.id = state.prompt_next_id++;
+        state.prompt_has_answer = false;
+    }
+    const auto ans = mp_wait_prompt_answer( pr );
+    if( !ans || ans->canceled || ans->text.empty() ) {
+        return std::nullopt;
+    }
+    int dx = 0;
+    int dy = 0;
+    int dz = 0;
+    if( std::sscanf( ans->text.c_str(), "%d,%d,%d", &dx, &dy, &dz ) < 2 ) {
+        return std::nullopt;
+    }
+    if( dx < -1 || dx > 1 || dy < -1 || dy > 1 ||
+        ( !allow_vertical && dz != 0 ) || dz < -1 || dz > 1 ) {
+        return std::nullopt;
+    }
+    return tripoint_rel_ms( dx, dy, dz );
 }
 
 bool host_send_minimap_to_sid( int sid, const minimap_frame &mm )

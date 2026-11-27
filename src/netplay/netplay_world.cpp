@@ -9602,6 +9602,25 @@ static bool mp_cmd_test_prompt_chain( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_direction_prompt( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-332 test: the host asks for a direction and the client's
+    // choose_direction answer comes back through the prompt bridge.
+    const std::optional<tripoint_rel_ms> dir =
+        choose_direction( netplay::fork_text( "Test direction" ), false );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test direction prompt sid=%d ok=%d dx=%d dy=%d dz=%d\n",
+                      in.sid, dir ? 1 : 0, dir ? dir->x() : 0,
+                      dir ? dir->y() : 0, dir ? dir->z() : 0 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "direction prompt ok=%d dx=%d dy=%d",
+                               dir ? 1 : 0, dir ? dir->x() : 0, dir ? dir->y() : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10445,6 +10464,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_vehicle_utility", mp_cmd_test_vehicle_utility );
         r.emplace( "manifest_check", mp_cmd_manifest_check );
         r.emplace( "test_prompt_chain", mp_cmd_test_prompt_chain );
+        r.emplace( "test_direction_prompt", mp_cmd_test_direction_prompt );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

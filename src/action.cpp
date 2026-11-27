@@ -1196,6 +1196,11 @@ std::optional<tripoint_rel_ms> choose_direction( const std::string &message,
         const std::function<std::pair<bool, std::optional<tripoint_rel_ms>>(
             const input_context &ctxt, const std::string &action )> &action_cb )
 {
+    // DDA MP v4.0a-332: a vanilla action running for a session avatar asks the
+    // owning client for the direction instead of opening the host's own prompt.
+    if( netplay::host_prompt_owner() != 0 ) {
+        return netplay::host_prompt_direction( message, allow_vertical );
+    }
     input_context ctxt( "DEFAULTMODE", keyboard_mode::keycode );
     if( timeout >= 0 ) {
         ctxt.set_timeout( timeout );
