@@ -1326,8 +1326,10 @@ std::optional<tripoint_bub_ms> choose_adjacent_highlight( map &here, const std::
         const std::string &failure_message, const std::function<bool( const tripoint_bub_ms & )> &allowed,
         const bool allow_vertical, const bool allow_autoselect )
 {
-    return choose_adjacent_highlight( here, get_avatar().pos_bub( here ), message, failure_message,
-                                      allowed,
+    // DDA MP v4.0a-333: use the overridden character (session avatar) so a
+    // host callback runs the prompt around the client's tile, not the host's.
+    return choose_adjacent_highlight( here, get_player_character().pos_bub( here ), message,
+                                      failure_message, allowed,
                                       allow_vertical, allow_autoselect );
 }
 

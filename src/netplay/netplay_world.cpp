@@ -6907,8 +6907,9 @@ static void mp_execute_vehicle_menu( int sid, int generation, int index )
     }
     const veh_menu_item &chosen = built.items[index];
     const bool safe = mp_vehicle_menu_safe( chosen );
+    const bool client_handled = chosen._client_action.has_value();
     const bool locked = chosen._check_locked && built.locked;
-    if( !safe || !chosen._enabled || locked || !chosen._on_submit ) {
+    if( ( !safe && !client_handled ) || !chosen._enabled || locked || !chosen._on_submit ) {
         netplay::host_send_event_to_sid(
             sid, netplay::fork_text( "That vehicle action is not available on the client." ),
             static_cast<int>( m_info ) );
@@ -7593,6 +7594,35 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                 }
             }
             av.setpos( here, ctrl_pos, false );
+            if( std::getenv( "DDA_MP_TEST_TIEDOWN" ) != nullptr ) {
+                // Tiedown test: a cargo_space next to the controls and a
+                // movable bench on a free adjacent tile.
+                const vpart_info &cargo_info = vpart_id( "cargo_space" ).obj();
+                const point_rel_ms cargo_mount( ctrl_mount.x(), ctrl_mount.y() - 1 );
+                if( veh->can_mount( cargo_mount, vpart_id( "frame" ).obj() ).success() ) {
+                    veh->install_part( here, cargo_mount, vpart_id( "frame" ) );
+                }
+                const int cargo_part = veh->can_mount( cargo_mount, cargo_info ).success() ?
+                                       veh->install_part( here, cargo_mount,
+                                                          vpart_id( "cargo_space" ) ) : -1;
+                if( cargo_part >= 0 ) {
+                    here.add_vehicle_to_cache( veh );
+                }
+                const tripoint_bub_ms furn_pos( ctrl_pos.x() + 1, ctrl_pos.y() + 1,
+                                                ctrl_pos.z() );
+                const bool furn_ok = here.inbounds( furn_pos ) &&
+                                     !here.veh_at( furn_pos ) && !here.has_furn( furn_pos );
+                if( furn_ok ) {
+                    here.furn_set( furn_pos, furn_str_id( "f_bench" ) );
+                }
+                av.set_str_base( 20 );
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test tiedown cargo=%d mount=%d,%d furn=%d pos=%d,%d\n",
+                                  cargo_part, cargo_mount.x(), cargo_mount.y(),
+                                  furn_ok ? 1 : 0, furn_pos.x(), furn_pos.y() );
+                    std::fclose( f );
+                }
+            }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 const tripoint_bub_ms seed_pos = seed_part >= 0 ?
                                                  veh->bub_part_pos( here, seed_part ) :
@@ -9621,6 +9651,38 @@ static bool mp_cmd_test_direction_prompt( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_tiedown_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-333 test: the tiedown callback stores the bench on the part.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    int part = -1;
+    bool stored = false;
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( vp ) {
+        for( int i = 0; i < vp->vehicle().part_count(); ++i ) {
+            if( vp->vehicle().part( i ).info().has_flag( "FURNITURE_TIEDOWN" ) ) {
+                part = i;
+                stored = !vp->vehicle().part( i ).get_base()
+                         .get_var( "tied_down_furniture", std::string() ).empty();
+                break;
+            }
+        }
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test tiedown verify sid=%d part=%d stored=%d\n",
+                      in.sid, part, stored ? 1 : 0 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "tiedown verify part=%d stored=%d", part, stored ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10465,6 +10527,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "manifest_check", mp_cmd_manifest_check );
         r.emplace( "test_prompt_chain", mp_cmd_test_prompt_chain );
         r.emplace( "test_direction_prompt", mp_cmd_test_direction_prompt );
+        r.emplace( "test_tiedown_verify", mp_cmd_test_tiedown_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

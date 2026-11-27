@@ -9813,6 +9813,37 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "tiedown_test" ) {
+                        static int mp_td_phase = 0;
+                        static auto mp_td_t0 = std::chrono::steady_clock::now();
+                        if( mp_td_phase == 0 ) {
+                            mp_td_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: tiedown spawn" );
+                            ++mp_td_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_td_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_td_t0 ).count();
+                            if( mp_td_phase == 1 && mp_td_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: tiedown examine" );
+                                ++mp_td_phase;
+                                sent = false;
+                            } else if( mp_td_phase == 2 && mp_td_ms > 6000 ) {
+                                netplay::client_send_intent( "test_tiedown_verify", 0, {} );
+                                mp_inv_log( "test: tiedown verify" );
+                                ++mp_td_phase;
+                                sent = false;
+                            } else if( mp_td_phase == 3 && mp_td_ms > 9000 ) {
+                                mp_inv_log( "test: tiedown done" );
+                                ++mp_td_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "examine_adjacent_test" ) {
                         static int mp_ea_phase = 0;
                         static auto mp_ea_t0 = std::chrono::steady_clock::now();

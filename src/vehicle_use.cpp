@@ -1687,8 +1687,9 @@ void vehicle::use_monster_capture( int part, map */*here*/, const tripoint_bub_m
         return;
     }
     item base = item( parts[part].get_base() );
-    // TODO: Use map aware invoke when available
-    base.type->invoke( &get_avatar(), base, pos );
+    // DDA MP v4.0a-333: activate for the scoped session character, not the
+    // host avatar.
+    base.type->invoke( &get_player_character(), base, pos );
     if( base.has_var( "contained_name" ) ) {
         parts[part].set_flag( vp_flag::animal_flag );
     } else {
@@ -1913,6 +1914,7 @@ void vehicle::build_bike_rack_menu( map &here, veh_menu &menu, int part )
         .enable( !has_this_name_racked )
         .hotkey_auto()
         .skip_locked_check()
+        .client_action( "bikerack" )
         .on_submit( [this, rackable] {
             bikerack_racking_activity_actor rack( *this, *rackable.veh, rackable.racks );
             get_player_character().assign_activity( rack );
@@ -1926,6 +1928,7 @@ void vehicle::build_bike_rack_menu( map &here, veh_menu &menu, int part )
         menu.add( string_format( _( "Remove the %s from the rack" ), unrackable.name ) )
         .hotkey_auto()
         .skip_locked_check()
+        .client_action( "bikerack" )
         .on_submit( [this, unrackable] {
             bikerack_unracking_activity_actor unrack( *this, unrackable.parts, unrackable.racks );
             get_player_character().assign_activity( unrack );
@@ -2911,6 +2914,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         const size_t mc_idx = vp_monster_capture->part_index();
         menu.add( _( "Capture or release a creature" ) )
         .hotkey( "USE_CAPTURE_MONSTER_VEH" )
+        .client_action( "monster_capture" )
         .on_submit( [this, mc_idx, vppos, here] { use_monster_capture( mc_idx, here, vppos ); } );
     }
 
@@ -2920,6 +2924,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         const size_t mc_idx = vp_furniture_tiedown->part_index();
         menu.add( _( "Tie down or remove a furniture" ) )
         .hotkey( "USE_TIEDOWN_FURNITURE_VEH" )
+        .client_action( "tiedown" )
         .on_submit( [this, mc_idx, vppos, here] { use_tiedown_furniture( mc_idx, here, vppos ); } );
     }
 
@@ -2933,6 +2938,7 @@ void vehicle::build_interact_menu( veh_menu &menu, map *here, const tripoint_bub
         const size_t hn_idx = vp_harness->part_index();
         menu.add( _( "Harness an animal" ) )
         .hotkey( "USE_ANIMAL_CTRL" )
+        .client_action( "harness" )
         .on_submit( [this, hn_idx, here, vppos] { use_harness( hn_idx, here, vppos ); } );
     }
 
