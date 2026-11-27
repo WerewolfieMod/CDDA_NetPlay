@@ -8050,6 +8050,107 @@ static bool mp_cmd_vehicle_menu_here( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_examine_at( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-331: the client resolved choose_adjacent_highlight and sent
+    // the chosen tile. Mirror game::examine(p): vehicle tiles open the
+    // interact_with menu, then part_con/trap/terrain/furniture/console run for
+    // the session avatar. Host-side-only screens stay unsupported.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.size() < 2 ) {
+        return true;
+    }
+    const int dx = in.args[0];
+    const int dy = in.args[1];
+    const bool with_pickup = in.data == "pickup";
+    if( std::abs( dx ) > 1 || std::abs( dy ) > 1 ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "That tile is too far away." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms p = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+    if( !here.inbounds( p ) ) {
+        return true;
+    }
+    if( here.impassable_field_at( p ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "There is nothing that can be examined nearby." ),
+            static_cast<int>( m_info ) );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    if( here.veh_at( p ) ) {
+        av_vehicle_menu_off[in.sid] = point( dx, dy );
+        av_send_session_picture( in.sid, av->pos_bub(), av );
+        mp_send_vehicle_menu_at( in.sid, *av, p );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        mp_ctrl_log( string_format( "examine_at sid=%d dx=%d dy=%d vehicle=1",
+                                    in.sid, dx, dy ) );
+        return true;
+    }
+    if( !can_examine_at( here, p, with_pickup ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "There is nothing that can be examined nearby." ),
+            static_cast<int>( m_info ) );
+        if( !netplay::host_avatar_keys_pending() ) {
+            g->mp_anchor_map_on( get_avatar() );
+        }
+        return true;
+    }
+    const std::size_t msg_before = Messages::generation();
+    {
+        mp_quiet_remote_data quiet;
+        mp_player_character_scope scope( *av );
+        av->manual_examine = true;
+        const Creature *creature = get_creature_tracker().creature_at( p );
+        if( creature != nullptr && !creature->is_avatar() ) {
+            // Pet/mech menus and dialogue are separate native ports.
+            av->add_msg_if_player( m_info, _( "There is a %s." ), creature->disp_name() );
+        }
+        iexamine::part_con( *av, p );
+        here.tr_at( p ).examine( p );
+        if( here.has_flag( ter_furn_flag::TFLAG_CONSOLE, p ) ) {
+            if( av->is_mounted() ) {
+                av->add_msg_if_player( m_warning,
+                                       _( "You cannot use a console while mounted." ) );
+            } else {
+                av->add_msg_if_player( m_info,
+                                       _( "Using computers is not available to netplay clients yet." ) );
+            }
+        } else if( here.has_furn( p ) ) {
+            if( !av->cant_do_mounted() &&
+                ( here.has_flag( "FREE_TO_EXAMINE", p ) ||
+                  g->warn_player_maybe_anger_local_faction( false, true ) ) ) {
+                here.furn( p ).obj().examine( *av, p );
+            }
+        } else if( here.ter( p ).obj().can_examine( p ) && !av->is_mounted() ) {
+            if( here.has_flag( "FREE_TO_EXAMINE", p ) ||
+                g->warn_player_maybe_anger_local_faction( false, true ) ) {
+                here.ter( p ).obj().examine( *av, p );
+            }
+        }
+        av->manual_examine = false;
+    }
+    if( with_pickup && here.has_items( p ) && !av->is_mounted() &&
+        !here.has_flag( ter_furn_flag::TFLAG_NO_PICKUP_ON_EXAMINE, p ) &&
+        !here.only_liquid_in_liquidcont( p ) ) {
+        std::vector<tripoint_bub_ms> one{ p };
+        mp_send_pickup_listing( in.sid, *av, one );
+    }
+    mp_forward_new_messages( in.sid, msg_before );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    mp_ctrl_log( string_format( "examine_at sid=%d dx=%d dy=%d pickup=%d",
+                                in.sid, dx, dy, with_pickup ? 1 : 0 ) );
+    return true;
+}
+
 static bool mp_cmd_vehicle_use_tool( const netplay::intent_request &in )
 {
     // DDA MP v4.0a-318: "Use <tool>" on a VEH_TOOLS station. The host builds
@@ -10335,6 +10436,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         }
         r.emplace( "vehicle_menu", mp_cmd_vehicle_menu );
         r.emplace( "vehicle_menu_here", mp_cmd_vehicle_menu_here );
+        r.emplace( "examine_at", mp_cmd_examine_at );
         r.emplace( "vehicle_use_tool", mp_cmd_vehicle_use_tool );
         r.emplace( "vehicle_smart_engine", mp_cmd_vehicle_smart_engine );
         r.emplace( "vehicle_turret_reload", mp_cmd_vehicle_turret_reload );

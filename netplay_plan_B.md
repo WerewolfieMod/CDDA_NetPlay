@@ -181,9 +181,9 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-1 | `SessionWorld`/`GameView` или mirror-game mode | client | P2 | UI читает зеркало | TODO |
 | P3-2 | Перехват мутаций (activities/map/vehicle/item/character/dialogue/EOC) | client | P3-1/P1 | UI не меняет мир напрямую | TODO |
 | P3-3 | Перевести native inventory/@/craft/pickup на command bus | client | P1/P3-2 | actions идут через registry | PARTIAL |
-| P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI; `e` открывает `interact_with`-меню, `EXAMINE_VEHICLE` — нативный `veh_interact`; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew через command bus; `DDA_MP_DIRECT_VEH_INTERACT` — прямой экран) |
+| P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI; `e` → direction prompt → `examine_at` → `interact_with`-меню, `EXAMINE_VEHICLE` — нативный `veh_interact`; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew через command bus) |
 | P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | DONE (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK/USE_TOOL/SMART_ENGINE/TURRET_RELOAD/TURRET_AIM/ACTIVATE_EOC; turret single/all/auto aim; остальные строки — safe host callbacks) |
-| P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (auto-target) |
+| P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (direction prompt и highlighted `can_examine_at`; host `examine_at` для vehicle/part_con/trap/terrain/furniture/pickup; консоли и меню существ — TODO) |
 | P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | TODO |
 | P3-8 | Native item menu (`inventory_item_menu`) | `game_inventory` | P2-3 | заменить `mp_client_item_menu` | PARTIAL |
 | P3-9 | Native trade/dialogue/mission UI | `npctalk`/`trade`/`mission` | P2-5 | без uilist-замен | PARTIAL (uilist) |
@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-330`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge, washing machine/dishwasher и planter (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. Соседняя машина стримится по запросу host-скана; направление выбирается эвристикой, без direction prompt. Протокол — v4 с data manifest: HELLO game/netplay, WELCOME mod versions + hash + tileset id, preflight missing/version check, post-load `manifest_check`; ошибки показываются как join error. Prompt bridge: исправлен сброс `uilist` retval (`query_setup`/`clear`), цепочка `uilist → query_int` проверена. Planter: seed-UI и `query_int` отвечаются клиентом, семена уходят в cargo seed drill (`seeds=1 ground=0`); прямой тестовый install теперь обновляет vehicle-кэш карты, как это делает activity-путь. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC.
+Статус на `ddamp-v4.0a-330`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge, washing machine/dishwasher и planter (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. `e` использует нативный direction prompt: клиент подсвечивает клетки через `can_examine_at`, выбранное направление уходит как `examine_at`; host открывает vehicle-меню или выполняет part_con/trap/iexamine и пересылает сообщения. Соседняя машина стримится по выбранной клетке (host-скан остаётся fallback). Протокол — v4 с data manifest: HELLO game/netplay, WELCOME mod versions + hash + tileset id, preflight missing/version check, post-load `manifest_check`; ошибки показываются как join error. Prompt bridge: исправлен сброс `uilist` retval (`query_setup`/`clear`), цепочка `uilist → query_int` проверена. Planter: seed-UI и `query_int` отвечаются клиентом, семена уходят в cargo seed drill (`seeds=1 ground=0`); прямой тестовый install теперь обновляет vehicle-кэш карты, как это делает activity-путь. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -288,9 +288,9 @@ B — это не «ещё несколько intent'ов», а архитект
 | 3.2 veh_menu title/desc | теряются | native `veh_menu` on mirror | P3-5 |
 | 3.3 examine uilist | не native | P3-4 | P2-4, P3-4 |
 | 3.8 vehicle menu fields | symbol/colors/desc hint | native menu | P3-5 |
-| 4.1 EXAMINE | auto-target/first tile | native `game::examine`/target cursor | P3-6 |
+| 4.1 EXAMINE | DONE: direction prompt + `examine_at`; консоли/существа — TODO | native `game::examine`/target cursor | P3-6 |
 | 4.2 OPEN/CLOSE | auto-target | native action/target | P3-6/P3-7 |
-| 4.3 EXAMINE_AND_PICKUP | auto-target | native examine + pickup | P3-6 |
+| 4.3 EXAMINE_AND_PICKUP | DONE: prompt + pickup listing; консоли/существа — TODO | native examine + pickup | P3-6 |
 | 4.4 action menu | custom | native `game::action_menu` | P3-7 |
 | 4.5 main/ESC | custom | native `main_menu` in session mode | P3-7 |
 | 4.6 inventory | item menu custom | native `inventory_item_menu` | P3-8 |
@@ -539,6 +539,7 @@ JSON/mapgen:
 | 2026-11-27 | ddamp-v4.0a-328 | P6-2: tileset в WELCOME. Host отправляет id текущего tileset (`TILES`), клиент сохраняет и логирует host/local после загрузки данных | audit suite: `tiles: manifest ... netplay=4.0a-328`; `tiles: tileset host=UltimateCataclysm local=UltimateCataclysm`; pickup без регрессий |
 | 2026-11-27 | ddamp-v4.0a-329 | Prompt bridge: исправлен возврат `uilist` — `query_setup()` вызывает `clear()` и сбрасывал `ret` в `UILIST_WAIT_INPUT` уже после ответа клиента; теперь retval/выбор применяются после `query_setup()`. Добавлен regression-тест `uilist → query_int` | `test prompt chain sid=1 choice=1 ok=1 value=77`; client `auto uilist idx=1 ret=1` и `auto int 77`; `manifest check sid=1 ok=1 client=86cb7a28441e55f6 host=86cb7a28441e55f6` |
 | 2026-11-27 | ddamp-v4.0a-330 | P3-13: planter runtime. Клиент отвечает на seed-UI и `query_int`, host кладёт семена в cargo seed drill. Прямой тестовый install теперь вызывает `add_vehicle_to_cache`, иначе `veh_at` не видел новую клетку и семена падали на землю | `test utility sid=1 wm=12/1 dw=11/1 planter=10 seeds=1 ground=0`; spawn `seed=10 cargo=1`; client `auto uilist idx=1 ret=1`, `auto int 77` |
+| 2026-11-27 | ddamp-v4.0a-331 | P3-6: нативный examine. Клиент показывает direction prompt, подсвечивает клетки через `can_examine_at` и отправляет выбранное направление как `examine_at`; host повторяет `game::examine` для vehicle-меню, part_con, trap, terrain/furniture и pickup-listing. Движение в машине осматривает текущую клетку без prompt. Добавлен headless-хук выбора клетки для pickup-tile теста | examine adjacent: `examine_at auto -1,1` → host `examine_at ... vehicle=1` → `examine_vehicle -> native`; workbench: `examine_at auto 0,1` → `USE_WORKBENCH` и строки верстака; prompt-путь: `examine_at testdir -1,1`; audit: `pickup take ... uid=33883 dmg=1` |
 
 ### 9.3. Что протестировано
 
@@ -586,6 +587,9 @@ JSON/mapgen:
 | 2026-11-27 | P6-2 | Tileset manifest | `tiles: manifest ... netplay=4.0a-328/4.0a-328`; `tiles: tileset host=UltimateCataclysm local=UltimateCataclysm` |
 | 2026-11-27 | P3-14 | Chained host prompts: uilist → query_int | `test prompt chain sid=1 choice=1 ok=1 value=77`; client `prompt: auto uilist idx=1 ret=1`, `prompt: auto int 77`; audit/pickup без регрессий |
 | 2026-11-27 | P3-13 | Planter seed UI → cargo | `test utility sid=1 wm=12/1 dw=11/1 planter=10 seeds=1 ground=0`; spawn `seed=10 cargo=1`; client `auto uilist idx=1 ret=1`, `auto int 77` |
+| 2026-11-27 | P3-6 | Examine direction prompt + native vehicle examine | client `examine_at auto -1,1` / `examine_at testdir -1,1`; host `examine_at sid=1 dx=-1 dy=1 vehicle=1`; client `examine_vehicle -> native` |
+| 2026-11-27 | P3-6 | Workbench through the examine prompt | client `examine_at auto 0,1`; host `examine_at sid=1 dx=0 dy=1 vehicle=1`; menu `USE_WORKBENCH` и строки верстака |
+| 2026-11-27 | P3-6 | Pickup tile auto in headless audit | `pickup take sid=1 gen=1 nodes=1 uids=1 what=1 equip=0 uid=33883 dmg=1`; client `pickup: auto uid row=1` |
 | 2026-11-26 | P3-5 | Turret aim/fire | row `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 | 2026-11-26 | P3-5 | EOC activation | row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
 | 2026-11-26 | P3-5 | Mass/auto turret aim | all-manual: `mode=1 turrets=1 shots=4`; auto: `targeted=1 enabled=1 power_disabled=0` |

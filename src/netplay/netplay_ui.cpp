@@ -1227,6 +1227,13 @@ static int mp_view_dz = 0;
 /// a direction key (no tile cursor, like choose_direction()).
 static bool mp_smash_prompt = false;
 static std::string mp_smash_text;
+/// DDA MP v4.0a-331: 'e' shows the host's choose_adjacent_highlight prompt:
+/// the same message and highlighted tiles, then the chosen direction goes to
+/// the host as an examine_at intent.
+static bool mp_examine_prompt = false;
+static std::string mp_examine_text;
+static bool mp_examine_pickup = false;
+static void mp_start_examine_prompt( bool with_pickup );
 /// DDA MP v4.0a-246: the fire cursor is aimed with a reach weapon (spear)
 /// rather than a gun; confirm sends a reach attack instead of a shot.
 static bool mp_fire_reach = false;
@@ -5111,72 +5118,28 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             mp_cursor_dy = 0;
             mp_view_dz = 0;
             break;
-        case ACTION_EXAMINE: {
-            // DDA MP v4.0a-315: vanilla examine on a vehicle tile opens
-            // interact_with. Stream that menu; "Examine vehicle" then opens the
-            // native veh_interact on the mirror. DDA_MP_DIRECT_VEH_INTERACT
-            // keeps the old direct parts screen for diagnostics.
-            static const bool mp_direct_veh_interact =
-                std::getenv( "DDA_MP_DIRECT_VEH_INTERACT" ) != nullptr;
+        case ACTION_EXAMINE:
+        case ACTION_EXAMINE_AND_PICKUP: {
+            // DDA MP v4.0a-331: parity with game::examine(). While driving,
+            // examine the current tile; otherwise show choose_adjacent_highlight
+            // with its message and highlighted tiles, then send the chosen
+            // direction to the host. The host builds the vehicle interact menu
+            // for a vehicle tile and runs iexamine for terrain/furniture.
+            const bool mp_ex_with_pickup = act == ACTION_EXAMINE_AND_PICKUP;
             if( mp_native_avatar_ready ) {
-                if( const std::optional<tripoint_bub_ms> mp_veh_pos = mp_vehicle_menu_tile() ) {
-                    if( mp_direct_veh_interact ) {
-                        if( const optional_vpart_position mp_vp = get_map().veh_at( *mp_veh_pos ) ) {
-                            mp_inv_log( "action: native veh_interact (direct)" );
-                            g->exam_vehicle( mp_vp->vehicle(), mp_vp->mount_pos() );
-                        }
-                    } else {
-                        const tripoint_bub_ms mp_base = get_avatar().pos_bub();
-                        netplay::client_send_intent(
-                            "vehicle_menu_here", 0,
-                            { mp_veh_pos->x() - mp_base.x(), mp_veh_pos->y() - mp_base.y() } );
-                        mp_inv_log( string_format( "action: vehicle_menu_here %d,%d",
-                                                   mp_veh_pos->x() - mp_base.x(),
-                                                   mp_veh_pos->y() - mp_base.y() ) );
-                    }
+                if( get_avatar().controlling_vehicle &&
+                    get_map().veh_at( get_avatar().pos_bub() ) ) {
+                    netplay::client_send_intent( "examine_at", 0, { 0, 0 },
+                                                 mp_ex_with_pickup ? "pickup" : "" );
+                    mp_inv_log( "action: examine current (driving)" );
                     break;
                 }
-                if( mp_adjacent_vpart_known() ) {
-                    netplay::client_send_intent( "vehicle_menu_here", 0, { -128, -128 } );
-                    mp_inv_log( "action: vehicle_menu_here scan adjacent" );
-                    break;
-                }
-            }
-            // DDA MP v4.0a-246: a mechanical winch asks "Use the ...?" on the
-            // host. Ask it here instead and send the confirmed action, so the
-            // prompt appears on the client. Other examine targets still run on
-            // the host.
-            static const std::set<std::string> mp_winches = {
-                "t_gates_mech_control", "t_gates_mech_control_lab",
-                "t_gates_mech_control_lab_2"
-            };
-            map &mp_eh = get_map();
-            const tripoint_bub_ms mp_ep = get_avatar().pos_bub();
-            static const point mp_eoffs[] = {
-                { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
-                { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
-            };
-            bool mp_winch_found = false;
-            for( const point &off : mp_eoffs ) {
-                const tripoint_bub_ms p( mp_ep + tripoint_rel_ms( off.x, off.y, 0 ) );
-                if( !mp_eh.inbounds( p ) ) {
-                    continue;
-                }
-                if( mp_winches.count( mp_eh.ter( p ).id().str() ) == 0 ) {
-                    continue;
-                }
-                mp_winch_found = true;
-                if( query_yn( _( "Use the %s?" ), mp_eh.tername( p ) ) ) {
-                    netplay::client_send_intent( "use_winch", 0, { off.x, off.y } );
-                    mp_inv_log( string_format( "action: use_winch %d,%d", off.x, off.y ) );
-                }
+                mp_start_examine_prompt( mp_ex_with_pickup );
                 break;
             }
-            if( !mp_winch_found ) {
-                // DDA MP v4.0a-181: plain examine triggers the terrain/furniture/
-                // trap action on the host.
-                netplay::client_send_client_action( act );
-            }
+            // Fallback for the pre-native path: let the host auto-target the
+            // nearest examinable tile.
+            netplay::client_send_client_action( act );
             break;
         }
 
@@ -6937,6 +6900,97 @@ static void mp_queue_smash_highlights()
     }
 }
 
+/* DDA MP v4.0a-331: the same tiles can_examine_at() marks for the host's
+ * choose_adjacent_highlight(), drawn on the client mirror. */
+static void mp_queue_examine_highlights()
+{
+    map &here = get_map();
+    const tripoint_bub_ms av = get_avatar().pos_bub();
+    for( int dy = -1; dy <= 1; ++dy ) {
+        for( int dx = -1; dx <= 1; ++dx ) {
+            const tripoint_bub_ms p( av.x() + dx, av.y() + dy, av.z() );
+            if( !here.inbounds( p ) ) {
+                continue;
+            }
+            if( !here.impassable_field_at( p ) &&
+                can_examine_at( here, p, mp_examine_pickup ) ) {
+                g->draw_highlight( p );
+            }
+        }
+    }
+}
+
+/* DDA MP v4.0a-331: preferred adjacent tile for headless examine tests. */
+static std::optional<point> mp_examine_preferred_off( bool with_pickup )
+{
+    map &here = get_map();
+    const tripoint_bub_ms base = get_avatar().pos_bub();
+    // Prefer the station tiles the old auto-target used: they are already
+    // streamed as vparts, so the client knows their offsets without a local
+    // vehicle object.
+    std::optional<point> first_vp;
+    for( const mp_cached_vpart &v : mp_vparts_cache ) {
+        const tripoint_bub_ms p = here.get_bub( v.pos );
+        if( !here.inbounds( p ) || p == base ||
+            std::abs( p.x() - base.x() ) > 1 || std::abs( p.y() - base.y() ) > 1 ) {
+            continue;
+        }
+        const point c( p.x() - base.x(), p.y() - base.y() );
+        if( !first_vp ) {
+            first_vp = c;
+        }
+        const vpart_id vp_id( v.id );
+        if( vp_id.is_valid() ) {
+            const vpart_info &vpi = vp_id.obj();
+            if( vpi.has_flag( "WORKBENCH" ) || vpi.has_flag( "VEH_TOOLS" ) ) {
+                return c;
+            }
+        }
+    }
+    if( first_vp ) {
+        return first_vp;
+    }
+    static const point offs[] = {
+        { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 },
+        { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }
+    };
+    for( const point &c : offs ) {
+        const tripoint_bub_ms p( base.x() + c.x, base.y() + c.y, base.z() );
+        if( here.inbounds( p ) && !here.impassable_field_at( p ) &&
+            can_examine_at( here, p, with_pickup ) ) {
+            return c;
+        }
+    }
+    return std::nullopt;
+}
+
+/* DDA MP v4.0a-331: choose_adjacent_highlight() on the client. The test
+ * harness has no keyboard, so in headless runs pick the preferred direction
+ * the old auto-target used (a streamed adjacent vehicle part first). */
+static void mp_start_examine_prompt( bool with_pickup )
+{
+    mp_examine_prompt = true;
+    mp_examine_pickup = with_pickup;
+    mp_examine_text = with_pickup
+                      ? _( "Examine terrain, furniture, or items where?" )
+                      : _( "Examine terrain or furniture where?" );
+
+    const char *test_auto = std::getenv( "DDA_MP_TEST_AVATAR_AUTO" );
+    const bool force_prompt = std::getenv( "DDA_MP_TEST_EXAMINE_PROMPT" ) != nullptr;
+    if( !force_prompt && test_auto != nullptr && test_auto[0] != '\0' &&
+        std::string( test_auto ) != "0" ) {
+        const point off = mp_examine_preferred_off( with_pickup ).value_or( point( 1, 0 ) );
+        netplay::client_send_intent( "examine_at", 0, { off.x, off.y },
+                                     with_pickup ? "pickup" : "" );
+        mp_inv_log( string_format( "examine_at auto %d,%d pickup=%d",
+                                   off.x, off.y, with_pickup ? 1 : 0 ) );
+        mp_examine_prompt = false;
+        mp_force_terrain_redraw();
+        return;
+    }
+    mp_force_terrain_redraw();
+}
+
 /* DDA MP v4.0a-115/160: the sidebar itself, drawn by the game's own panel
  * code for the client's character mirror. The loop below mirrors
  * game::draw_panels(): spacer rows, disabled panels take no space, and a
@@ -8133,6 +8187,8 @@ void run_view_loop()
                     }
                 } else if( mp_smash_prompt ) {
                     mp_queue_smash_highlights();
+                } else if( mp_examine_prompt ) {
+                    mp_queue_examine_highlights();
                 }
                 mp_queue_native_vparts();
                 mp_queue_native_cursor( snapshot() );
@@ -8142,7 +8198,8 @@ void run_view_loop()
             // window, and a static frame never marks it dirty. Re-queue the
             // pickup/smash highlight and draw the map here, after the UI pass,
             // so the brackets actually reach the screen while the host is idle.
-            if( mp_native_render_enabled() && ( mp_pick_tiles_active || mp_smash_prompt ) ) {
+            if( mp_native_render_enabled() &&
+                ( mp_pick_tiles_active || mp_smash_prompt || mp_examine_prompt ) ) {
                 if( mp_pick_tiles_active ) {
                     map &mp_ph1 = get_map();
                     const tripoint_bub_ms mp_pav1 = get_avatar().pos_bub();
@@ -8153,8 +8210,10 @@ void run_view_loop()
                             g->draw_highlight( mp_hp1 );
                         }
                     }
-                } else {
+                } else if( mp_smash_prompt ) {
                     mp_queue_smash_highlights();
+                } else {
+                    mp_queue_examine_highlights();
                 }
                 mp_force_terrain_redraw();
             }
@@ -8766,6 +8825,23 @@ void run_view_loop()
                                             c.x, c.y,
                                             static_cast<int>( lit_level::LIT ), 0, 0, true );
                                     }
+                                } else if( mp_examine_prompt ) {
+                                    map &mp_xh = get_map();
+                                    const tripoint_bub_ms mp_xav = get_avatar().pos_bub();
+                                    for( int dy = -1; dy <= 1; ++dy ) {
+                                        for( int dx = -1; dx <= 1; ++dx ) {
+                                            const tripoint_bub_ms p( mp_xav.x() + dx, mp_xav.y() + dy,
+                                                                     mp_xav.z() );
+                                            if( mp_xh.inbounds( p ) &&
+                                                !mp_xh.impassable_field_at( p ) &&
+                                                can_examine_at( mp_xh, p, mp_examine_pickup ) ) {
+                                                netplay::tiles_backend_draw(
+                                                    tiles_backend, 6, "highlight", "",
+                                                    dx, dy,
+                                                    static_cast<int>( lit_level::LIT ), 0, 0, true );
+                                            }
+                                        }
+                                    }
                                 }
                                 netplay::tiles_backend_end( tiles_backend );
                                 // The sidebar/message adaptors were already
@@ -8806,14 +8882,15 @@ void run_view_loop()
             // iteration, so the text survives until the present below).
             // DDA MP v4.0a-86: show the long wait state in the same line.
             if( !mp_hint_text.empty() || netplay::long_wait_active() || mp_smash_prompt ||
-                mp_pick_tiles_active ) {
+                mp_examine_prompt || mp_pick_tiles_active ) {
                 const int mp_hint_w = std::min( TERMX, 48 );
                 if( !mp_hint_win ) {
                     mp_hint_win = catacurses::newwin( 1, mp_hint_w,
                                                       point( std::max( 0, ( TERMX - mp_hint_w ) / 2 ), 0 ) );
                 }
                 werase( mp_hint_win );
-                std::string s = mp_smash_prompt ? mp_smash_text : mp_hint_text;
+                std::string s = mp_smash_prompt ? mp_smash_text :
+                                mp_examine_prompt ? mp_examine_text : mp_hint_text;
                 if( mp_pick_tiles_active && !mp_smash_prompt ) {
                     s = string_format( _( "%s (Direction button or mouse)" ),
                                        _( "Pick up items where?" ) );
@@ -8969,6 +9046,9 @@ void run_view_loop()
                 } else if( mp_smash_prompt ) {
                     // v4.0a-256: same highlight for the "Smash where?" choice.
                     mp_queue_smash_highlights();
+                } else if( mp_examine_prompt ) {
+                    // v4.0a-331: choose_adjacent_highlight for examine.
+                    mp_queue_examine_highlights();
                 }
                 // DDA MP v4.0a-239: the item lists are applied to the mirror
                 // map, so the game's own renderer draws items, layers, the pile
@@ -10322,12 +10402,64 @@ void run_view_loop()
                 }
                 continue;
             }
+            // DDA MP v4.0a-331 test hook: a headless run cannot move the
+            // cursor/keys, so drive the examine prompt before input blocks.
+            if( mp_examine_prompt ) {
+                if( const char *test_dir = std::getenv( "DDA_MP_TEST_EXAMINE_DIR" );
+                    test_dir != nullptr && test_dir[0] != '\0' ) {
+                    point off( 1, 0 );
+                    if( std::string( test_dir ) == "auto" ) {
+                        off = mp_examine_preferred_off( mp_examine_pickup )
+                              .value_or( point( 1, 0 ) );
+                    } else {
+                        int tdx = 0;
+                        int tdy = 0;
+                        if( std::sscanf( test_dir, "%d,%d", &tdx, &tdy ) == 2 ) {
+                            off = point( tdx, tdy );
+                        }
+                    }
+                    netplay::client_send_intent( "examine_at", 0, { off.x, off.y },
+                                                 mp_examine_pickup ? "pickup" : "" );
+                    mp_inv_log( string_format( "examine_at testdir %d,%d pickup=%d",
+                                               off.x, off.y, mp_examine_pickup ? 1 : 0 ) );
+                    mp_examine_prompt = false;
+                    mp_force_terrain_redraw();
+                    continue;
+                }
+            }
             const std::string action = ctxt.handle_input();
             // DDA MP v4.0a-97: choose the tile to pick from (several tiles
             // with items): arrows cycle the candidates, ENTER confirms.
             if( mp_pick_tiles_active ) {
                 const input_event mp_ev = ctxt.get_raw_input();
                 const int mp_key = mp_ev.get_first_input();
+                // Test hook: headless runs cannot press a direction key. Pick
+                // the avatar's own tile when it is a candidate (the audit twins
+                // are dropped there), else the first candidate.
+                if( const char *auto_pick = std::getenv( "DDA_MP_TEST_PICKUP_AUTO" );
+                    auto_pick != nullptr && auto_pick[0] != '\0' ) {
+                    point chosen( 0, 0 );
+                    bool have_chosen = false;
+                    for( const point &c : mp_pick_tiles ) {
+                        if( c.x == 0 && c.y == 0 ) {
+                            chosen = c;
+                            have_chosen = true;
+                            break;
+                        }
+                    }
+                    if( !have_chosen && !mp_pick_tiles.empty() ) {
+                        chosen = mp_pick_tiles.front();
+                        have_chosen = true;
+                    }
+                    if( have_chosen ) {
+                        netplay::client_send_pickup_tile( mp_pick_gen, chosen.x, chosen.y );
+                        mp_pick_tiles_active = false;
+                        mp_tlog( string_format( "picktile: auto chose %d,%d",
+                                                chosen.x, chosen.y ) );
+                        mp_force_terrain_redraw();
+                    }
+                    continue;
+                }
                 if( mp_key == 27 || action == "QUIT" ) {
                     mp_pick_tiles_active = false;
                     mp_tlog( "picktile: cancelled" );
@@ -10375,6 +10507,57 @@ void run_view_loop()
                             break;
                         }
                     }
+                }
+                continue;
+            }
+            // DDA MP v4.0a-331: choose_adjacent_highlight for examine.
+            if( mp_examine_prompt ) {
+                const input_event mp_ex_ev = ctxt.get_raw_input();
+                const int mp_ex_key = mp_ex_ev.get_first_input();
+                if( mp_ex_key == 27 || action == "QUIT" ) {
+                    mp_examine_prompt = false;
+                    mp_force_terrain_redraw();
+                    continue;
+                }
+                point mp_ex_dir( 0, 0 );
+                bool mp_ex_have = false;
+                if( action == "pause" || mp_ex_key == '5' ) {
+                    mp_ex_dir = point( 0, 0 );
+                    mp_ex_have = true;
+                } else if( action == "UP" ) {
+                    mp_ex_dir = point( 0, -1 );
+                    mp_ex_have = true;
+                } else if( action == "DOWN" ) {
+                    mp_ex_dir = point( 0, 1 );
+                    mp_ex_have = true;
+                } else if( action == "LEFT" ) {
+                    mp_ex_dir = point( -1, 0 );
+                    mp_ex_have = true;
+                } else if( action == "RIGHT" ) {
+                    mp_ex_dir = point( 1, 0 );
+                    mp_ex_have = true;
+                } else if( action == "LEFTUP" ) {
+                    mp_ex_dir = point( -1, -1 );
+                    mp_ex_have = true;
+                } else if( action == "RIGHTUP" ) {
+                    mp_ex_dir = point( 1, -1 );
+                    mp_ex_have = true;
+                } else if( action == "LEFTDOWN" ) {
+                    mp_ex_dir = point( -1, 1 );
+                    mp_ex_have = true;
+                } else if( action == "RIGHTDOWN" ) {
+                    mp_ex_dir = point( 1, 1 );
+                    mp_ex_have = true;
+                }
+                if( mp_ex_have ) {
+                    netplay::client_send_intent( "examine_at", 0,
+                                                 { mp_ex_dir.x, mp_ex_dir.y },
+                                                 mp_examine_pickup ? "pickup" : "" );
+                    mp_inv_log( string_format( "examine_at %d,%d pickup=%d",
+                                               mp_ex_dir.x, mp_ex_dir.y,
+                                               mp_examine_pickup ? 1 : 0 ) );
+                    mp_examine_prompt = false;
+                    mp_force_terrain_redraw();
                 }
                 continue;
             }
