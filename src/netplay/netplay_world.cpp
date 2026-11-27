@@ -7623,6 +7623,65 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     std::fclose( f );
                 }
             }
+            if( std::getenv( "DDA_MP_TEST_HARNESS" ) != nullptr ) {
+                // Harness test: a yoke next to the controls and a friendly
+                // mountable horse on a free adjacent tile.
+                const vpart_info &yoke_info = vpart_id( "yoke_harness" ).obj();
+                const point_rel_ms yoke_mount( ctrl_mount.x(), ctrl_mount.y() - 1 );
+                const int yoke_part = veh->can_mount( yoke_mount, yoke_info ).success() ?
+                                      veh->install_part( here, yoke_mount,
+                                                         vpart_id( "yoke_harness" ) ) : -1;
+                if( yoke_part >= 0 ) {
+                    here.add_vehicle_to_cache( veh );
+                }
+                const tripoint_bub_ms mon_pos( ctrl_pos.x() + 1, ctrl_pos.y() + 1,
+                                               ctrl_pos.z() );
+                monster *horse = nullptr;
+                if( here.inbounds( mon_pos ) && !here.veh_at( mon_pos ) &&
+                    !here.has_furn( mon_pos ) && g->is_empty( mon_pos ) ) {
+                    horse = g->place_critter_at( mtype_id( "mon_horse" ), mon_pos );
+                    if( horse != nullptr ) {
+                        horse->friendly = 1;
+                    }
+                }
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test harness yoke=%d mount=%d,%d horse=%d pos=%d,%d\n",
+                                  yoke_part, yoke_mount.x(), yoke_mount.y(),
+                                  horse != nullptr ? 1 : 0, mon_pos.x(), mon_pos.y() );
+                    std::fclose( f );
+                }
+            }
+            if( std::getenv( "DDA_MP_TEST_CAPTURE" ) != nullptr ) {
+                // Capture test: a livestock stall next to the controls and a
+                // monster on a free adjacent tile.
+                const vpart_info &stall_info = vpart_id( "livestock_stall" ).obj();
+                const point_rel_ms stall_mount( ctrl_mount.x(), ctrl_mount.y() - 1 );
+                if( veh->can_mount( stall_mount, vpart_id( "frame" ).obj() ).success() ) {
+                    veh->install_part( here, stall_mount, vpart_id( "frame" ) );
+                }
+                const int stall_part = veh->can_mount( stall_mount, stall_info ).success() ?
+                                       veh->install_part( here, stall_mount,
+                                                          vpart_id( "livestock_stall" ) ) : -1;
+                if( stall_part >= 0 ) {
+                    here.add_vehicle_to_cache( veh );
+                }
+                const tripoint_bub_ms mon_pos( ctrl_pos.x() + 1, ctrl_pos.y() + 1,
+                                               ctrl_pos.z() );
+                monster *animal = nullptr;
+                if( here.inbounds( mon_pos ) && !here.veh_at( mon_pos ) &&
+                    !here.has_furn( mon_pos ) && g->is_empty( mon_pos ) ) {
+                    animal = g->place_critter_at( mtype_id( "mon_horse" ), mon_pos );
+                    if( animal != nullptr ) {
+                        animal->friendly = 1;
+                    }
+                }
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test capture stall=%d mount=%d,%d animal=%d pos=%d,%d\n",
+                                  stall_part, stall_mount.x(), stall_mount.y(),
+                                  animal != nullptr ? 1 : 0, mon_pos.x(), mon_pos.y() );
+                    std::fclose( f );
+                }
+            }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 const tripoint_bub_ms seed_pos = seed_part >= 0 ?
                                                  veh->bub_part_pos( here, seed_part ) :
@@ -9683,6 +9742,80 @@ static bool mp_cmd_test_tiedown_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_harness_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-334 test: the horse stands on the yoke tile and is harnessed.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    int part = -1;
+    bool harnessed = false;
+    bool on_part = false;
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( vp ) {
+        for( int i = 0; i < vp->vehicle().part_count(); ++i ) {
+            if( vp->vehicle().part( i ).info().has_flag( "ANIMAL_CTRL" ) ) {
+                part = i;
+                const tripoint_bub_ms p = vp->vehicle().bub_part_pos( here, i );
+                const monster *mon =
+                    get_creature_tracker().creature_at<monster>( p );
+                on_part = mon != nullptr;
+                harnessed = mon != nullptr &&
+                            mon->has_effect( efftype_id( "harnessed" ) );
+                break;
+            }
+        }
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test harness verify sid=%d part=%d on_part=%d harnessed=%d\n",
+                      in.sid, part, on_part ? 1 : 0, harnessed ? 1 : 0 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "harness verify part=%d on_part=%d harnessed=%d",
+                               part, on_part ? 1 : 0, harnessed ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
+static bool mp_cmd_test_capture_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-335 test: the stall base carries the captured monster.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    int part = -1;
+    bool contained = false;
+    bool animal_flag = false;
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( vp ) {
+        for( int i = 0; i < vp->vehicle().part_count(); ++i ) {
+            if( vp->vehicle().part( i ).info().has_flag( "CAPTURE_MONSTER_VEH" ) ) {
+                part = i;
+                const vehicle_part &vp_part = vp->vehicle().part( i );
+                contained = !vp_part.get_base()
+                            .get_var( "contained_name", std::string() ).empty();
+                animal_flag = vp_part.has_flag( vp_flag::animal_flag );
+                break;
+            }
+        }
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test capture verify sid=%d part=%d contained=%d animal=%d\n",
+                      in.sid, part, contained ? 1 : 0, animal_flag ? 1 : 0 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "capture verify part=%d contained=%d animal=%d",
+                               part, contained ? 1 : 0, animal_flag ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10528,6 +10661,8 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_prompt_chain", mp_cmd_test_prompt_chain );
         r.emplace( "test_direction_prompt", mp_cmd_test_direction_prompt );
         r.emplace( "test_tiedown_verify", mp_cmd_test_tiedown_verify );
+        r.emplace( "test_harness_verify", mp_cmd_test_harness_verify );
+        r.emplace( "test_capture_verify", mp_cmd_test_capture_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

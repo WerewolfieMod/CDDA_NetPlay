@@ -66,7 +66,7 @@ namespace netplay
 static_assert( sizeof( socket_t ) == 8, "socket_t width" );
 
 /// DDA MP v4.0a-326: bumped with the data-manifest handshake.
-static constexpr const char *NETPLAY_VERSION = "4.0a-333";
+static constexpr const char *NETPLAY_VERSION = "4.0a-334";
 
 std::string data_manifest_hash()
 {

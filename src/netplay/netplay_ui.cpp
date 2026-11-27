@@ -9844,6 +9844,68 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "harness_test" ) {
+                        static int mp_hn_phase = 0;
+                        static auto mp_hn_t0 = std::chrono::steady_clock::now();
+                        if( mp_hn_phase == 0 ) {
+                            mp_hn_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: harness spawn" );
+                            ++mp_hn_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_hn_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_hn_t0 ).count();
+                            if( mp_hn_phase == 1 && mp_hn_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: harness examine" );
+                                ++mp_hn_phase;
+                                sent = false;
+                            } else if( mp_hn_phase == 2 && mp_hn_ms > 6000 ) {
+                                netplay::client_send_intent( "test_harness_verify", 0, {} );
+                                mp_inv_log( "test: harness verify" );
+                                ++mp_hn_phase;
+                                sent = false;
+                            } else if( mp_hn_phase == 3 && mp_hn_ms > 9000 ) {
+                                mp_inv_log( "test: harness done" );
+                                ++mp_hn_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "capture_test" ) {
+                        static int mp_cp_phase = 0;
+                        static auto mp_cp_t0 = std::chrono::steady_clock::now();
+                        if( mp_cp_phase == 0 ) {
+                            mp_cp_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: capture spawn" );
+                            ++mp_cp_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_cp_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_cp_t0 ).count();
+                            if( mp_cp_phase == 1 && mp_cp_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: capture examine" );
+                                ++mp_cp_phase;
+                                sent = false;
+                            } else if( mp_cp_phase == 2 && mp_cp_ms > 6000 ) {
+                                netplay::client_send_intent( "test_capture_verify", 0, {} );
+                                mp_inv_log( "test: capture verify" );
+                                ++mp_cp_phase;
+                                sent = false;
+                            } else if( mp_cp_phase == 3 && mp_cp_ms > 9000 ) {
+                                mp_inv_log( "test: capture done" );
+                                ++mp_cp_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "examine_adjacent_test" ) {
                         static int mp_ea_phase = 0;
                         static auto mp_ea_t0 = std::chrono::steady_clock::now();
