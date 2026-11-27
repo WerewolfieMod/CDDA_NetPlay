@@ -905,17 +905,21 @@ shared_ptr_fast<uilist_impl> uilist::query( bool loop, int timeout, bool allow_u
             pe.push_back( std::move( p ) );
         }
         if( auto ans = netplay::host_prompt_uilist( text, selected, pe ) ) {
-            if( ans->canceled ) {
+            const bool mp_canceled = ans->canceled;
+            const int mp_retval = ans->retval;
+            const int mp_index = ans->index;
+            if( !query_setup() ) {
+                return nullptr;
+            }
+            // query_setup() clears the result fields; assign after it.
+            if( mp_canceled ) {
                 ret = UILIST_CANCEL;
                 ret_act = "UILIST.QUIT";
             } else {
-                ret = ans->retval;
+                ret = mp_retval;
                 selected = entries.empty() ? 0 :
-                           clamp( ans->index, 0, static_cast<int>( entries.size() ) - 1 );
+                           clamp( mp_index, 0, static_cast<int>( entries.size() ) - 1 );
                 ret_act = "CONFIRM";
-            }
-            if( !query_setup() ) {
-                return nullptr;
             }
             return create_or_get_ui();
         }

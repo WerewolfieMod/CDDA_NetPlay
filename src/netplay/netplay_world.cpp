@@ -9422,6 +9422,34 @@ static bool mp_cmd_manifest_check( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_prompt_chain( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-329 test: two bridged prompts back to back.
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test prompt chain start sid=%d owner=%d\n",
+                      in.sid, netplay::host_prompt_owner() );
+        std::fclose( f );
+    }
+    uilist menu;
+    menu.text = netplay::fork_text( "Chain step 1" );
+    menu.addentry( 0, true, 0, "zero" );
+    menu.addentry( 1, true, 0, "one" );
+    menu.query();
+    const int choice = menu.ret;
+    int value = 0;
+    const bool ok = query_int( value, true, netplay::fork_text( "Chain step 2" ) );
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test prompt chain sid=%d choice=%d ok=%d value=%d\n",
+                      in.sid, choice, ok ? 1 : 0, value );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "prompt chain choice=%d ok=%d value=%d",
+                               choice, ok ? 1 : 0, value ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10263,6 +10291,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "vehicle_activate_eoc", mp_cmd_vehicle_activate_eoc );
         r.emplace( "test_vehicle_utility", mp_cmd_test_vehicle_utility );
         r.emplace( "manifest_check", mp_cmd_manifest_check );
+        r.emplace( "test_prompt_chain", mp_cmd_test_prompt_chain );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

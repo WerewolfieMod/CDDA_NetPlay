@@ -7267,6 +7267,18 @@ static void mp_run_prompt( const netplay::prompt_request &pr )
         ans.text = popup.text();
         ans.retval = 0;
     } else {
+        if( const char *test_ui = std::getenv( "DDA_MP_TEST_PROMPT_UILIST" );
+            test_ui != nullptr && test_ui[0] != '\0' && !pr.entries.empty() ) {
+            const int idx = std::clamp( std::atoi( test_ui ), 0,
+                                        static_cast<int>( pr.entries.size() ) - 1 );
+            ans.canceled = false;
+            ans.retval = pr.entries[idx].retval;
+            ans.index = idx;
+            netplay::client_send_prompt_answer( ans );
+            mp_inv_log( string_format( "prompt: auto uilist idx=%d ret=%d",
+                                       idx, ans.retval ) );
+            return;
+        }
         uilist menu;
         menu.text = pr.text;
         for( const netplay::prompt_entry &e : pr.entries ) {
@@ -9412,6 +9424,19 @@ void run_view_loop()
                     } else if( action_name == "int_prompt" ) {
                         netplay::client_send_intent( "test_int_prompt", 0, {} );
                         mp_inv_log( "test: int prompt" );
+                    } else if( action_name == "prompt_chain" ) {
+                        static bool mp_pc_sent = false;
+                        static auto mp_pc_t0 = std::chrono::steady_clock::now();
+                        if( !mp_pc_sent ) {
+                            if( std::chrono::steady_clock::now() - mp_pc_t0 <
+                                std::chrono::seconds( 3 ) ) {
+                                sent = false;
+                            } else {
+                                mp_pc_sent = true;
+                                netplay::client_send_intent( "test_prompt_chain", 0, {} );
+                                mp_inv_log( "test: prompt chain" );
+                            }
+                        }
                     } else if( action_name == "hotwire" ) {
                         static int mp_hot_phase = 0;
                         static auto mp_hot_t0 = std::chrono::steady_clock::now();
