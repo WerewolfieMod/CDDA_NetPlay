@@ -9992,6 +9992,63 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "npc_test" ) {
+                        static int mp_npc_phase = 0;
+                        static auto mp_npc_t0 = std::chrono::steady_clock::now();
+                        if( mp_npc_phase == 0 ) {
+                            mp_npc_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: npc spawn" );
+                            ++mp_npc_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_npc_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_npc_t0 ).count();
+                            if( mp_npc_phase == 1 && mp_npc_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: npc examine" );
+                                ++mp_npc_phase;
+                                sent = false;
+                            } else if( mp_npc_phase == 2 && mp_npc_ms > 6000 ) {
+                                netplay::client_send_intent( "test_npc_verify", 0, {} );
+                                mp_inv_log( "test: npc verify" );
+                                ++mp_npc_phase;
+                                sent = false;
+                            } else if( mp_npc_phase == 3 && mp_npc_ms > 9000 ) {
+                                mp_inv_log( "test: npc done" );
+                                ++mp_npc_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "dialogue_test" ) {
+                        static int mp_dlg_phase = 0;
+                        static auto mp_dlg_t0 = std::chrono::steady_clock::now();
+                        if( mp_dlg_phase == 0 ) {
+                            mp_dlg_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: dialogue spawn" );
+                            ++mp_dlg_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_dlg_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_dlg_t0 ).count();
+                            if( mp_dlg_phase == 1 && mp_dlg_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: dialogue examine" );
+                                ++mp_dlg_phase;
+                                sent = false;
+                            } else if( mp_dlg_phase == 2 && mp_dlg_ms > 8000 ) {
+                                mp_inv_log( "test: dialogue done" );
+                                ++mp_dlg_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "examine_adjacent_test" ) {
                         static int mp_ea_phase = 0;
                         static auto mp_ea_t0 = std::chrono::steady_clock::now();

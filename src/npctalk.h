@@ -16,6 +16,10 @@ class json_talk_topic;
 class npc;
 class time_duration;
 
+/// DDA MP v4.0a-339: start a dialogue with a session avatar (npc) as the
+/// player side. Used by the netplay NPC menu.
+void talk_to_npc( npc &you, npc &who );
+
 namespace talk_function
 {
 

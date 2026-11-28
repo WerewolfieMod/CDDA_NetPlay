@@ -70,6 +70,7 @@
 #include "monster.h"
 #include "monexamine.h"
 #include "npctrade.h"
+#include "npctalk.h"
 #include "mtype.h"
 #include "npc.h"
 #include "options.h"
@@ -7293,6 +7294,9 @@ static void mp_vehicle_refuel( int sid, npc &av, int want_part = -1,
  * gasoline item, so the refuel activity can be exercised without a real save. */
 static tripoint_bub_ms mp_test_pet_horse_pos;
 static bool mp_test_pet_ready = false;
+static tripoint_bub_ms mp_test_npc_pos;
+static tripoint_bub_ms mp_test_npc_avatar_pos;
+static bool mp_test_npc_ready = false;
 static void mp_test_spawn_car( npc &av, bool damaged = false )
 {
     map &here = get_map();
@@ -7739,6 +7743,37 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     std::fprintf( f, "test pet horse=%d pos=%d,%d av=%d,%d\n",
                                   pet != nullptr ? 1 : 0, mon_pos.x(), mon_pos.y(),
                                   ctrl_pos.x(), ctrl_pos.y() );
+                    std::fclose( f );
+                }
+            }
+            if( std::getenv( "DDA_MP_TEST_NPC" ) != nullptr ) {
+                // NPC-menu test: put an existing NPC next to the avatar and
+                // make it friendly/awake so swap positions is available.
+                const tripoint_bub_ms npc_pos( ctrl_pos.x() + 1, ctrl_pos.y() + 1,
+                                               ctrl_pos.z() );
+                npc *target = nullptr;
+                for( npc &guy : g->all_npcs() ) {
+                    if( &guy == &av || guy.is_dead() ||
+                        guy.get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ) {
+                        continue;
+                    }
+                    target = &guy;
+                    break;
+                }
+                if( target != nullptr && here.inbounds( npc_pos ) ) {
+                    target->setpos( here, npc_pos );
+                    target->set_attitude( NPCATT_FOLLOW );
+                    target->op_of_u.trust = 10;
+                    target->remove_effect( efftype_id( "sleep" ) );
+                }
+                mp_test_npc_pos = npc_pos;
+                mp_test_npc_avatar_pos = ctrl_pos;
+                mp_test_npc_ready = target != nullptr;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test npc target=%d pos=%d,%d av=%d,%d name=%s\n",
+                                  target != nullptr ? 1 : 0, npc_pos.x(), npc_pos.y(),
+                                  ctrl_pos.x(), ctrl_pos.y(),
+                                  target != nullptr ? target->get_name().c_str() : "" );
                     std::fclose( f );
                 }
             }
@@ -8199,6 +8234,97 @@ static bool mp_cmd_vehicle_menu_here( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_run_npc_menu( npc &av, npc &who )
+{
+    // DDA MP v4.0a-339: native NPC examine menu for the session avatar. The
+    // menu itself is the vanilla uilist (bridged to the client); rows whose
+    // UI is not ported yet stay disabled with an explicit note.
+    if( who.get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ) {
+        add_msg( _( "%s is a remote player's avatar." ), who.get_name() );
+        return true;
+    }
+    enum choices : int {
+        talk = 0,
+        swap_pos,
+        push,
+        examine_wounds,
+        examine_status,
+        use_item,
+        sort_armor,
+        attack,
+        disarm,
+        steal,
+        trade
+    };
+    const bool obeys = who.is_friendly( av ) && !who.in_sleep_state();
+    uilist menu;
+    menu.text = string_format( _( "What to do with %s?" ), who.disp_name() );
+    menu.addentry( talk, true, 't', _( "Talk" ) );
+    menu.addentry( swap_pos, obeys && !who.is_mounted() && !av.is_mounted(),
+                   's', _( "Swap positions" ) );
+    menu.addentry( push, ( !who.is_enemy() && !who.in_sleep_state() ) &&
+                   !who.is_mounted(), 'p', _( "Push away" ) );
+    menu.addentry( examine_wounds, false, 'w',
+                   _( "Examine wounds (netplay: body window not ported yet)" ) );
+    menu.addentry( examine_status, false, 'e',
+                   _( "Examine status (netplay: bodygraph not ported yet)" ) );
+    menu.addentry( use_item, false, 'i',
+                   _( "Use item on (netplay: inventory UI not ported yet)" ) );
+    menu.addentry( sort_armor, false, 'r',
+                   _( "Sort armor (netplay: armor UI not ported yet)" ) );
+    menu.addentry( attack, true, 'a', _( "Attack" ) );
+    if( !who.is_player_ally() ) {
+        menu.addentry( disarm, false, 'd',
+                       _( "Disarm (netplay: avatar-only action)" ) );
+        menu.addentry( steal, false, 'S',
+                       _( "Steal (netplay: inventory UI not ported yet)" ) );
+    } else {
+        menu.addentry( trade, false, 'b',
+                       _( "Trade (netplay: trade UI not ported yet)" ) );
+    }
+    menu.query();
+    const int choice = menu.ret;
+    if( choice == talk ) {
+        talk_to_npc( av, who );
+    } else if( choice == swap_pos ) {
+        if( !g->prompt_dangerous_tile( who.pos_bub() ) ) {
+            return true;
+        }
+        if( av.get_grab_type() == object_type::NONE ) {
+            add_msg( _( "You swap places with %s." ), who.get_name() );
+            g->swap_critters( av, who );
+            av.mod_moves( -200 );
+        } else {
+            add_msg( _( "You cannot swap places while grabbing something." ) );
+        }
+    } else if( choice == push ) {
+        if( !obeys ) {
+            if( !query_yn( _( "%s may be upset by this.  Continue?" ), who.name ) ) {
+                return true;
+            }
+            npc_opinion &attitude = who.op_of_u;
+            attitude.anger += 3;
+            attitude.trust -= 3;
+            attitude.value -= 1;
+            who.form_opinion( av );
+        }
+        const tripoint_bub_ms oldpos = who.pos_bub();
+        who.move_away_from( av.pos_bub(), true );
+        av.mod_moves( -20 );
+        if( oldpos != who.pos_bub() ) {
+            add_msg( _( "%s moves out of the way." ), who.get_name() );
+        } else {
+            add_msg( m_warning, _( "%s has nowhere to go!" ), who.get_name() );
+        }
+    } else if( choice == attack ) {
+        if( who.is_enemy() || query_yn( _( "You may be attacked!  Proceed?" ) ) ) {
+            av.melee_attack( who, true );
+            who.on_attacked( av );
+        }
+    }
+    return true;
+}
+
 static bool mp_cmd_examine_at( const netplay::intent_request &in )
 {
     // DDA MP v4.0a-331: the client resolved choose_adjacent_highlight and sent
@@ -8272,10 +8398,10 @@ static bool mp_cmd_examine_at( const netplay::intent_request &in )
                     av->add_msg_if_player( m_info, _( "There is a %s." ),
                                            mon->disp_name() );
                 }
-            } else if( dynamic_cast<npc *>( creature ) != nullptr ) {
-                // NPC dialogue/trade/mission screens are P3-9.
-                av->add_msg_if_player( m_info, _( "There is a %s." ),
-                                       creature->disp_name() );
+            } else if( npc *np = dynamic_cast<npc *>( creature ) ) {
+                // DDA MP v4.0a-339: native NPC menu; talk/trade rows stay
+                // disabled until their UIs are ported.
+                creature_handled = mp_run_npc_menu( *av, *np );
             }
         }
         if( !creature_handled ) {
@@ -10006,6 +10132,31 @@ static bool mp_cmd_test_item_menu_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_npc_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-339 test: the NPC menu's Swap positions row moved both.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    bool swapped = false;
+    if( mp_test_npc_ready ) {
+        const npc *other = get_creature_tracker().creature_at<npc>(
+                               mp_test_npc_avatar_pos );
+        swapped = other != nullptr && av->pos_bub() == mp_test_npc_pos;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test npc verify sid=%d swapped=%d av=%d,%d npc=%d,%d\n",
+                      in.sid, swapped ? 1 : 0, av->pos_bub().x(), av->pos_bub().y(),
+                      mp_test_npc_pos.x(), mp_test_npc_pos.y() );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "npc verify swapped=%d", swapped ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10856,6 +11007,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_bikerack_verify", mp_cmd_test_bikerack_verify );
         r.emplace( "test_pet_verify", mp_cmd_test_pet_verify );
         r.emplace( "test_item_menu_verify", mp_cmd_test_item_menu_verify );
+        r.emplace( "test_npc_verify", mp_cmd_test_npc_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

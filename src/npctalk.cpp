@@ -53,6 +53,7 @@
 #include "dialogue_chatbin.h"
 #include "dialogue_helpers.h"
 #include "dialogue_imgui.h"
+#include "netplay/netplay.h"
 #include "effect_on_condition.h"
 #include "enum_conversions.h"
 #include "enum_traits.h"
@@ -1710,6 +1711,26 @@ void avatar::talk_to( std::unique_ptr<talker> talk_with, bool radio_contact,
     }
 }
 
+void talk_to_npc( npc &you, npc &who )
+{
+    // DDA MP v4.0a-339: avatar::talk_to, but the "player" side is the
+    // session avatar (an npc). The dialogue object stays on the host and the
+    // UI bridge shows its lines/responses on the owning client.
+    dialogue d( get_talker_for( you ), get_talker_for( who ), {} );
+    d.by_radio = false;
+    d.actor( true )->check_missions();
+    for( mission *&mission : d.actor( true )->assigned_missions() ) {
+        if( mission->get_assigned_player_id() == you.getID() ) {
+            d.missions_assigned.push_back( mission );
+        }
+    }
+    for( const std::string &topic_id : d.actor( true )->get_topics( false ) ) {
+        d.add_topic( topic_id );
+    }
+    dialogue_imgui d_img( &d );
+    d_img.draw_dialogue_imgui( false, false, "" );
+}
+
 std::string dialogue::speaker_name( const dialogue_imgui_impl &d_img ) const
 {
     if( d_img.is_not_conversation ) {
@@ -2935,8 +2956,46 @@ talk_topic dialogue::opt_imgui( dialogue_imgui_impl &d_img, const talk_topic &to
     d_img.sel_response = 0;
     size_t response_ind = response_hotkeys.size();
     bool okay;
+    bool mp_remote_answer = false;
+    if( netplay::host_prompt_owner() != 0 ) {
+        // DDA MP v4.0a-339: run the dialogue on the host and show the current
+        // line + responses on the owning client. The dialogue object stays
+        // authoritative on the host, so missions/training/effects keep working.
+        static int mp_test_dialogue_prompts = 0;
+        const char *test_limit = std::getenv( "DDA_MP_TEST_DIALOGUE_LIMIT" );
+        if( test_limit != nullptr && test_limit[0] != '\0' &&
+            ++mp_test_dialogue_prompts > std::atoi( test_limit ) ) {
+            return talk_topic( "TALK_DONE" );
+        }
+        std::vector<netplay::prompt_entry> pe;
+        pe.reserve( responses.size() );
+        for( size_t i = 0; i < responses.size(); ++i ) {
+            netplay::prompt_entry e;
+            e.txt = response_lines[i].text;
+            e.retval = static_cast<int>( i );
+            e.enabled = !( response_condition_exists[i] &&
+                           !response_condition_eval[i] );
+            e.key = response_hotkeys[i].get_first_input();
+            pe.push_back( std::move( e ) );
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "dialogue prompt n=%d responses=%d text=%s\n",
+                          mp_test_dialogue_prompts,
+                          static_cast<int>( responses.size() ), challenge.c_str() );
+            std::fclose( f );
+        }
+        const auto ans = netplay::host_prompt_uilist( challenge, 0, pe );
+        if( !ans || ans->canceled ) {
+            return talk_topic( "TALK_DONE" );
+        }
+        response_ind = static_cast<size_t>( std::clamp(
+                                               ans->index, 0,
+                                               static_cast<int>( responses.size() ) - 1 ) );
+        mp_remote_answer = true;
+    }
     do {
         std::string action;
+        if( !mp_remote_answer ) {
         do {
             if( debug_mode ) {
                 d_img.set_responses_debug( build_debug_info( d_img, topic, d_img.sel_response ) );
@@ -3015,6 +3074,7 @@ talk_topic dialogue::opt_imgui( dialogue_imgui_impl &d_img, const talk_topic &to
 
         } while( response_ind >= response_hotkeys.size() ||
                  ( action != "ANY_INPUT" && action != "QUIT" && action != "CONFIRM" ) );
+    }
         okay = true;
         std::set<dialogue_consequence> consequences = responses[response_ind].get_consequences( *this );
         if( consequences.count( dialogue_consequence::hostile ) > 0 ) {
@@ -3022,7 +3082,7 @@ talk_topic dialogue::opt_imgui( dialogue_imgui_impl &d_img, const talk_topic &to
         } else if( consequences.count( dialogue_consequence::helpless ) > 0 ) {
             okay = query_yn( _( "You'll be helpless!  Proceed?" ) );
         }
-    } while( !okay );
+    } while( !okay && !mp_remote_answer );
 
     d_img.add_to_history( response_lines[response_ind].text, _( "You" ), c_light_blue );
 
