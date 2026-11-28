@@ -192,6 +192,11 @@ void trade_ui::pushevent( event const &ev )
 
 trade_ui::trade_result_t trade_ui::perform_trade()
 {
+    // DDA MP test hook: construct the native UI but close it immediately.
+    if( const char *test_cancel = std::getenv( "DDA_MP_TEST_TRADE_UI_CANCEL" );
+        test_cancel != nullptr && test_cancel[0] != '\0' ) {
+        return { false, 0, 0, 0, 0, {}, {} };
+    }
     _exit = false;
     _traded = false;
 

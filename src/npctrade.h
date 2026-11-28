@@ -62,6 +62,9 @@ std::list<item> transfer_items( trade_selector::select_t &stuff, Character &give
                                 bool use_escrow );
 double net_price_adjustment( const Character &buyer, const Character &seller );
 bool trade( npc &p, int cost, const std::string &deal );
+/// DDA MP v4.0a-341: apply an already-confirmed trade to the scoped player
+/// character (session avatar) and the NPC.
+bool apply_trade( npc &np, trade_ui::trade_result_t &result );
 std::vector<item_pricing> init_selling( npc &p );
 } // namespace npc_trading
 

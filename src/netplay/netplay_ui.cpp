@@ -77,6 +77,7 @@
 #include "flag.h"
 #include "ranged.h"
 #include "npc.h"
+#include "trade_ui.h"
 #include "monster.h"
 #include "creature_tracker.h"
 #include "loading_ui.h"  // loading_ui::done (releases the splash adaptors)
@@ -3442,6 +3443,114 @@ static void mp_run_mission_journal( const std::string &payload )
     }
     mp_inv_log( string_format( "missions: journal=%d ret=%d",
                                static_cast<int>( entries.size() ), menu.ret ) );
+}
+
+/* DDA MP v4.0a-341: native trade UI on the client. The host streams a tagged
+ * NPC snapshot; trade_ui runs on the mirror and the chosen uid lists travel
+ * back as trade_commit. */
+static void mp_run_native_trade( const std::string &payload )
+{
+    int dx = 0;
+    int dy = 0;
+    int cost = 0;
+    npc trader;
+    try {
+        JsonValue jv = json_loader::from_string( payload );
+        JsonObject root = jv.get_object();
+        dx = root.get_int( "dx" );
+        dy = root.get_int( "dy" );
+        cost = root.get_int( "cost" );
+        trader.deserialize( root.get_object( "npc" ) );
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "native trade parse error: " ) + e.what() );
+        return;
+    } catch( ... ) {
+        mp_inv_log( "native trade parse error" );
+        return;
+    }
+    mp_inv_log( string_format( "native trade: npc=%s dx=%d dy=%d cost=%d",
+                               trader.get_name().c_str(), dx, dy, cost ) );
+    if( const char *auto_trade = std::getenv( "DDA_MP_TEST_NATIVE_TRADE_AUTO" );
+        auto_trade != nullptr && auto_trade[0] != '\0' ) {
+        // Test path: sell the wielded item, skip the interactive UI.
+        const item_location sold = get_avatar().get_wielded_item();
+        if( !sold ) {
+            mp_inv_log( "native trade auto: no wielded item" );
+            return;
+        }
+        const std::string uid = sold->get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            mp_inv_log( "native trade auto: no uid" );
+            return;
+        }
+        std::ostringstream os;
+        JsonOut js( os );
+        js.start_object();
+        js.member( "dx", dx );
+        js.member( "dy", dy );
+        js.member( "cost", cost );
+        js.member( "you" );
+        js.start_array();
+        js.start_object();
+        js.member( "uid", uid );
+        js.member( "count", 1 );
+        js.end_object();
+        js.end_array();
+        js.member( "trader" );
+        js.start_array();
+        js.end_array();
+        js.end_object();
+        netplay::client_send_intent( "trade_commit", 0, {}, os.str() );
+        mp_inv_log( string_format( "native trade auto: sell uid=%s", uid.c_str() ) );
+        return;
+    }
+    trade_ui ui( get_avatar(), trader, cost, _( "Trade" ) );
+    const trade_ui::trade_result_t result = ui.perform_trade();
+    mp_inv_log( string_format( "native trade: traded=%d balance=%d",
+                               result.traded ? 1 : 0, result.balance ) );
+    if( !result.traded ) {
+        return;
+    }
+    std::ostringstream os;
+    JsonOut js( os );
+    js.start_object();
+    js.member( "dx", dx );
+    js.member( "dy", dy );
+    js.member( "cost", cost );
+    js.member( "you" );
+    js.start_array();
+    for( const trade_ui::entry_t &e : result.items_you ) {
+        if( !e.first ) {
+            continue;
+        }
+        const std::string uid = e.first->get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            continue;
+        }
+        js.start_object();
+        js.member( "uid", uid );
+        js.member( "count", e.second );
+        js.end_object();
+    }
+    js.end_array();
+    js.member( "trader" );
+    js.start_array();
+    for( const trade_ui::entry_t &e : result.items_trader ) {
+        if( !e.first ) {
+            continue;
+        }
+        const std::string uid = e.first->get_var( "mp_uid", std::string() );
+        if( uid.empty() ) {
+            continue;
+        }
+        js.start_object();
+        js.member( "uid", uid );
+        js.member( "count", e.second );
+        js.end_object();
+    }
+    js.end_array();
+    js.end_object();
+    netplay::client_send_intent( "trade_commit", 0, {}, os.str() );
 }
 
 /* DDA MP v4.0a-193: custom barter window. Payload:
@@ -8041,6 +8150,10 @@ void run_view_loop()
                         mp_run_mission_journal( mp_ev_text );
                         continue;
                     }
+                    if( mp_ev_type == netplay::EVENT_TRADE_NPC ) {
+                        mp_run_native_trade( mp_ev_text );
+                        continue;
+                    }
                     if( mp_ev_type == netplay::EVENT_MISSION_TURNIN ) {
                         mp_run_mission_turnins( mp_ev_text );
                         continue;
@@ -10070,6 +10183,44 @@ void run_view_loop()
                             } else if( mp_comp_phase == 2 && mp_comp_ms > 8000 ) {
                                 mp_inv_log( "test: computer done" );
                                 ++mp_comp_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "trade_test" ) {
+                        static int mp_tr_phase = 0;
+                        static auto mp_tr_t0 = std::chrono::steady_clock::now();
+                        static std::string mp_tr_uid;
+                        if( mp_tr_phase == 0 ) {
+                            mp_tr_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: trade spawn" );
+                            ++mp_tr_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_tr_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_tr_t0 ).count();
+                            if( mp_tr_phase == 1 && mp_tr_ms > 2500 ) {
+                                const item_location loc = get_avatar().get_wielded_item();
+                                if( loc ) {
+                                    mp_tr_uid = loc->get_var( "mp_uid", std::string() );
+                                }
+                                netplay::client_send_intent( "trade_native", 0, { 1, 1 } );
+                                mp_inv_log( string_format( "test: trade native uid=%s",
+                                                           mp_tr_uid.c_str() ) );
+                                ++mp_tr_phase;
+                                sent = false;
+                            } else if( mp_tr_phase == 2 && mp_tr_ms > 7000 ) {
+                                netplay::client_send_intent( "test_trade_verify", 0, {},
+                                                             mp_tr_uid );
+                                mp_inv_log( "test: trade verify" );
+                                ++mp_tr_phase;
+                                sent = false;
+                            } else if( mp_tr_phase == 3 && mp_tr_ms > 10000 ) {
+                                mp_inv_log( "test: trade done" );
+                                ++mp_tr_phase;
                                 sent = true;
                             } else {
                                 sent = false;

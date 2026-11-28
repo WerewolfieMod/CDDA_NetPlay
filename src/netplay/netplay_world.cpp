@@ -3640,7 +3640,7 @@ static int mp_base_color_index( nc_color c )
  * client's mirror and the client can name the exact host item while acting.
  * "mp_uid" is excluded from item stacking (item.cpp), so tagging never changes
  * whether two items merge. */
-static void mp_tag_avatar_items( npc &av )
+static void mp_tag_character_items( Character &who )
 {
     static unsigned long long seq = 0;
     std::function<void( item_location )> tag = [&]( item_location loc ) {
@@ -3657,12 +3657,39 @@ static void mp_tag_avatar_items( npc &av )
             }
         }
     };
-    for( item *it : av.inv_dump() ) {
+    for( item *it : who.inv_dump() ) {
         if( it == nullptr ) {
             continue;
         }
-        tag( av.is_wielding( *it ) ? av.get_wielded_item() : item_location( av, it ) );
+        tag( who.is_wielding( *it ) ? who.get_wielded_item() : item_location( who, it ) );
     }
+}
+
+static void mp_tag_avatar_items( npc &av )
+{
+    mp_tag_character_items( av );
+}
+
+static std::map<int, std::pair<character_id, int>> av_trade_pending;
+
+bool host_send_native_trade( int sid, npc &who, int cost )
+{
+    npc *av = av_session_npc( sid );
+    if( av == nullptr ) {
+        return false;
+    }
+    mp_tag_character_items( who );
+    std::ostringstream os;
+    JsonOut js( os );
+    js.start_object();
+    js.member( "dx", who.pos_bub().x() - av->pos_bub().x() );
+    js.member( "dy", who.pos_bub().y() - av->pos_bub().y() );
+    js.member( "cost", cost );
+    js.member( "npc" );
+    who.serialize( js );
+    js.end_object();
+    av_trade_pending[sid] = { who.getID(), cost };
+    return host_send_event_to_sid( sid, os.str(), EVENT_TRADE_NPC );
 }
 
 static void mp_diag_mark( const char *what, int sid )
@@ -4064,10 +4091,10 @@ static void av_send_status( int sid )
     }
 }
 
-/* DDA MP v4.1: resolve a stable item id on the session avatar. The id is
- * carried in the item's own variables, so it survives snapshots and container
- * moves; no row list has to be kept in sync. */
-static item_location av_find_by_uid( npc &av, const std::string &uid )
+/* DDA MP v4.1: resolve a stable item id on a character (session avatar or a
+ * trade partner). The id rides in the item's own variables, so it survives
+ * snapshots and container moves. */
+static item_location mp_find_character_uid( Character &who, const std::string &uid )
 {
     item_location found;
     std::function<void( item_location )> walk = [&]( item_location loc ) {
@@ -4084,13 +4111,18 @@ static item_location av_find_by_uid( npc &av, const std::string &uid )
             }
         }
     };
-    for( item *it : av.inv_dump() ) {
+    for( item *it : who.inv_dump() ) {
         if( it == nullptr || found ) {
             continue;
         }
-        walk( av.is_wielding( *it ) ? av.get_wielded_item() : item_location( av, it ) );
+        walk( who.is_wielding( *it ) ? who.get_wielded_item() : item_location( who, it ) );
     }
     return found;
+}
+
+static item_location av_find_by_uid( npc &av, const std::string &uid )
+{
+    return mp_find_character_uid( av, uid );
 }
 
 void host_pump_inventory_actions()
@@ -7769,6 +7801,9 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     target->set_attitude( NPCATT_FOLLOW );
                     target->op_of_u.trust = 10;
                     target->remove_effect( efftype_id( "sleep" ) );
+                    if( std::getenv( "DDA_MP_TEST_TRADE" ) != nullptr ) {
+                        target->wear_item( item( itype_id( "backpack" ) ), false );
+                    }
                 }
                 mp_test_npc_pos = npc_pos;
                 mp_test_npc_avatar_pos = ctrl_pos;
@@ -8285,7 +8320,7 @@ static bool mp_use_computer_at( npc &av, map &here, const tripoint_bub_ms &p )
     return true;
 }
 
-static bool mp_run_npc_menu( npc &av, npc &who )
+static bool mp_run_npc_menu( int sid, npc &av, npc &who )
 {
     // DDA MP v4.0a-339: native NPC examine menu for the session avatar. The
     // menu itself is the vanilla uilist (bridged to the client); rows whose
@@ -8324,19 +8359,20 @@ static bool mp_run_npc_menu( npc &av, npc &who )
     menu.addentry( sort_armor, false, 'r',
                    _( "Sort armor (netplay: armor UI not ported yet)" ) );
     menu.addentry( attack, true, 'a', _( "Attack" ) );
-    if( !who.is_player_ally() ) {
+    if( who.is_friendly( av ) ) {
+        menu.addentry( trade, true, 'b', _( "Trade" ) );
+    } else {
         menu.addentry( disarm, false, 'd',
                        _( "Disarm (netplay: avatar-only action)" ) );
         menu.addentry( steal, false, 'S',
                        _( "Steal (netplay: inventory UI not ported yet)" ) );
-    } else {
-        menu.addentry( trade, false, 'b',
-                       _( "Trade (netplay: trade UI not ported yet)" ) );
     }
     menu.query();
     const int choice = menu.ret;
     if( choice == talk ) {
         talk_to_npc( av, who );
+    } else if( choice == trade ) {
+        netplay::host_send_native_trade( sid, who, 0 );
     } else if( choice == swap_pos ) {
         if( !g->prompt_dangerous_tile( who.pos_bub() ) ) {
             return true;
@@ -8452,7 +8488,7 @@ static bool mp_cmd_examine_at( const netplay::intent_request &in )
             } else if( npc *np = dynamic_cast<npc *>( creature ) ) {
                 // DDA MP v4.0a-339: native NPC menu; talk/trade rows stay
                 // disabled until their UIs are ported.
-                creature_handled = mp_run_npc_menu( *av, *np );
+                creature_handled = mp_run_npc_menu( in.sid, *av, *np );
             }
         }
         if( !creature_handled ) {
@@ -10206,6 +10242,209 @@ static bool mp_cmd_test_npc_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_trade_native( const netplay::intent_request &in )
+{
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.args.size() < 2 ) {
+        return true;
+    }
+    const int dx = in.args[0];
+    const int dy = in.args[1];
+    if( std::abs( dx ) > 1 || std::abs( dy ) > 1 ) {
+        return true;
+    }
+    map &here = get_map();
+    const tripoint_bub_ms p = av->pos_bub() + tripoint_rel_ms( dx, dy, 0 );
+    npc *who = get_creature_tracker().creature_at<npc>( p );
+    if( who == nullptr || who->get_unique_id().rfind( "netplay_avatar:", 0 ) == 0 ||
+        !who->is_friendly( *av ) ) {
+        netplay::host_send_event_to_sid(
+            in.sid, _( "There is no trader there." ), static_cast<int>( m_info ) );
+        return true;
+    }
+    netplay::host_send_native_trade( in.sid, *who, 0 );
+    mp_ctrl_log( string_format( "trade native sid=%d dx=%d dy=%d npc=%s",
+                                in.sid, dx, dy, who->get_name().c_str() ) );
+    return true;
+}
+
+static bool mp_cmd_trade_commit( const netplay::intent_request &in )
+{
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "trade commit rx sid=%d data=%d pending=%d json=%s\n",
+                      in.sid, static_cast<int>( in.data.size() ),
+                      static_cast<int>( av_trade_pending.count( in.sid ) ),
+                      in.data.c_str() );
+        std::fclose( f );
+    }
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    const auto pending = av_trade_pending.find( in.sid );
+    if( pending == av_trade_pending.end() ) {
+        return true;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "trade commit pending npc=%lld cost=%d\n",
+                      static_cast<long long>( pending->second.first.get_value() ),
+                      pending->second.second );
+        std::fclose( f );
+    }
+    npc *who = nullptr;
+    for( npc &guy : g->all_npcs() ) {
+        if( guy.getID() == pending->second.first ) {
+            who = &guy;
+            break;
+        }
+    }
+    if( who == nullptr || !who->is_friendly( *av ) ||
+        rl_dist( who->pos_bub(), av->pos_bub() ) > 2 ) {
+        mp_ctrl_log( string_format( "trade commit rejected sid=%d who=%d friendly=%d dist=%d",
+                                    in.sid, who != nullptr ? 1 : 0,
+                                    who != nullptr && who->is_friendly( *av ) ? 1 : 0,
+                                    who != nullptr ? rl_dist( who->pos_bub(), av->pos_bub() ) : -1 ) );
+        av_trade_pending.erase( pending );
+        return true;
+    }
+    int dx = 0;
+    int dy = 0;
+    int delta_bank = 0;
+    trade_ui::select_t items_you;
+    trade_ui::select_t items_trader;
+    std::string error;
+    try {
+        JsonValue jv = json_loader::from_string( in.data );
+        JsonObject root = jv.get_object();
+        dx = root.get_int( "dx" );
+        dy = root.get_int( "dy" );
+        const int sent_cost = root.get_int( "cost" );
+        ( void )sent_cost;
+        if( root.has_int( "delta_bank" ) ) {
+            delta_bank = root.get_int( "delta_bank" );
+        }
+        const auto build = [&]( JsonArray arr, Character & owner,
+                                trade_ui::select_t & out ) {
+            for( JsonObject e : arr ) {
+                const std::string uid = e.get_string( "uid" );
+                int count = e.get_int( "count" );
+                item_location loc = mp_find_character_uid( owner, uid );
+                if( !loc ) {
+                    error = string_format( "item %s not found", uid.c_str() );
+                    return false;
+                }
+                const int avail = loc->count_by_charges() ? loc->charges : loc->count();
+                count = std::clamp( count, 1, std::max( 1, avail ) );
+                out.emplace_back( loc, count );
+            }
+            return true;
+        };
+        if( !build( root.get_array( "you" ), *av, items_you ) ||
+            !build( root.get_array( "trader" ), *who, items_trader ) ) {
+            netplay::host_send_event_to_sid( in.sid, error, static_cast<int>( m_info ) );
+            av_trade_pending.erase( pending );
+            return true;
+        }
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "trade commit built you=%d trader=%d\n",
+                          static_cast<int>( items_you.size() ),
+                          static_cast<int>( items_trader.size() ) );
+            std::fclose( f );
+        }
+    } catch( const std::exception &e ) {
+        av_trade_pending.erase( pending );
+        mp_ctrl_log( string_format( "trade commit parse error: %s", e.what() ) );
+        return true;
+    } catch( ... ) {
+        av_trade_pending.erase( pending );
+        return true;
+    }
+    if( items_you.empty() && items_trader.empty() ) {
+        av_trade_pending.erase( pending );
+        return true;
+    }
+    int value_you = 0;
+    for( const trade_ui::entry_t &e : items_you ) {
+        value_you += npc_trading::trading_price( *who, *av, e );
+    }
+    int value_trader = 0;
+    for( const trade_ui::entry_t &e : items_trader ) {
+        value_trader += npc_trading::trading_price( *av, *who, e );
+    }
+    const int balance = pending->second.second + value_you - value_trader + delta_bank;
+    if( !npc_trading::npc_will_accept_trade( *who, balance ) ) {
+        mp_ctrl_log( string_format( "trade commit reject balance=%d", balance ) );
+        netplay::host_send_event_to_sid(
+            in.sid, _( "You'll need to offer me more than that." ),
+            static_cast<int>( m_info ) );
+        av_trade_pending.erase( pending );
+        return true;
+    }
+    if( !npc_trading::npc_can_fit_items( *who, items_you ) ) {
+        mp_ctrl_log( string_format( "trade commit reject fit you=%d",
+                                    static_cast<int>( items_you.size() ) ) );
+        netplay::host_send_event_to_sid(
+            in.sid, _( "The trader cannot accept those items." ),
+            static_cast<int>( m_info ) );
+        av_trade_pending.erase( pending );
+        return true;
+    }
+    g->mp_anchor_map_on( *av, true );
+    const std::size_t msg_before = Messages::generation();
+    trade_ui::trade_result_t result;
+    result.traded = true;
+    result.balance = balance;
+    result.delta_bank = delta_bank;
+    result.value_you = value_you;
+    result.value_trader = value_trader;
+    result.items_you = std::move( items_you );
+    result.items_trader = std::move( items_trader );
+    const bool ok = npc_trading::apply_trade( *who, result );
+    mp_forward_new_messages( in.sid, msg_before );
+    mp_ctrl_log( string_format(
+                     "trade commit sid=%d dx=%d dy=%d you=%d trader=%d value=%d/%d "
+                     "balance=%d ok=%d", in.sid, dx, dy,
+                     static_cast<int>( result.items_you.size() ),
+                     static_cast<int>( result.items_trader.size() ),
+                     value_you, value_trader, balance, ok ? 1 : 0 ) );
+    av_trade_pending.erase( pending );
+    av_send_status( in.sid );
+    av_send_session_picture( in.sid, av->pos_bub(), av );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
+static bool mp_cmd_test_trade_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-341 test: the traded item left the avatar and now lives in
+    // some NPC inventory.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr || in.data.empty() ) {
+        return true;
+    }
+    const bool on_avatar = static_cast<bool>( mp_find_character_uid( *av, in.data ) );
+    bool on_npc = false;
+    for( npc &guy : g->all_npcs() ) {
+        if( &guy != av && mp_find_character_uid( guy, in.data ) ) {
+            on_npc = true;
+            break;
+        }
+    }
+    const bool ok = !on_avatar && on_npc;
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test trade verify sid=%d uid=%s ok=%d av=%d npc=%d\n",
+                      in.sid, in.data.c_str(), ok ? 1 : 0,
+                      on_avatar ? 1 : 0, on_npc ? 1 : 0 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "trade verify ok=%d", ok ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -11057,6 +11296,9 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_pet_verify", mp_cmd_test_pet_verify );
         r.emplace( "test_item_menu_verify", mp_cmd_test_item_menu_verify );
         r.emplace( "test_npc_verify", mp_cmd_test_npc_verify );
+        r.emplace( "trade_native", mp_cmd_trade_native );
+        r.emplace( "trade_commit", mp_cmd_trade_commit );
+        r.emplace( "test_trade_verify", mp_cmd_test_trade_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
