@@ -5398,16 +5398,91 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
     }
 }
 
+/* DDA MP v4.0a-337: vanilla-style suggested actions, computed from the
+ * client's own mirror (doors, vehicles, hostiles, movement mode, butcher
+ * target...). */
+static std::vector<action_id> mp_client_suggested_actions()
+{
+    std::vector<action_id> out;
+    if( !mp_native_avatar_ready ) {
+        return out;
+    }
+    std::map<action_id, int> weightings;
+    Character &pc = get_avatar();
+    map &here = get_map();
+    if( !pc.get_hostile_creatures( MAX_VIEW_DISTANCE ).empty() ) {
+        if( !pc.controlling_vehicle ) {
+            weightings[ACTION_CYCLE_MOVE] = 400;
+            weightings[ACTION_CYCLE_MOVE_REVERSE] = 400;
+        }
+        const item_location weapon = pc.get_wielded_item();
+        if( weapon && ( weapon->is_gun() || weapon->has_flag( flag_REACH_ATTACK ) ) ) {
+            weightings[ACTION_FIRE] = 350;
+        }
+    }
+    if( pc.is_running() ) {
+        weightings[ACTION_TOGGLE_RUN] = 300;
+    }
+    if( pc.is_crouching() ) {
+        weightings[ACTION_TOGGLE_CROUCH] = 300;
+    }
+    if( pc.is_prone() ) {
+        weightings[ACTION_TOGGLE_PRONE] = 300;
+    }
+    if( here.veh_at( pc.pos_bub() ) ) {
+        weightings[ACTION_CONTROL_VEHICLE] = 300;
+    }
+    for( const tripoint_bub_ms &p : here.points_in_radius( pc.pos_bub(), 1 ) ) {
+        if( p != pc.pos_bub() ) {
+            if( can_interact_at( ACTION_OPEN, here, p ) ) {
+                weightings[ACTION_OPEN] = 200;
+            }
+            if( can_interact_at( ACTION_CLOSE, here, p ) ) {
+                weightings[ACTION_CLOSE] = 200;
+            }
+            if( can_interact_at( ACTION_EXAMINE, here, p ) ) {
+                weightings[ACTION_EXAMINE] = 200;
+            }
+        } else {
+            if( can_interact_at( ACTION_BUTCHER, here, p ) ) {
+                weightings[ACTION_BUTCHER] = 200;
+            }
+            if( can_interact_at( ACTION_MOVE_UP, here, p ) ) {
+                weightings[ACTION_MOVE_UP] = 200;
+            }
+            if( can_interact_at( ACTION_MOVE_DOWN, here, p ) ) {
+                weightings[ACTION_MOVE_DOWN] = 200;
+            }
+        }
+    }
+    if( pc.hauling ) {
+        weightings[ACTION_HAUL_TOGGLE] = 300;
+    }
+    std::vector<std::pair<action_id, int>> sorted( weightings.begin(), weightings.end() );
+    std::sort( sorted.begin(), sorted.end(), []( const auto &a, const auto &b ) {
+        if( a.second != b.second ) {
+            return a.second > b.second;
+        }
+        return static_cast<int>( a.first ) < static_cast<int>( b.first );
+    } );
+    for( const auto &entry : sorted ) {
+        if( entry.second >= 200 ) {
+            out.push_back( entry.first );
+        }
+    }
+    return out;
+}
+
 /* DDA MP v4.0a-72: the client's own action menu. Same categories and entries
  * as the host's handle_action_menu, minus the save/load/debug entries that
- * cannot apply to a remote session. The host owns the contextual weighting
- * (nearby doors, wielded gun, ...), so the client lists the vanilla order.
- * The chosen action id travels to the host, which applies it to the session
- * avatar exactly like a host keypress would apply it to the host player. */
+ * cannot apply to a remote session. The chosen action id travels to the host,
+ * which applies it to the session avatar exactly like a host keypress would
+ * apply it to the host player. */
 static int mp_client_action_menu()
 {
     const input_context ctxt = get_default_mode_input_context();
     std::string category = "back";
+    const std::vector<action_id> mp_suggested = mp_client_suggested_actions();
 
 #define MP_REGISTER_ACTION( name ) entries.emplace_back( name, true, \
         hotkey_for_action( name, /*maximum_modifier_count=*/1 ), \
@@ -5425,6 +5500,9 @@ static int mp_client_action_menu()
         std::string catgname;
 
         if( category == "back" ) {
+            for( const action_id mp_act : mp_suggested ) {
+                MP_REGISTER_ACTION( mp_act );
+            }
             MP_REGISTER_CATEGORY( _( "Look" ) );
             MP_REGISTER_CATEGORY( _( "Interact" ) );
             MP_REGISTER_CATEGORY( _( "Inventory" ) );
@@ -9979,6 +10057,38 @@ void run_view_loop()
                             } else if( mp_pet_phase == 3 && mp_pet_ms > 9000 ) {
                                 mp_inv_log( "test: pet done" );
                                 ++mp_pet_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "suggest_test" ) {
+                        static int mp_sg_phase = 0;
+                        static auto mp_sg_t0 = std::chrono::steady_clock::now();
+                        if( mp_sg_phase == 0 ) {
+                            mp_sg_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: suggest spawn" );
+                            ++mp_sg_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_sg_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_sg_t0 ).count();
+                            if( mp_sg_phase == 1 && mp_sg_ms > 2500 ) {
+                                const std::vector<action_id> sug =
+                                    mp_client_suggested_actions();
+                                std::string ids;
+                                for( const action_id a : sug ) {
+                                    if( !ids.empty() ) {
+                                        ids += ",";
+                                    }
+                                    ids += std::to_string( static_cast<int>( a ) );
+                                }
+                                mp_inv_log( string_format( "test suggest n=%d ids=%s",
+                                                           static_cast<int>( sug.size() ),
+                                                           ids.c_str() ) );
+                                ++mp_sg_phase;
                                 sent = true;
                             } else {
                                 sent = false;
