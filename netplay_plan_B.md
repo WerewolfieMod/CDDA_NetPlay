@@ -184,12 +184,12 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-4 | Native `veh_interact` на клиенте | `veh_interact` | P2-4/P3-2 | все examine-действия локальны | DONE (native UI; `e` → direction prompt → `examine_at` → `interact_with`-меню, `EXAMINE_VEHICLE` — нативный `veh_interact`; repair/refuel/rename/relabel/remove/mend/install/siphon/unload/shape/crew через command bus) |
 | P3-5 | Native `vehicle::interact_with` (верхнее меню) | `vehicle_use` | P2-4 | без JSON-моста | DONE (vehicle_menu_here + client actions: EXAMINE_VEHICLE/USE_WORKBENCH/FAUCET_FILL/LOCKPICK/USE_TOOL/SMART_ENGINE/TURRET_RELOAD/TURRET_AIM/ACTIVATE_EOC; turret single/all/auto aim; остальные строки — safe host callbacks) |
 | P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (direction prompt и highlighted `can_examine_at`; host `examine_at` для vehicle/part_con/trap/terrain/furniture/pickup; питомцы/mech/paybot/friendly-монстры — нативные меню; консоли и NPC-диалоги — TODO) |
-| P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | TODO |
+| P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | PARTIAL (client main menu: help/keybindings/options/autopickup/safemode/color/world mods/long wait/disconnect; action menu по категориям; контекстные weighting и native `handle_action_menu` — TODO) |
 | P3-8 | Native item menu (`inventory_item_menu`) | `game_inventory` | P2-3 | заменить `mp_client_item_menu` | PARTIAL |
 | P3-9 | Native trade/dialogue/mission UI | `npctalk`/`trade`/`mission` | P2-5 | без uilist-замен | PARTIAL (uilist) |
-| P3-10 | Native zone manager | `clzones`/`zonemap` | P2-2 | создание/редактирование зон | TODO |
-| P3-11 | Native overmap UI | `overmap_ui` | P2-7 | полная карта/маркеры | TODO |
-| P3-12 | Native construction UI | `construction` | P2-2 | требования/превью | PARTIAL (uilist) |
+| P3-10 | Native zone manager | `clzones`/`zonemap` | P2-2 | создание/редактирование зон | PARTIAL (read-only список зон с хоста; создание/редактирование и autopilot zone UI — TODO) |
+| P3-11 | Native overmap UI | `overmap_ui` | P2-7 | полная карта/маркеры | PARTIAL (stock `ui::omap::display()` по seen-блоку с хоста; редактирование заметок/маршрутов на клиенте — TODO) |
+| P3-12 | Native construction UI | `construction` | P2-2 | требования/превью | PARTIAL (клиентский выбор конструкции и направления, host-валидация; native construction/preview — TODO) |
 | P3-13 | Native workbench/tools/liquid/smart controller/turrets/EOC/bike rack/capture/tiedown/harness/planter/tool attach | `iexamine`/`vehicle`/`turret`/`smart_controller_ui` | P2/P3-2 | каждый экран локально | PARTIAL (workbench, tools, liquid, smart controller, turrets, EOC, planter, tiedown, harness, capture и bike rack — рантайм; tool attach — TODO) |
 | P3-14 | Local prompts: query_yn/query_int/uilist/string_input/popup/direction | client | P3-1 | без prompt bridge | PARTIAL (uilist retval, цепочка uilist→query_int и direction bridge исправлены/покрыты regression-тестами; popup/остальные prompt-типы — по мере надобности) |
 | P3-15 | Remote UI fallback только для unported screens | `netplay_ui` | P5 | fallback маркирован | PARTIAL (prompt) |
@@ -203,9 +203,9 @@ B — это не «ещё несколько intent'ов», а архитект
 | P4-2 | Единый native message log (host events + local), без дублей/потерь | client log | P2 | лог как SP, scroll/aging | PARTIAL |
 | P4-3 | Native minimap/overmap panel | client | P2-7 | позиция/размер/zoom как SP | PARTIAL |
 | P4-4 | Native aim/look panels | client | P2 | без host `AIM_PANEL` или fallback | PARTIAL |
-| P4-5 | Tileset/data manifest + mod id resolution/fallback | handshake | P6 | одинаковые id/спрайты | TODO |
+| P4-5 | Tileset/data manifest + mod id resolution/fallback | handshake | P6 | одинаковые id/спрайты | PARTIAL (data hash, mod versions, tileset id в WELCOME и `manifest_check`; content hash tileset — TODO) |
 | P4-6 | Light/weather/visibility sync для native renderer | client | P2-6 | нет расхождений света | PARTIAL (чёрный кадр устранён; остались артефакты панелей) |
-| P4-7 | Политика UI style/font/language/theme (клиентские настройки) | docs/options | — | нет mixed-language/чужих шрифтов | TODO |
+| P4-7 | Политика UI style/font/language/theme (клиентские настройки) | docs/options | — | нет mixed-language/чужих шрифтов | PARTIAL (клиентское меню Options/Colors/Keybindings работает локально; синхронизация стиля/шрифтов host↔client не форсируется) |
 | P4-8 | Camera/layout/framing под native UI | `netplay_ui` | P2/P3 | соответствует SP | PARTIAL |
 | P4-9 | Screenshot/golden image harness | tests | P0-4 | матрица скриншотов | TODO |
 
@@ -241,7 +241,7 @@ B — это не «ещё несколько intent'ов», а архитект
 
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
-| P8-1 | Action regression matrix из `netplay_action_audit.md` | tests | P3/P7 | все действия покрыты | TODO |
+| P8-1 | Action regression matrix из `netplay_action_audit.md` | tests | P3/P7 | все действия покрыты | PARTIAL (10 suites pass: prompt_chain/direction/planter/audit/workbench/tiedown/harness/capture/bikerack/pet; NPC, zones, consoles, render — TODO) |
 | P8-2 | Render regression matrix из `netplay_render.audit.md` | tests | P4 | все экраны/настройки | TODO |
 | P8-3 | Single-player reference + client-native comparison | tests | P0-4/P4 | golden screenshots | TODO |
 | P8-4 | Mod compatibility tests | tests | P6 | набор модов проходит | TODO |
@@ -607,13 +607,32 @@ JSON/mapgen:
 | 2026-11-26 | P3-13 | Washing machine + dishwasher runtime | `test utility sid=1 wm=11/1 dw=10/1`; оба сообщения заливки/детергента доставлены клиенту |
 | 2026-11-26 | P3-5/P3-6 | Examine машины снаружи | `test outside pos=...`; client `scan adjacent`; `mirror applied ... veh_at=0`; menu target exact; `examine_vehicle -> native` |
 
-### 9.4. Следующие 5 задач
+### 9.4. Следующие задачи
 
-1. P6-2: дружелюбная обработка отсутствующего мода/несовпадения версии (сейчас hash-кик).
-2. P3-6: native `game::examine`/`iexamine` и direction prompt для соседней клетки.
-3. Runtime-тест planter (`USE_PLANTER` + query_seed UI).
-4. P3-13: оставшиеся native-экраны (bike rack/capture/tiedown/harness/tool attach).
-5. P4-5/P4-8/P8-1: render/data manifest и regression-матрица.
+1. P3-9: NPC dialogue/trade/mission UI на клиенте.
+2. P3-6: консоли (`use_computer`) и NPC-ветка examine.
+3. P3-7: контекстные weighting в action menu / native `handle_action_menu`.
+4. P3-8/P3-10: native item menu и zone manager/autopilot.
+5. P8-2/P7-4: render-матрица, reconnect и multi-client.
+
+### 9.5. Regression matrix
+
+Прогон на `ddamp-v4.0a-336` (K451), по одному suite на чистый тестовый мир. Скрипт: `W:\Users\Sanyok\AppData\Local\Temp\opencode\mptest\run_matrix.ps1`; результат: `matrix_result.txt`.
+
+| Suite | Проверяемое действие | Маркер | Результат |
+|---|---|---|---|
+| prompt_chain | uilist → query_int | `choice=1 ok=1 value=77` | PASS |
+| direction | `choose_direction` bridge | `ok=1 dx=0 dy=-1 dz=0` | PASS |
+| planter | seed UI → cargo | `planter=10 seeds=1 ground=0` | PASS |
+| audit_pickup | pickup по uid с damage | `pickup take ... dmg=1` | PASS |
+| workbench | `USE_WORKBENCH` → native меню | client `workbench menu row` | PASS |
+| tiedown | `USE_TIEDOWN_FURNITURE_VEH` | `stored=1` | PASS |
+| harness | `USE_ANIMAL_CTRL` | `harnessed=1` | PASS |
+| capture | `USE_CAPTURE_MONSTER_VEH` | `contained=1 animal=1` | PASS |
+| bikerack | auto-hotkey `bikerack` | `racked=1 carrying=3` | PASS |
+| pet | native `pet_menu` + mount | `mounted=1` | PASS |
+
+Не покрыто матрицей: NPC dialogue/trade/mission, zone manager/autopilot, consoles, полная render-матрица, reconnect/multi-client.
 
 ---
 
