@@ -9906,6 +9906,37 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "bikerack_test" ) {
+                        static int mp_br_phase = 0;
+                        static auto mp_br_t0 = std::chrono::steady_clock::now();
+                        if( mp_br_phase == 0 ) {
+                            mp_br_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: bikerack spawn" );
+                            ++mp_br_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_br_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_br_t0 ).count();
+                            if( mp_br_phase == 1 && mp_br_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: bikerack examine" );
+                                ++mp_br_phase;
+                                sent = false;
+                            } else if( mp_br_phase == 2 && mp_br_ms > 6000 ) {
+                                netplay::client_send_intent( "test_bikerack_verify", 0, {} );
+                                mp_inv_log( "test: bikerack verify" );
+                                ++mp_br_phase;
+                                sent = false;
+                            } else if( mp_br_phase == 3 && mp_br_ms > 9000 ) {
+                                mp_inv_log( "test: bikerack done" );
+                                ++mp_br_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "examine_adjacent_test" ) {
                         static int mp_ea_phase = 0;
                         static auto mp_ea_t0 = std::chrono::steady_clock::now();

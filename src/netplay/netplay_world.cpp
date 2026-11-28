@@ -7682,6 +7682,40 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     std::fclose( f );
                 }
             }
+            if( std::getenv( "DDA_MP_TEST_BIKERACK" ) != nullptr ) {
+                // Bike-rack test: a three-tile rack line beside the controls
+                // and a bicycle parked next to it.
+                int rack_part = -1;
+                for( int ry = 1; ry <= 3; ++ry ) {
+                    const point_rel_ms rack_mount( ctrl_mount.x() + 1, ctrl_mount.y() + ry );
+                    if( veh->can_mount( rack_mount, vpart_id( "frame" ).obj() ).success() ) {
+                        veh->install_part( here, rack_mount, vpart_id( "frame" ) );
+                    }
+                    const int part = veh->can_mount(
+                                         rack_mount, vpart_id( "bike_rack" ).obj() ).success() ?
+                                     veh->install_part( here, rack_mount,
+                                                        vpart_id( "bike_rack" ) ) : -1;
+                    if( part >= 0 && ry == 1 ) {
+                        rack_part = part;
+                    }
+                }
+                if( rack_part >= 0 ) {
+                    here.add_vehicle_to_cache( veh );
+                }
+                const tripoint_bub_ms bike_pos( ctrl_pos.x() + 2, ctrl_pos.y() + 2,
+                                                ctrl_pos.z() );
+                vehicle *bike = nullptr;
+                if( here.inbounds( bike_pos ) && !here.veh_at( bike_pos ) ) {
+                    bike = here.add_vehicle( vproto_id( "bicycle" ), bike_pos, 90_degrees, 0,
+                                             veh_spawn_status::PRISTINE, false, true );
+                }
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test bikerack rack=%d bike=%d pos=%d,%d\n",
+                                  rack_part, bike != nullptr ? 1 : 0,
+                                  bike_pos.x(), bike_pos.y() );
+                    std::fclose( f );
+                }
+            }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 const tripoint_bub_ms seed_pos = seed_part >= 0 ?
                                                  veh->bub_part_pos( here, seed_part ) :
@@ -9816,6 +9850,66 @@ static bool mp_cmd_test_capture_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_bikerack_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-335 test: the rack action starts the racking activity and
+    // the completed merge sets the carrying flag on the rack part.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    map &here = get_map();
+    g->mp_anchor_map_on( *av, true );
+    int part = -1;
+    bool started = false;
+    bool racked = false;
+    const optional_vpart_position vp = here.veh_at( av->pos_bub() );
+    if( vp ) {
+        for( int i = 0; i < vp->vehicle().part_count(); ++i ) {
+            if( vp->vehicle().part( i ).info().has_flag( "BIKE_RACK_VEH" ) ) {
+                part = i;
+                break;
+            }
+        }
+    }
+    if( av->activity && av->activity.id() == activity_id( "ACT_BIKERACK_RACKING" ) ) {
+        started = true;
+        // Shortcut the five-minute activity for the regression run.
+        av->activity.moves_left = 1;
+        for( int guard = 0; guard < 5 && av->activity; ++guard ) {
+            av->set_moves( 1000 );
+            av->process_activity();
+        }
+    }
+    int carrying_parts = 0;
+    if( vp ) {
+        for( int i = 0; i < vp->vehicle().part_count(); ++i ) {
+            if( vp->vehicle().part( i ).has_flag( vp_flag::carrying_flag ) ) {
+                ++carrying_parts;
+            }
+        }
+    }
+    if( vp && part >= 0 ) {
+        racked = vp->vehicle().part( part ).has_flag( vp_flag::carrying_flag );
+    }
+    const int activity_left = av->activity ? av->activity.moves_left : -1;
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test bikerack verify sid=%d rack=%d started=%d racked=%d "
+                      "carrying=%d activity_left=%d parts=%d\n",
+                      in.sid, part, started ? 1 : 0, racked ? 1 : 0,
+                      carrying_parts, activity_left, vp ? vp->vehicle().part_count() : -1 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "bikerack verify rack=%d started=%d racked=%d",
+                               part, started ? 1 : 0, racked ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    if( !netplay::host_avatar_keys_pending() ) {
+        g->mp_anchor_map_on( get_avatar() );
+    }
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10663,6 +10757,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_tiedown_verify", mp_cmd_test_tiedown_verify );
         r.emplace( "test_harness_verify", mp_cmd_test_harness_verify );
         r.emplace( "test_capture_verify", mp_cmd_test_capture_verify );
+        r.emplace( "test_bikerack_verify", mp_cmd_test_bikerack_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
