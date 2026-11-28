@@ -9983,6 +9983,29 @@ static bool mp_cmd_test_pet_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_item_menu_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-338 test: the native item menu's favorite action reached
+    // the host and toggled the wielded item with the same uid.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    const item_location wielded = av->get_wielded_item();
+    const bool ok = wielded && !in.data.empty() &&
+                    wielded->get_var( "mp_uid", std::string() ) == in.data &&
+                    wielded->is_favorite;
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test item menu verify sid=%d uid=%s ok=%d\n",
+                      in.sid, in.data.c_str(), ok ? 1 : 0 );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "item menu verify ok=%d", ok ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10832,6 +10855,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_capture_verify", mp_cmd_test_capture_verify );
         r.emplace( "test_bikerack_verify", mp_cmd_test_bikerack_verify );
         r.emplace( "test_pet_verify", mp_cmd_test_pet_verify );
+        r.emplace( "test_item_menu_verify", mp_cmd_test_item_menu_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

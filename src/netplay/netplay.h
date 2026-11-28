@@ -27,6 +27,7 @@
 class Character;
 class Creature;
 class npc;
+class item_location;
 
 namespace netplay
 {
@@ -853,6 +854,10 @@ bool client_send_inventory_uid( const std::string &uid, int action,
                                 const std::vector<int> &ints = {} );
 /// DDA MP v4.1: pocket settings for the item with this uid.
 bool client_send_inventory_settings_uid( const std::string &uid, const std::string &json );
+/// DDA MP v4.0a-338: the client is closing the native inventory item menu.
+/// Route the chosen action to the host; true means the native local action
+/// must be skipped, false lets game::inventory_item_menu handle it locally.
+bool client_item_menu_action( const item_location &loc, int action );
 
 /// One uid-addressed inventory action, queued for the host main thread.
 struct inventory_uid_action {

@@ -1658,187 +1658,6 @@ static void mp_inv_log( const std::string &msg )
 static void mp_run_client_throw( const item &thrown, const std::string &uid,
                                  const tripoint_abs_ms &origin );
 
-/* DDA MP v4.0a-18: the item action menu, same entries/hotkeys/texts as the
- * host's inventory_item_menu. Ratings mirror the host's rate_action_* helpers
- * (game.cpp) so invalid choices are grey/red exactly like in the original UI. */
-static hint_rating mp_rate_use( Character &you, const item &it )
-{
-    if( it.is_container() && it.item_has_uses_recursive() ) {
-        return hint_rating::good;
-    }
-    if( it.is_broken() ) {
-        return hint_rating::iffy;
-    } else if( it.is_tool() ) {
-        return it.ammo_sufficient( &you ) ? hint_rating::good : hint_rating::iffy;
-    } else if( it.is_gunmod() ) {
-        return static_cast<int>( you.get_skill_level( skill_id( "gun" ) ) ) == 0 ?
-               hint_rating::iffy : hint_rating::good;
-    } else if( it.is_food() || it.is_medication() || it.is_book() || it.is_armor() ) {
-        if( it.is_medication() && !you.can_use_heal_item( it ) ) {
-            return hint_rating::cant;
-        }
-        if( it.is_comestible() && it.is_frozen_liquid() ) {
-            return hint_rating::cant;
-        }
-        return hint_rating::iffy;
-    } else if( it.type->has_use() ) {
-        return hint_rating::good;
-    }
-    return hint_rating::cant;
-}
-
-static hint_rating mp_rate_read( Character &you, const item &it )
-{
-    if( !it.is_book() ) {
-        return hint_rating::cant;
-    }
-    std::vector<std::string> dummy;
-    return you.get_book_reader( it, dummy ) ? hint_rating::good : hint_rating::iffy;
-}
-
-static hint_rating mp_rate_eat( Character &you, const item &it )
-{
-    if( it.is_container() ) {
-        hint_rating best = hint_rating::cant;
-        it.visit_items( [&you, &best]( item *node, item * ) {
-            if( you.can_consume_as_is( *node ) ) {
-                const ret_val<edible_rating> rate = you.will_eat( *node );
-                if( rate.success() ) {
-                    best = hint_rating::good;
-                    return VisitResponse::ABORT;
-                } else if( rate.value() != INEDIBLE && rate.value() != INEDIBLE_MUTATION ) {
-                    best = hint_rating::iffy;
-                }
-            }
-            return VisitResponse::NEXT;
-        } );
-        return best;
-    }
-    if( !you.can_consume_as_is( it ) ) {
-        return hint_rating::cant;
-    }
-    const ret_val<edible_rating> rating = you.will_eat( it );
-    if( rating.success() ) {
-        return hint_rating::good;
-    }
-    if( rating.value() == INEDIBLE || rating.value() == INEDIBLE_MUTATION ) {
-        return hint_rating::cant;
-    }
-    return hint_rating::iffy;
-}
-
-static hint_rating mp_rate_wear( Character &you, const item &it, bool worn )
-{
-    if( !it.is_armor() ) {
-        return hint_rating::cant;
-    }
-    if( worn ) {
-        return hint_rating::iffy;
-    }
-    return you.can_wear( it ).success() ? hint_rating::good : hint_rating::iffy;
-}
-
-static hint_rating mp_rate_take_off( const item &it, bool worn )
-{
-    if( !it.is_armor() || it.has_flag( flag_NO_TAKEOFF ) ||
-        it.has_flag( flag_INTEGRATED ) ) {
-        return hint_rating::cant;
-    }
-    return worn ? hint_rating::good : hint_rating::iffy;
-}
-
-static void mp_menu_entry( uilist &menu, char key, const std::string &text,
-                           hint_rating rating )
-{
-    menu.addentry( key, true, key, text );
-    menu.entries.back().text_color = rating == hint_rating::good ? c_light_green :
-                                     ( rating == hint_rating::iffy ? c_light_red : c_light_gray );
-}
-
-static int mp_client_item_menu( Character &you, const item &it )
-{
-    uilist menu;
-    menu.text = it.display_name();
-    const bool worn = you.is_worn( it );
-    const bool can_drop = you.can_drop( it ).success();
-    mp_menu_entry( menu, 'a', pgettext( "action", "activate" ), mp_rate_use( you, it ) );
-    mp_menu_entry( menu, 'R', pgettext( "action", "read" ), mp_rate_read( you, it ) );
-    mp_menu_entry( menu, 'E', pgettext( "action", "eat" ), mp_rate_eat( you, it ) );
-    mp_menu_entry( menu, 'W', pgettext( "action", "wear" ), mp_rate_wear( you, it, worn ) );
-    mp_menu_entry( menu, 'w', pgettext( "action", "wield" ),
-                   you.can_wield( it ).success() ? hint_rating::good : hint_rating::iffy );
-    mp_menu_entry( menu, 't', pgettext( "action", "throw" ),
-                   you.can_wield( it ).success() ? hint_rating::good : hint_rating::iffy );
-    mp_menu_entry( menu, 'c', pgettext( "action", "change side" ),
-                   it.is_armor() ? hint_rating::good : hint_rating::cant );
-    mp_menu_entry( menu, 'T', pgettext( "action", "take off" ), mp_rate_take_off( it, worn ) );
-    mp_menu_entry( menu, 'd', pgettext( "action", "drop" ),
-                   can_drop ? hint_rating::good : hint_rating::cant );
-    // DDA MP v4.0a-148: partner interaction - hand the item to a player
-    // standing next to the avatar (the host resolves the nearest one).
-    mp_menu_entry( menu, 'g', pgettext( "action", "give" ), hint_rating::good );
-    mp_menu_entry( menu, 'U', pgettext( "action", "unload" ),
-                   you.rate_action_unload( it ) == hint_rating::cant ?
-                   hint_rating::cant : hint_rating::good );
-    mp_menu_entry( menu, 'r', pgettext( "action", "reload" ),
-                   you.rate_action_reload( it ) == hint_rating::cant ?
-                   hint_rating::cant : hint_rating::good );
-    mp_menu_entry( menu, 'p', pgettext( "action", "part reload" ),
-                   you.rate_action_reload( it ) == hint_rating::cant ?
-                   hint_rating::cant : hint_rating::good );
-    mp_menu_entry( menu, 'm', pgettext( "action", "mend" ),
-                   !it.faults.empty() ? hint_rating::good :
-                   ( it.faults_potential().empty() ? hint_rating::cant : hint_rating::iffy ) );
-    mp_menu_entry( menu, 'D', pgettext( "action", "disassemble" ), hint_rating::cant );
-    if( it.is_container() && !it.is_corpse() ) {
-        mp_menu_entry( menu, 'i', pgettext( "action", "insert" ), hint_rating::cant );
-        if( it.num_item_stacks() > 0 ) {
-            mp_menu_entry( menu, 'o', pgettext( "action", "open" ), hint_rating::good );
-        }
-        mp_menu_entry( menu, 'v', pgettext( "action", "pocket settings" ), hint_rating::good );
-    }
-    mp_menu_entry( menu, 'f', it.is_favorite ? pgettext( "action", "unfavorite" ) :
-                   pgettext( "action", "favorite" ), hint_rating::good );
-    mp_menu_entry( menu, 'V', pgettext( "action", "view recipe" ), hint_rating::good );
-    {
-        bool can_collapse = false;
-        bool can_expand = false;
-        for( const item_pocket *pocket : it.get_standard_pockets() ) {
-            if( pocket->settings.is_collapsed() ) {
-                can_expand = true;
-            } else {
-                can_collapse = true;
-            }
-        }
-        mp_menu_entry( menu, '>', pgettext( "action", "hide contents" ),
-                       can_collapse ? hint_rating::good : hint_rating::cant );
-        mp_menu_entry( menu, '<', pgettext( "action", "show contents" ),
-                       can_expand ? hint_rating::good : hint_rating::cant );
-    }
-    mp_menu_entry( menu, '=', pgettext( "action", "reassign" ), hint_rating::good );
-    // Host's inventory_item_menu shows the full item info window (x=0, width
-    // 50, full height) and places the action list right of it.
-    std::vector<iteminfo> vThisItem;
-    std::vector<iteminfo> vDummy;
-    it.info( true, vThisItem );
-    item_info_data data( it.tname(), it.type_name(), vThisItem, vDummy );
-    data.without_getch = true;
-    catacurses::window w_info = catacurses::newwin( TERMY, 50, point( 0, 0 ) );
-    ui_adaptor info_ui;
-    if( w_info ) {
-        info_ui.position_from_window( w_info );
-        info_ui.on_redraw( [&]( const ui_adaptor & ) {
-            draw_item_info( w_info, data );
-        } );
-        info_ui.mark_resize();
-    }
-    const float mp_cw = ImGui::CalcTextSize( "X" ).x;
-    menu.desired_bounds = { 50.0f * mp_cw, 0.0f, 30.0f * mp_cw, -1.0f };
-    menu.reposition();
-    menu.query();
-    return menu.ret;
-}
-
 /* DDA MP v4.1: the client's character mirror. The host serializes the session
  * avatar (raw state: stats, skills, effects, every item), the client
  * deserializes it once per revision and runs the game's own menus on it. The
@@ -2267,6 +2086,127 @@ static void mp_start_client_throw( const item &it, const std::string &uid )
 /// crafting helper it calls.
 static void mp_run_view_recipe( const item &it );
 
+bool client_item_menu_action( const item_location &loc, int action )
+{
+    // DDA MP v4.0a-338: game::inventory_item_menu now runs natively on the
+    // client mirror. Host-authoritative actions are forwarded by the item's
+    // stable mp_uid; purely local views (open container, recipe, auto pickup)
+    // are left to the native code.
+    if( !loc ) {
+        return false;
+    }
+    const std::string uid = loc->get_var( "mp_uid", std::string() );
+    if( uid.empty() ) {
+        return false;
+    }
+    item_location mloc = loc;
+    switch( action ) {
+        case 'a':
+        case 'R':
+        case 'E':
+        case 'W':
+        case 'w':
+        case 'c':
+        case 'T':
+        case 'd':
+        case 'U':
+        case 'r':
+        case 'p':
+        case 'm':
+        case 'D':
+        case 'f':
+            netplay::client_send_inventory_uid( uid, action );
+            mp_inv_log( string_format( "action: native uid key=%c", static_cast<char>( action ) ) );
+            return true;
+        case 't':
+            mp_start_client_throw( *loc, uid );
+            return true;
+        case 'g':
+            netplay::client_send_inventory_uid( uid, 'g' );
+            mp_inv_log( "action: native uid key=g give" );
+            return true;
+        case 'i':
+            if( loc->is_container() ) {
+                // Same selector chain as game_menus::inv::insert_items, but
+                // the resulting source uids travel to the host.
+                avatar &viewer = get_avatar();
+                inventory_holster_preset holster_preset( mloc, &viewer );
+                inventory_insert_selector insert_menu( viewer, holster_preset,
+                                                       _( "ITEMS TO INSERT" ), false );
+                insert_menu.add_character_items( viewer );
+                insert_menu.set_display_stats( true );
+                insert_menu.set_title( string_format( _( "Put item into %s" ), loc->tname() ) );
+                insert_menu.set_hint( string_format(
+                                          _( "Choose an item to put into your %s" ),
+                                          loc->tname( 1, false ) ) );
+                const drop_locations picked = insert_menu.execute();
+                std::vector<std::string> insert_uids;
+                for( const drop_location &dl : picked ) {
+                    const std::string src_uid = dl.first->get_var( "mp_uid", std::string() );
+                    if( !src_uid.empty() ) {
+                        insert_uids.push_back( src_uid );
+                    }
+                }
+                if( !insert_uids.empty() ) {
+                    netplay::client_send_inventory_uid( uid, 'i', insert_uids );
+                }
+                mp_inv_log( string_format( "action: native uid key=i targets=%d",
+                                           static_cast<int>( insert_uids.size() ) ) );
+            }
+            return true;
+        case 'v':
+            if( loc->is_container() ) {
+                mloc.favorite_settings_menu();
+                std::ostringstream os;
+                JsonOut js( os );
+                js.start_array();
+                for( item_pocket *pocket : mloc->get_pockets(
+                []( const item_pocket & ) {
+                return true;
+                } ) ) {
+                    pocket->settings.serialize( js );
+                }
+                js.end_array();
+                netplay::client_send_inventory_settings_uid( uid, os.str() );
+                mp_inv_log( "action: native uid key=v settings" );
+            }
+            return true;
+        case '=': {
+            const int invlet = popup_getkey(
+                                   _( "Enter new letter.  Press SPACE to clear a manually-assigned letter, ESCAPE to cancel." ) );
+            if( invlet != KEY_ESCAPE && ( invlet == ' ' || inv_chars.valid( invlet ) ) ) {
+                netplay::client_send_inventory_uid( uid, '=', {}, { invlet } );
+            }
+            return true;
+        }
+        case '<':
+        case '>':
+            for( item_pocket *pocket : mloc->get_standard_pockets() ) {
+                pocket->settings.set_collapse( action == '>' );
+            }
+            {
+                std::ostringstream os;
+                JsonOut js( os );
+                js.start_array();
+                for( item_pocket *pocket : mloc->get_pockets(
+                []( const item_pocket & ) {
+                return true;
+                } ) ) {
+                    pocket->settings.serialize( js );
+                }
+                js.end_array();
+                netplay::client_send_inventory_settings_uid( uid, os.str() );
+            }
+            mp_inv_log( string_format( "action: native uid key=%c collapse",
+                                       static_cast<char>( action ) ) );
+            return true;
+        default:
+            // 'o' (open container), 'V' (recipe) and +/- auto pickup stay
+            // local to the native menu.
+            return false;
+    }
+}
+
 static void mp_run_host_inventory( const std::string &text )
 {
     try {
@@ -2344,89 +2284,11 @@ static void mp_run_host_inventory( const std::string &text )
         if( !chosen ) {
             break;
         }
-        const item &it = *chosen;
-        const std::string uid = it.get_var( "mp_uid", std::string() );
-        if( uid.empty() ) {
-            mp_inv_log( "action: item has no mp_uid, ignored" );
-            break;
-        }
-        const int act = mp_client_item_menu( viewer, it );
-        if( act == 'o' && it.is_container() ) {
-            open_stack.push_back( chosen );
-            continue;
-        }
-        if( act == 'i' && it.is_container() ) {
-            // Same selector chain as game_menus::inv::insert_items: the stock
-            // insert menu over the temp inventory, then one command per item.
-            inventory_holster_preset holster_preset( chosen, &viewer );
-            inventory_insert_selector insert_menu( viewer, holster_preset,
-                                                   _( "ITEMS TO INSERT" ), false );
-            insert_menu.add_character_items( viewer );
-            insert_menu.set_display_stats( true );
-            insert_menu.set_title( string_format( _( "Put item into %s" ), it.tname() ) );
-            insert_menu.set_hint( string_format( _( "Choose an item to put into your %s" ),
-                                                 it.tname( 1, false ) ) );
-            const drop_locations picked = insert_menu.execute();
-            std::vector<std::string> insert_uids;
-            for( const drop_location &dl : picked ) {
-                const std::string src_uid = dl.first->get_var( "mp_uid", std::string() );
-                if( !src_uid.empty() ) {
-                    insert_uids.push_back( src_uid );
-                }
-            }
-            if( !insert_uids.empty() ) {
-                netplay::client_send_inventory_uid( uid, 'i', insert_uids );
-            }
-            mp_inv_log( string_format( "action: uid key=i targets=%d",
-                                       static_cast<int>( insert_uids.size() ) ) );
-            break;
-        }
-        if( act == 'v' && it.is_container() ) {
-            // Stock pocket menu on the temp item, then stream the resulting
-            // per-pocket settings back so the host item stays authoritative.
-            chosen->get_contents().favorite_settings_menu( chosen );
-            std::ostringstream os;
-            JsonOut js( os );
-            js.start_array();
-            for( item_pocket *pocket : chosen->get_pockets(
-            []( const item_pocket & ) {
-            return true;
-            } ) ) {
-                pocket->settings.serialize( js );
-            }
-            js.end_array();
-            netplay::client_send_inventory_settings_uid( uid, os.str() );
-            mp_inv_log( "action: uid key=v settings" );
-            break;
-        }
-        if( act == '=' ) {
-            const int invlet = popup_getkey(
-                                   _( "Enter new letter.  Press SPACE to clear a manually-assigned letter, ESCAPE to cancel." ) );
-            if( invlet != KEY_ESCAPE && ( invlet == ' ' || inv_chars.valid( invlet ) ) ) {
-                netplay::client_send_inventory_uid( uid, '=', {}, { invlet } );
-            }
-            break;
-        }
-        if( act == 'g' ) {
-            // Partner interaction: the host hands this item to the nearest
-            // adjacent player (another session avatar or the host player).
-            netplay::client_send_inventory_uid( uid, 'g', {}, {} );
-            mp_inv_log( "action: uid key=g give" );
-            break;
-        }
-        if( act == 't' ) {
-            mp_start_client_throw( it, uid );
-            break;
-        }
-        if( act == 'V' ) {
-            mp_run_view_recipe( it );
-            break;
-        }
-        if( act > 0 ) {
-            netplay::client_send_inventory_uid( uid, act );
-            mp_inv_log( string_format( "action: uid key=%c", static_cast<char>( act ) ) );
-        }
-        break;
+        // DDA MP v4.0a-338: the real game menu on the mirror item. Host
+        // actions are routed by client_item_menu_action() through the item's
+        // mp_uid; container browsing and recipe view stay native/local.
+        g->inventory_item_menu( chosen );
+        continue;
     }
     mp_inv_log( "closed" );
     } catch( const std::exception &e ) {
@@ -7599,7 +7461,7 @@ void run_view_loop()
     // grid scale.
     // DDA MP v4.0a-18: a permanent disable_uis_below made the client redraw
     // the whole frame every iteration (visible flicker), so the main menu is
-    // hidden only while a popup is open (see mp_client_item_menu).
+    // hidden only while a popup is open (see the native item menu).
     // DDA MP v4.0a-120: the client loop only renders ImGui's draw data inside
     // an overlay pass (see netplay::overlay_begin/end). The sidebar pixel layer
     // is therefore a plain lambda invoked after the native panels, not a
@@ -10089,6 +9951,42 @@ void run_view_loop()
                                                            static_cast<int>( sug.size() ),
                                                            ids.c_str() ) );
                                 ++mp_sg_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "item_menu_test" ) {
+                        static int mp_im_phase = 0;
+                        static auto mp_im_t0 = std::chrono::steady_clock::now();
+                        if( mp_im_phase == 0 ) {
+                            mp_im_t0 = std::chrono::steady_clock::now();
+                            mp_inv_log( "test: item menu wait" );
+                            ++mp_im_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_im_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_im_t0 ).count();
+                            if( mp_im_phase == 1 && mp_im_ms > 2500 ) {
+                                const item_location loc = get_avatar().get_wielded_item();
+                                if( loc ) {
+                                    const std::string uid =
+                                        loc->get_var( "mp_uid", std::string() );
+                                    mp_inv_log( "test: item menu open" );
+                                    g->inventory_item_menu( loc );
+                                    netplay::client_send_intent( "test_item_menu_verify",
+                                                                 0, {}, uid );
+                                    mp_inv_log( string_format( "test: item menu action uid=%s",
+                                                               uid.c_str() ) );
+                                } else {
+                                    mp_inv_log( "test: item menu no wielded item" );
+                                }
+                                ++mp_im_phase;
+                                sent = false;
+                            } else if( mp_im_phase == 2 && mp_im_ms > 6000 ) {
+                                mp_inv_log( "test: item menu done" );
+                                ++mp_im_phase;
                                 sent = true;
                             } else {
                                 sent = false;

@@ -2260,6 +2260,19 @@ int game::inventory_item_menu( item_location locThisItem,
 
             const int prev_selected = action_menu.selected;
             ui_impl = action_menu.query( false );
+            // DDA MP test hook: pick one native item-menu action without a
+            // human at the client. Used by the item_menu regression suite.
+            if( netplay::client_is_connected() ) {
+                if( const char *test_item_action =
+                        std::getenv( "DDA_MP_TEST_ITEM_MENU_ACTION" );
+                    test_item_action != nullptr && test_item_action[0] != '\0' ) {
+                    static bool mp_test_item_action_used = false;
+                    if( !mp_test_item_action_used ) {
+                        mp_test_item_action_used = true;
+                        action_menu.ret = static_cast<unsigned char>( test_item_action[0] );
+                    }
+                }
+            }
             if( action_menu.ret >= 0 ) {
                 cMenu = action_menu.ret; /* Remember: hotkey == retval, see addentry above. */
             } else if( action_menu.ret == UILIST_UNBOUND && action_menu.ret_act == "RIGHT" ) {
@@ -2287,6 +2300,18 @@ int game::inventory_item_menu( item_location locThisItem,
 #if defined(TILES)
             action_menu.set_hide( true );
 #endif
+            // DDA MP v4.0a-338: on a netplay client, route the chosen action
+            // to the host and skip the local switch below. Local-only views
+            // (open container, recipe, auto pickup) return false and run here.
+            if( netplay::client_is_connected() &&
+                netplay::client_item_menu_action( locThisItem, cMenu ) ) {
+#if defined(TILES)
+                action_menu.set_hide( false );
+#endif
+                exit = true;
+                ui = nullptr;
+                continue;
+            }
             switch( cMenu ) {
                 case 'a': {
                     contents_change_handler handler;
