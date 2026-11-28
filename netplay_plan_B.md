@@ -618,11 +618,11 @@ JSON/mapgen:
 
 ### 9.4. Следующие задачи
 
-1. P3-9: NPC dialogue/trade/mission UI на клиенте.
-2. P3-6: консоли (`use_computer`) и NPC-ветка examine.
-3. P3-7: контекстные weighting в action menu / native `handle_action_menu`.
-4. P3-8/P3-10: native item menu и zone manager/autopilot.
-5. P8-2/P7-4: render-матрица, reconnect и multi-client.
+1. P3-9: native trade UI (trade_ui на клиенте с зеркалом NPC или uid-протокол обмена).
+2. P3-9: native mission UI (`mission_ui` поверх streamed mission list; сейчас журнал на uilist).
+3. P3-10: zone manager/autopilot.
+4. P8-2/P7-4: render-матрица, reconnect и multi-client.
+5. P8-1: добить оставшиеся suites (trade/mission/zones) в матрицу.
 
 ### 9.5. Regression matrix
 
