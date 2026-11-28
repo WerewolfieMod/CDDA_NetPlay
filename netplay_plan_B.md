@@ -545,7 +545,7 @@ JSON/mapgen:
 | 2026-11-27 | ddamp-v4.0a-334 | P3-13: harness и capture. `USE_ANIMAL_CTRL` привязывает friendly-лошадь к yoke; `USE_CAPTURE_MONSTER_VEH` через `livestock_stall` выбирает существо direction-мостом и кладёт его в base предмета. Оба действия идут через `client_action`-строки vehicle-меню | harness: `test harness yoke=11 mount=0,-1 horse=1`; menu `USE_ANIMAL_CTRL client=harness`; `test harness verify part=11 on_part=1 harnessed=1`. capture: `test capture stall=12 mount=0,-1 animal=1`; menu `USE_CAPTURE_MONSTER_VEH client=monster_capture`; `test capture verify part=12 contained=1 animal=1` |
 | 2026-11-28 | ddamp-v4.0a-335 | P3-13: bike rack. Три rack-детали в линии и штатный `bicycle` рядом; выбор auto-hotkey строки `bikerack` запускает `ACT_BIKERACK_RACKING`, завершение merge выставляет carrying flag. Это закрывает последний пункт P3-13, кроме tool attach | `test bikerack rack=12 bike=1`; menu `client=bikerack`; `test bikerack verify rack=12 started=1 racked=1 carrying=3 parts=19->32` |
 | 2026-11-28 | ddamp-v4.0a-336 | P3-6: меню существ в examine. `examine_at` для питомца открывает нативный `pet_menu` (mech/paybot/friendly — тот же путь), клиент выбирает строку через новый `DDA_MP_TEST_PROMPT_UILIST_RET`. Проверен mount: аватар садится на лошадь | `test pet horse=1 pos=... av=...`; client `prompt: auto uilist ret=21 idx=8`; host `test pet verify mounted=1` |
-| 2026-11-28 | ddamp-v4.0a-337 | P3-7: suggested actions в `^`. Меню считает веса по клиентскому зеркалу (hostiles, run/crouch/prone, vehicle, nearby open/close/examine, butcher, haul) и ставит действия с весом ≥200 в начало, как vanilla | `test suggest n=2 ids=90,35` после спавна тележки; manifest hash совпадает |
+| 2026-11-28 | ddamp-v4.0a-337 | P3-7: suggested actions в общем action menu (Enter). Меню считает веса по клиентскому зеркалу (hostiles, run/crouch/prone, vehicle, nearby open/close/examine, butcher, haul) и ставит действия с весом ≥200 в начало, как vanilla | `test suggest n=2 ids=90,35` после спавна тележки; manifest hash совпадает |
 
 ### 9.3. Что протестировано
 
@@ -628,7 +628,7 @@ JSON/mapgen:
 | planter | seed UI → cargo | `planter=10 seeds=1 ground=0` | PASS |
 | audit_pickup | pickup по uid с damage | `pickup take ... dmg=1` | PASS |
 | workbench | `USE_WORKBENCH` → native меню | client `workbench menu row` | PASS |
-| suggest | suggested actions в `^` | `test suggest n=2 ids=90,35` | PASS |
+| suggest | suggested actions в общем action menu (Enter) | `test suggest n=2 ids=90,35` | PASS |
 | tiedown | `USE_TIEDOWN_FURNITURE_VEH` | `stored=1` | PASS |
 | harness | `USE_ANIMAL_CTRL` | `harnessed=1` | PASS |
 | capture | `USE_CAPTURE_MONSTER_VEH` | `contained=1 animal=1` | PASS |
