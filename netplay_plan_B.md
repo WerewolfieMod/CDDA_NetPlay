@@ -186,7 +186,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | P3-6 | Native `game::examine`/`iexamine` + выбор клетки | `game`/`iexamine` | P2-2/P3-2 | контекстное меню как в SP | PARTIAL (direction prompt и highlighted `can_examine_at`; host `examine_at` для vehicle/part_con/trap/terrain/furniture/pickup; питомцы/mech/paybot/friendly-монстры — нативные меню; NPC — нативное меню с Talk через dialogue bridge; консоли — native computer_session с bridged uilist/query, текст терминала остаётся на хосте) |
 | P3-7 | Native action/main/ESC menus | `handle_action`/`main_menu` | P3-2 | меню/действия как в SP | PARTIAL (client main menu: help/keybindings/options/autopickup/safemode/color/world mods/long wait/disconnect; action menu по категориям + suggested actions по зеркалу; native `handle_action_menu`/точные веса — TODO) |
 | P3-8 | Native item menu (`inventory_item_menu`) | `game_inventory` | P2-3 | заменить `mp_client_item_menu` | DONE (native `game::inventory_item_menu` on the mirror; host actions routed by `mp_uid`, container/recipe/auto-pickup stay local; old custom menu removed) |
-| P3-9 | Native trade/dialogue/mission UI | `npctalk`/`trade`/`mission` | P2-5 | без uilist-замен | PARTIAL (native NPC menu; Talk через host dialogue; native trade_ui на клиенте с зеркалом NPC и uid-commit на host; mission UI пока журнал на uilist) |
+| P3-9 | Native trade/dialogue/mission UI | `npctalk`/`trade`/`mission` | P2-5 | без uilist-замен | DONE (native NPC menu, host dialogue bridged per topic, native trade_ui + uid commit, native mission_ui over serialized missions; accept/turn-in идут через dialogue) |
 | P3-10 | Native zone manager | `clzones`/`zonemap` | P2-2 | создание/редактирование зон | PARTIAL (read-only список зон с хоста; создание/редактирование и autopilot zone UI — TODO) |
 | P3-11 | Native overmap UI | `overmap_ui` | P2-7 | полная карта/маркеры | PARTIAL (stock `ui::omap::display()` по seen-блоку с хоста; редактирование заметок/маршрутов на клиенте — TODO) |
 | P3-12 | Native construction UI | `construction` | P2-2 | требования/превью | PARTIAL (клиентский выбор конструкции и направления, host-валидация; native construction/preview — TODO) |
@@ -241,7 +241,7 @@ B — это не «ещё несколько intent'ов», а архитект
 
 | ID | Задача | Файлы/области | Зависимости | Acceptance | Статус |
 |---|---|---|---|---|---|
-| P8-1 | Action regression matrix из `netplay_action_audit.md` | tests | P3/P7 | все действия покрыты | PARTIAL (17 suites pass: prompt_chain/direction/planter/audit/workbench/suggest/item_menu/npc/dialogue/computer/trade/trade_ui/tiedown/harness/capture/bikerack/pet; missions UI, zones, render — TODO) |
+| P8-1 | Action regression matrix из `netplay_action_audit.md` | tests | P3/P7 | все действия покрыты | PARTIAL (18 suites pass: prompt_chain/direction/planter/audit/workbench/suggest/item_menu/npc/dialogue/computer/trade/trade_ui/mission_ui/tiedown/harness/capture/bikerack/pet; zones, render — TODO) |
 | P8-2 | Render regression matrix из `netplay_render.audit.md` | tests | P4 | все экраны/настройки | TODO |
 | P8-3 | Single-player reference + client-native comparison | tests | P0-4/P4 | golden screenshots | TODO |
 | P8-4 | Mod compatibility tests | tests | P6 | набор модов проходит | TODO |
@@ -270,7 +270,7 @@ B — это не «ещё несколько intent'ов», а архитект
 | 7 Hotkeys | int вместо input_event | native UI (локальные hotkeys) | P3-4/P3-5/P4-7 |
 | 8 Verified | generation/uid проверки | сохранить, перенести в command framework | P1-5/P1-8 |
 
-Статус на `ddamp-v4.0a-341`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge, washing machine/dishwasher и planter (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. `e` использует нативный direction prompt: клиент подсвечивает клетки через `can_examine_at`, выбранное направление уходит как `examine_at`; host открывает vehicle-меню или выполняет part_con/trap/iexamine и пересылает сообщения. Общее action menu (Enter) считает suggested actions по клиентскому зеркалу, как vanilla; предметное меню — настоящий `game::inventory_item_menu` на mirror с uid-маршрутизацией host-действий. NPC examine открывает нативное меню, Talk идёт через host dialogue с bridged uilist (реплика + ответы); mission UI пока нет. Консоли запускают native `computer_session`, меню и yes/no идут через prompt bridge. Trade — настоящий `trade_ui` на клиенте с NPC-зеркалом и uid-commit на host. Соседняя машина стримится по выбранной клетке (host-скан остаётся fallback). Протокол — v4 с data manifest: HELLO game/netplay, WELCOME mod versions + hash + tileset id, preflight missing/version check, post-load `manifest_check`; ошибки показываются как join error. Prompt bridge: исправлен сброс `uilist` retval (`query_setup`/`clear`), цепочка `uilist → query_int` проверена; `choose_direction` на хосте уходит клиенту как `direction`-prompt и возвращает выбранное смещение (нужно вложенным действиям: tiedown/harness/размещение мебели). Planter: seed-UI и `query_int` отвечаются клиентом, семена уходят в cargo seed drill (`seeds=1 ground=0`); прямой тестовый install теперь обновляет vehicle-кэш карты, как это делает activity-путь. Строки vehicle-меню с host-callback могут помечаться `client_action` и исполняться хостом по индексу; tiedown, harness, capture и bike rack проверены рантаймом. `examine_at` для существ открывает нативные `pet_menu`/`mfriend_menu`/mech/paybot; NPC-диалоги и консоли остаются TODO. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC.
+Статус на `ddamp-v4.0a-342`: control vehicle закрыт полностью (hotwire, theft/hands/reins, ванильная engine-start activity), стоимость `movement_mode`, stable uid для pickup (подтверждено рантаймом на двух одинаковых предметах с разным damage), range/LOS для `fire`/`reach_attack`/`butcher`, дистанция NPC talk/trade/mission, siphon/faucet fill с выбором контейнера, refuel по выбранной детали/предмету, `query_int` bridge, washing machine/dishwasher и planter (рантайм); пункт 7 (hotkeys) закрыт для bridged-меню полным `input_event`; LOCKPICK pick-only; `e` → `interact_with`-меню → нативный `veh_interact` (проверено скриншотом и снаружи), workbench, `Use <tool>`, smart controller, turret reload, turret aim (single/all/auto) и EOC (проверено рантаймом). P3-5 закрыт по строкам меню. `e` использует нативный direction prompt: клиент подсвечивает клетки через `can_examine_at`, выбранное направление уходит как `examine_at`; host открывает vehicle-меню или выполняет part_con/trap/iexamine и пересылает сообщения. Общее action menu (Enter) считает suggested actions по клиентскому зеркалу, как vanilla; предметное меню — настоящий `game::inventory_item_menu` на mirror с uid-маршрутизацией host-действий. NPC examine открывает нативное меню, Talk идёт через host dialogue с bridged uilist (реплика + ответы). Консоли запускают native `computer_session`, меню и yes/no идут через prompt bridge. Trade — настоящий `trade_ui` на клиенте с NPC-зеркалом и uid-commit на host; mission UI — настоящий `mission_ui` на сериализованных миссиях. Соседняя машина стримится по выбранной клетке (host-скан остаётся fallback). Протокол — v4 с data manifest: HELLO game/netplay, WELCOME mod versions + hash + tileset id, preflight missing/version check, post-load `manifest_check`; ошибки показываются как join error. Prompt bridge: исправлен сброс `uilist` retval (`query_setup`/`clear`), цепочка `uilist → query_int` проверена; `choose_direction` на хосте уходит клиенту как `direction`-prompt и возвращает выбранное смещение (нужно вложенным действиям: tiedown/harness/размещение мебели). Planter: seed-UI и `query_int` отвечаются клиентом, семена уходят в cargo seed drill (`seeds=1 ground=0`); прямой тестовый install теперь обновляет vehicle-кэш карты, как это делает activity-путь. Строки vehicle-меню с host-callback могут помечаться `client_action` и исполняться хостом по индексу; tiedown, harness, capture и bike rack проверены рантаймом. `examine_at` для существ открывает нативные `pet_menu`/`mfriend_menu`/mech/paybot; NPC-диалоги и консоли остаются TODO. EOC-эффекты выполняются на сессионном аватаре; `u_message` в EOC не показывается, потому что talker — NPC.
 
 ### 6.2. `netplay_render.audit.md`
 
@@ -550,6 +550,7 @@ JSON/mapgen:
 | 2026-11-28 | ddamp-v4.0a-339 | P3-9: NPC examine menu и dialogue bridge. `examine_at` для NPC показывает нативное меню (swap/push/attack работают, не портированные строки disabled). Talk запускает host dialogue; текущая реплика + 8 ответов уходят клиенту через bridged uilist, выбор применяется на хосте | npc suite: `test npc verify swapped=1`; dialogue suite: `dialogue prompt n=1 responses=8`, client два `prompt: auto uilist ret=0` |
 | 2026-11-28 | ddamp-v4.0a-340 | P3-6: консоли. `examine_at` запускает настоящий `computer_session` для session-аватара; root menu и `query_any`/`query_ynq` идут через prompt bridge, hack/действия выполняются на хосте. Текст терминала пока не стримится | computer suite: `test computer comp=1 pos=... options=1`; host `computer select=0 action=25`; client три `prompt: auto uilist ret=0` |
 | 2026-11-28 | ddamp-v4.0a-341 | P3-9: native trade UI. Host стримит NPC-снимок с `mp_uid` на предметах, клиент запускает настоящий `trade_ui` на mirror; выбранные uid/count уходят как `trade_commit`, host пересчитывает цены и применяет обмен через `npc_trading::apply_trade`. Trade из NPC-меню и из dialogue effects идёт этим путём | trade suite: `test trade verify ... ok=1 av=0 npc=1`; UI suite: `native trade: npc=... dx=1 dy=1`, `native trade: traded=0` (cancel) |
+| 2026-11-28 | ddamp-v4.0a-342 | P3-9: native mission UI. Host сериализует миссии сессии; клиент десериализует их, раскладывает по active/completed/failed на mirror-аватаре и открывает настоящий `game::list_missions()`/`mission_ui`; после закрытия векторы очищаются. `ACTION_MISSIONS` теперь идёт этим путём, журнал остался diag-fallback | mission suite: `missions: native open n=1`; `missions: native closed`; `test: mission ui done` |
 
 ### 9.3. Что протестировано
 
@@ -613,6 +614,7 @@ JSON/mapgen:
 | 2026-11-28 | P3-6 | Console via native computer_session | `test computer comp=1 options=1`; host `computer select=0 action=25`; client three auto-uils |
 | 2026-11-28 | P3-9 | Native trade commit | client `native trade auto: sell uid=...`; host `test trade verify ... ok=1 av=0 npc=1` |
 | 2026-11-28 | P3-9 | Native trade UI construction/cancel | client `native trade: npc=... dx=1 dy=1`, `native trade: traded=0` |
+| 2026-11-28 | P3-9 | Native mission_ui | client `missions: native open n=1`; `missions: native closed`; `test: mission ui done` |
 | 2026-11-26 | P3-5 | Turret aim/fire | row `TURRET_SINGLE_FIRE client=turret_aim enabled=1`; client `turret_fire 3,0`; host `vehicle turret fire ... shots=4 ammo=6` |
 | 2026-11-26 | P3-5 | EOC activation | row `client=activate_eoc:79`; client `action: activate_eoc 79`; host `vehicle eoc ... var=activated` |
 | 2026-11-26 | P3-5 | Mass/auto turret aim | all-manual: `mode=1 turrets=1 shots=4`; auto: `targeted=1 enabled=1 power_disabled=0` |
@@ -621,11 +623,11 @@ JSON/mapgen:
 
 ### 9.4. Следующие задачи
 
-1. P3-9: native trade UI (trade_ui на клиенте с зеркалом NPC или uid-протокол обмена).
-2. P3-9: native mission UI (`mission_ui` поверх streamed mission list; сейчас журнал на uilist).
-3. P3-10: zone manager/autopilot.
-4. P8-2/P7-4: render-матрица, reconnect и multi-client.
-5. P8-1: добить оставшиеся suites (trade/mission/zones) в матрицу.
+1. P3-10: zone manager/autopilot.
+2. P8-2/P4-9: render-матрица и golden screenshots.
+3. P7-4: reconnect и multi-client.
+4. P8-1: добавить suites для zones/reconnect.
+5. P8-6: release checklist (после полной играбельной версии).
 
 ### 9.5. Regression matrix
 
@@ -645,6 +647,7 @@ JSON/mapgen:
 | computer | native computer_session + bridged prompts | host `computer select=0 action=25` | PASS |
 | trade | native trade commit by uid | host `test trade verify ... ok=1` | PASS |
 | trade_ui | native trade_ui construction/cancel | client `native trade: traded=0` | PASS |
+| mission_ui | native mission_ui over streamed missions | client `missions: native open n=1` | PASS |
 | tiedown | `USE_TIEDOWN_FURNITURE_VEH` | `stored=1` | PASS |
 | harness | `USE_ANIMAL_CTRL` | `harnessed=1` | PASS |
 | capture | `USE_CAPTURE_MONSTER_VEH` | `contained=1 animal=1` | PASS |

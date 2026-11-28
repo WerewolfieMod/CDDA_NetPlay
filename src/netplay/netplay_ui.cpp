@@ -3553,6 +3553,52 @@ static void mp_run_native_trade( const std::string &payload )
     netplay::client_send_intent( "trade_commit", 0, {}, os.str() );
 }
 
+/* DDA MP v4.0a-342: native mission_ui on the client. The host streams
+ * serialized mission objects; they are attached to the mirror avatar only for
+ * the duration of the UI. */
+static void mp_run_native_missions( const std::string &payload )
+{
+    std::vector<std::unique_ptr<mission>> store;
+    try {
+        JsonValue jv = json_loader::from_string( payload );
+        for( JsonObject jo : jv.get_array() ) {
+            auto m = std::make_unique<mission>();
+            m->deserialize( jo );
+            store.push_back( std::move( m ) );
+        }
+    } catch( const std::exception &e ) {
+        mp_inv_log( std::string( "missions: native parse error " ) + e.what() );
+        return;
+    } catch( ... ) {
+        mp_inv_log( "missions: native parse error" );
+        return;
+    }
+    avatar &you = get_avatar();
+    std::vector<mission *> active;
+    std::vector<mission *> completed;
+    std::vector<mission *> failed;
+    for( const std::unique_ptr<mission> &m : store ) {
+        switch( m->get_status() ) {
+            case mission::mission_status::success:
+                completed.push_back( m.get() );
+                break;
+            case mission::mission_status::failure:
+                failed.push_back( m.get() );
+                break;
+            default:
+                active.push_back( m.get() );
+                break;
+        }
+    }
+    you.set_mission_mirror( std::move( active ), std::move( completed ),
+                            std::move( failed ) );
+    mp_inv_log( string_format( "missions: native open n=%d",
+                               static_cast<int>( store.size() ) ) );
+    g->list_missions();
+    you.set_mission_mirror( {}, {}, {} );
+    mp_inv_log( "missions: native closed" );
+}
+
 /* DDA MP v4.0a-193: custom barter window. Payload:
  * "<mode>\x1f<index>\x1e<name>\x1e<price>\x1f..."; mode 0 buys from the NPC,
  * mode 1 sells to it. */
@@ -5151,9 +5197,16 @@ static void mp_client_dispatch_action( int act, const std::string &inv_text,
             }
             break;
         case ACTION_MISSIONS:
-            // DDA MP v4.0a-191: the host streams this session's mission list.
-            netplay::client_send_intent( "mission_journal", 0, {} );
-            mp_inv_log( "missions: journal requested" );
+            // DDA MP v4.0a-342: native mission_ui over streamed mission
+            // objects; the journal remains available as a diag fallback.
+            if( const char *journal = std::getenv( "DDA_MP_USE_MISSION_JOURNAL" );
+                journal != nullptr && journal[0] != '\0' ) {
+                netplay::client_send_intent( "mission_journal", 0, {} );
+                mp_inv_log( "missions: journal requested" );
+            } else {
+                netplay::client_send_intent( "mission_ui", 0, {} );
+                mp_inv_log( "missions: native requested" );
+            }
             break;
         case ACTION_DIARY:
             // DDA MP v4.0a-210: session-local diary on the client mirror.
@@ -8154,6 +8207,10 @@ void run_view_loop()
                         mp_run_native_trade( mp_ev_text );
                         continue;
                     }
+                    if( mp_ev_type == netplay::EVENT_MISSION_NATIVE ) {
+                        mp_run_native_missions( mp_ev_text );
+                        continue;
+                    }
                     if( mp_ev_type == netplay::EVENT_MISSION_TURNIN ) {
                         mp_run_mission_turnins( mp_ev_text );
                         continue;
@@ -10221,6 +10278,27 @@ void run_view_loop()
                             } else if( mp_tr_phase == 3 && mp_tr_ms > 10000 ) {
                                 mp_inv_log( "test: trade done" );
                                 ++mp_tr_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "mission_ui_test" ) {
+                        static int mp_mu_phase = 0;
+                        static auto mp_mu_t0 = std::chrono::steady_clock::now();
+                        if( mp_mu_phase == 0 ) {
+                            mp_mu_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_mission_ui_spawn", 0, {} );
+                            mp_inv_log( "test: mission ui spawn" );
+                            ++mp_mu_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_mu_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_mu_t0 ).count();
+                            if( mp_mu_phase == 1 && mp_mu_ms > 6000 ) {
+                                mp_inv_log( "test: mission ui done" );
+                                ++mp_mu_phase;
                                 sent = true;
                             } else {
                                 sent = false;

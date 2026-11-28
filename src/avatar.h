@@ -183,6 +183,11 @@ class avatar : public Character
         std::vector<mission *> get_active_missions() const;
         std::vector<mission *> get_completed_missions() const;
         std::vector<mission *> get_failed_missions() const;
+        /// DDA MP v4.0a-342: replace the mission vectors for the native
+        /// mission_ui while a client mirrors the host's missions.
+        void set_mission_mirror( std::vector<mission *> active,
+                                 std::vector<mission *> completed,
+                                 std::vector<mission *> failed );
         std::vector<point_of_interest> get_points_of_interest() const;
         /**
          * Returns the mission that is currently active. Returns null if no mission is active.

@@ -135,6 +135,10 @@ void mission_ui::draw_mission_ui()
 
 
         p_impl.last_action = ctxt.handle_input();
+        if( const char *test_cancel = std::getenv( "DDA_MP_TEST_MISSION_UI_CANCEL" );
+            test_cancel != nullptr && test_cancel[0] != '\0' ) {
+            p_impl.last_action = "QUIT";
+        }
 
         if( p_impl.last_action == "QUIT" || !p_impl.get_is_open() ) {
             break;

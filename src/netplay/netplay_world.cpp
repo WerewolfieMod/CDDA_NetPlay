@@ -3692,6 +3692,8 @@ bool host_send_native_trade( int sid, npc &who, int cost )
     return host_send_event_to_sid( sid, os.str(), EVENT_TRADE_NPC );
 }
 
+
+
 static void mp_diag_mark( const char *what, int sid )
 {
     if( !netplay::mp_diag_enabled() ) {
@@ -5856,6 +5858,20 @@ static std::map<int, std::unique_ptr<dialogue>> mp_dialogues;
 /// mission storage is avatar-only, so the host keeps the per-session list and
 /// streams it as a journal.
 static std::map<int, std::vector<mission *>> mp_session_missions;
+
+bool host_send_native_missions( int sid )
+{
+    std::ostringstream os;
+    JsonOut js( os );
+    js.start_array();
+    for( mission *m : mp_session_missions[sid] ) {
+        if( m != nullptr ) {
+            m->serialize( js );
+        }
+    }
+    js.end_array();
+    return host_send_event_to_sid( sid, os.str(), EVENT_MISSION_NATIVE );
+}
 /// DDA MP v4.0a-193: custom barter lists per session.
 struct mp_trade_entry {
     item *it = nullptr;
@@ -10445,6 +10461,33 @@ static bool mp_cmd_test_trade_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_mission_ui( const netplay::intent_request &in )
+{
+    return netplay::host_send_native_missions( in.sid );
+}
+
+static bool mp_cmd_test_mission_ui_spawn( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-342 test: give the session one active mission and stream it
+    // for the native mission_ui.
+    static std::vector<std::unique_ptr<mission>> test_missions;
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    try {
+        auto m = std::make_unique<mission>();
+        JsonValue jv = json_loader::from_string(
+                            R"({"type_id":"MISSION_GET_INHALER","status":"in_progress","target":[0,0,0]})" );
+        m->deserialize( jv.get_object() );
+        mp_session_missions[in.sid].push_back( m.get() );
+        test_missions.push_back( std::move( m ) );
+    } catch( ... ) {
+        mp_ctrl_log( "test mission ui spawn failed" );
+    }
+    return netplay::host_send_native_missions( in.sid );
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -11299,6 +11342,8 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "trade_native", mp_cmd_trade_native );
         r.emplace( "trade_commit", mp_cmd_trade_commit );
         r.emplace( "test_trade_verify", mp_cmd_test_trade_verify );
+        r.emplace( "mission_ui", mp_cmd_mission_ui );
+        r.emplace( "test_mission_ui_spawn", mp_cmd_test_mission_ui_spawn );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );

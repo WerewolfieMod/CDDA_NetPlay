@@ -318,6 +318,15 @@ std::vector<mission *> avatar::get_failed_missions() const
     return failed_missions;
 }
 
+void avatar::set_mission_mirror( std::vector<mission *> active,
+                                 std::vector<mission *> completed,
+                                 std::vector<mission *> failed )
+{
+    active_missions = std::move( active );
+    completed_missions = std::move( completed );
+    failed_missions = std::move( failed );
+}
+
 std::vector<point_of_interest> avatar::get_points_of_interest() const
 {
     return points_of_interest;

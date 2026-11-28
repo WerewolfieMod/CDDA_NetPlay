@@ -692,6 +692,9 @@ constexpr int EVENT_VEHICLE_ENGINE_MENU = 213;
 /// DDA MP v4.0a-341: native trade snapshot for the owner client. Payload is a
 /// JSON object with dx/dy, cost and a serialized npc (items carry mp_uid).
 constexpr int EVENT_TRADE_NPC = 214;
+/// DDA MP v4.0a-342: this session's missions serialized as a JSON array for
+/// the native mission_ui on the client. Each element is mission::serialize().
+constexpr int EVENT_MISSION_NATIVE = 215;
 
 /// DDA MP v4.0a-169: translate a line that exists only in the netplay fork and
 /// therefore never made it into the game's translation catalogs. Falls back to
@@ -736,6 +739,8 @@ bool host_send_event_to_sid( int sid, const std::string &text, int msg_type = 0 
 /// ask the owner client to run the native trade_ui. The client answers with
 /// trade_commit (uid lists); the host applies the trade.
 bool host_send_native_trade( int sid, npc &who, int cost );
+/// DDA MP v4.0a-342: stream this session's missions as JSON for mission_ui.
+bool host_send_native_missions( int sid );
 /// DDA MP v4.0a-165: send a formatted event line as msgid + arguments. The
 /// client formats it with ITS translation catalog, so a Russian client reads
 /// the host's messages in Russian even when the host runs in English.
