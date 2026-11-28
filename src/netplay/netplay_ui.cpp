@@ -7352,6 +7352,22 @@ static void mp_run_prompt( const netplay::prompt_request &pr )
                                        idx, ans.retval ) );
             return;
         }
+        if( const char *test_ret = std::getenv( "DDA_MP_TEST_PROMPT_UILIST_RET" );
+            test_ret != nullptr && test_ret[0] != '\0' ) {
+            const int want = std::atoi( test_ret );
+            for( int i = 0; i < static_cast<int>( pr.entries.size() ); ++i ) {
+                if( pr.entries[i].retval == want && pr.entries[i].enabled ) {
+                    ans.canceled = false;
+                    ans.retval = want;
+                    ans.index = i;
+                    netplay::client_send_prompt_answer( ans );
+                    mp_inv_log( string_format( "prompt: auto uilist ret=%d idx=%d",
+                                               want, i ) );
+                    return;
+                }
+            }
+            mp_inv_log( string_format( "prompt: auto uilist ret=%d not found", want ) );
+        }
         uilist menu;
         menu.text = pr.text;
         for( const netplay::prompt_entry &e : pr.entries ) {
@@ -9932,6 +9948,37 @@ void run_view_loop()
                             } else if( mp_br_phase == 3 && mp_br_ms > 9000 ) {
                                 mp_inv_log( "test: bikerack done" );
                                 ++mp_br_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
+                    } else if( action_name == "pet_test" ) {
+                        static int mp_pet_phase = 0;
+                        static auto mp_pet_t0 = std::chrono::steady_clock::now();
+                        if( mp_pet_phase == 0 ) {
+                            mp_pet_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: pet spawn" );
+                            ++mp_pet_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_pet_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_pet_t0 ).count();
+                            if( mp_pet_phase == 1 && mp_pet_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: pet examine" );
+                                ++mp_pet_phase;
+                                sent = false;
+                            } else if( mp_pet_phase == 2 && mp_pet_ms > 6000 ) {
+                                netplay::client_send_intent( "test_pet_verify", 0, {} );
+                                mp_inv_log( "test: pet verify" );
+                                ++mp_pet_phase;
+                                sent = false;
+                            } else if( mp_pet_phase == 3 && mp_pet_ms > 9000 ) {
+                                mp_inv_log( "test: pet done" );
+                                ++mp_pet_phase;
                                 sent = true;
                             } else {
                                 sent = false;

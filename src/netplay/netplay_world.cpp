@@ -68,6 +68,7 @@
 #include "memory_fast.h"
 #include "mission.h"
 #include "monster.h"
+#include "monexamine.h"
 #include "npctrade.h"
 #include "mtype.h"
 #include "npc.h"
@@ -7290,6 +7291,8 @@ static void mp_vehicle_refuel( int sid, npc &av, int want_part = -1,
 
 /* DDA MP test hook: put a pristine car under the session avatar and give it a
  * gasoline item, so the refuel activity can be exercised without a real save. */
+static tripoint_bub_ms mp_test_pet_horse_pos;
+static bool mp_test_pet_ready = false;
 static void mp_test_spawn_car( npc &av, bool damaged = false )
 {
     map &here = get_map();
@@ -7713,6 +7716,29 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     std::fprintf( f, "test bikerack rack=%d bike=%d pos=%d,%d\n",
                                   rack_part, bike != nullptr ? 1 : 0,
                                   bike_pos.x(), bike_pos.y() );
+                    std::fclose( f );
+                }
+            }
+            if( std::getenv( "DDA_MP_TEST_PET" ) != nullptr ) {
+                // Pet-menu test: a friendly pet horse next to the avatar.
+                const tripoint_bub_ms mon_pos( ctrl_pos.x() + 1, ctrl_pos.y() + 1,
+                                               ctrl_pos.z() );
+                monster *pet = nullptr;
+                if( here.inbounds( mon_pos ) && !here.veh_at( mon_pos ) &&
+                    g->is_empty( mon_pos ) ) {
+                    pet = g->place_critter_at( mtype_id( "mon_horse" ), mon_pos );
+                    if( pet != nullptr ) {
+                        pet->friendly = -1;
+                        pet->add_effect( efftype_id( "pet" ), 1_hours, true );
+                    }
+                }
+                av.set_skill_level( skill_id( "survival" ), 5 );
+                mp_test_pet_horse_pos = mon_pos;
+                mp_test_pet_ready = pet != nullptr;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test pet horse=%d pos=%d,%d av=%d,%d\n",
+                                  pet != nullptr ? 1 : 0, mon_pos.x(), mon_pos.y(),
+                                  ctrl_pos.x(), ctrl_pos.y() );
                     std::fclose( f );
                 }
             }
@@ -8228,31 +8254,53 @@ static bool mp_cmd_examine_at( const netplay::intent_request &in )
         mp_quiet_remote_data quiet;
         mp_player_character_scope scope( *av );
         av->manual_examine = true;
-        const Creature *creature = get_creature_tracker().creature_at( p );
+        bool creature_handled = false;
+        Creature *creature = get_creature_tracker().creature_at( p );
         if( creature != nullptr && !creature->is_avatar() ) {
-            // Pet/mech menus and dialogue are separate native ports.
-            av->add_msg_if_player( m_info, _( "There is a %s." ), creature->disp_name() );
+            if( monster *mon = dynamic_cast<monster *>( creature ) ) {
+                if( mon->has_effect( efftype_id( "pet" ) ) && !av->is_mounted() ) {
+                    creature_handled = monexamine::pet_menu( *mon );
+                } else if( mon->has_flag( mon_flag_RIDEABLE_MECH ) &&
+                           !mon->has_effect( efftype_id( "pet" ) ) ) {
+                    creature_handled = monexamine::mech_hack( *mon );
+                } else if( mon->has_flag( mon_flag_PAY_BOT ) ) {
+                    creature_handled = monexamine::pay_bot( *mon );
+                } else if( mon->attitude_to( *av ) == Creature::Attitude::FRIENDLY &&
+                           !av->is_mounted() ) {
+                    creature_handled = monexamine::mfriend_menu( *mon );
+                } else {
+                    av->add_msg_if_player( m_info, _( "There is a %s." ),
+                                           mon->disp_name() );
+                }
+            } else if( dynamic_cast<npc *>( creature ) != nullptr ) {
+                // NPC dialogue/trade/mission screens are P3-9.
+                av->add_msg_if_player( m_info, _( "There is a %s." ),
+                                       creature->disp_name() );
+            }
         }
-        iexamine::part_con( *av, p );
-        here.tr_at( p ).examine( p );
-        if( here.has_flag( ter_furn_flag::TFLAG_CONSOLE, p ) ) {
-            if( av->is_mounted() ) {
-                av->add_msg_if_player( m_warning,
-                                       _( "You cannot use a console while mounted." ) );
-            } else {
-                av->add_msg_if_player( m_info,
-                                       _( "Using computers is not available to netplay clients yet." ) );
-            }
-        } else if( here.has_furn( p ) ) {
-            if( !av->cant_do_mounted() &&
-                ( here.has_flag( "FREE_TO_EXAMINE", p ) ||
-                  g->warn_player_maybe_anger_local_faction( false, true ) ) ) {
-                here.furn( p ).obj().examine( *av, p );
-            }
-        } else if( here.ter( p ).obj().can_examine( p ) && !av->is_mounted() ) {
-            if( here.has_flag( "FREE_TO_EXAMINE", p ) ||
-                g->warn_player_maybe_anger_local_faction( false, true ) ) {
-                here.ter( p ).obj().examine( *av, p );
+        if( !creature_handled ) {
+            iexamine::part_con( *av, p );
+            here.tr_at( p ).examine( p );
+            if( here.has_flag( ter_furn_flag::TFLAG_CONSOLE, p ) ) {
+                if( av->is_mounted() ) {
+                    av->add_msg_if_player( m_warning,
+                                           _( "You cannot use a console while mounted." ) );
+                } else {
+                    av->add_msg_if_player(
+                        m_info,
+                        _( "Using computers is not available to netplay clients yet." ) );
+                }
+            } else if( here.has_furn( p ) ) {
+                if( !av->cant_do_mounted() &&
+                    ( here.has_flag( "FREE_TO_EXAMINE", p ) ||
+                      g->warn_player_maybe_anger_local_faction( false, true ) ) ) {
+                    here.furn( p ).obj().examine( *av, p );
+                }
+            } else if( here.ter( p ).obj().can_examine( p ) && !av->is_mounted() ) {
+                if( here.has_flag( "FREE_TO_EXAMINE", p ) ||
+                    g->warn_player_maybe_anger_local_faction( false, true ) ) {
+                    here.ter( p ).obj().examine( *av, p );
+                }
             }
         }
         av->manual_examine = false;
@@ -9910,6 +9958,31 @@ static bool mp_cmd_test_bikerack_verify( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_cmd_test_pet_verify( const netplay::intent_request &in )
+{
+    // DDA MP v4.0a-336 test: the pet menu's Mount row put the avatar on the
+    // horse's tile and marked the avatar as mounted.
+    npc *av = av_session_npc( in.sid );
+    if( av == nullptr ) {
+        return true;
+    }
+    bool mounted = false;
+    if( mp_test_pet_ready ) {
+        mounted = av->is_mounted() && av->mounted_creature != nullptr &&
+                  av->pos_bub() == mp_test_pet_horse_pos;
+    }
+    if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+        std::fprintf( f, "test pet verify sid=%d mounted=%d av=%d,%d horse=%d,%d\n",
+                      in.sid, mounted ? 1 : 0, av->pos_bub().x(), av->pos_bub().y(),
+                      mp_test_pet_horse_pos.x(), mp_test_pet_horse_pos.y() );
+        std::fclose( f );
+    }
+    netplay::host_send_event_to_sid(
+        in.sid, string_format( "pet verify mounted=%d", mounted ? 1 : 0 ),
+        static_cast<int>( m_info ) );
+    return true;
+}
+
 static bool mp_cmd_pick_style( const netplay::intent_request &in )
 {
     npc *av = av_session_npc( in.sid );
@@ -10758,6 +10831,7 @@ std::unordered_map<std::string, mp_intent_handler> &mp_intent_registry()
         r.emplace( "test_harness_verify", mp_cmd_test_harness_verify );
         r.emplace( "test_capture_verify", mp_cmd_test_capture_verify );
         r.emplace( "test_bikerack_verify", mp_cmd_test_bikerack_verify );
+        r.emplace( "test_pet_verify", mp_cmd_test_pet_verify );
         r.emplace( "vehicle_menu_select", []( const netplay::intent_request &in ) {
             if( in.args.size() >= 2 ) {
                 mp_execute_vehicle_menu( in.sid, in.args[0], in.args[1] );
