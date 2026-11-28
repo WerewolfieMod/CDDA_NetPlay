@@ -36,6 +36,8 @@
 #include "debug.h"
 #include "construction.h"
 #include "construction_group.h"
+#include "computer.h"
+#include "computer_session.h"
 #include "dialogue.h"
 #include "display.h"
 #include "catacharset.h"
@@ -7297,6 +7299,8 @@ static bool mp_test_pet_ready = false;
 static tripoint_bub_ms mp_test_npc_pos;
 static tripoint_bub_ms mp_test_npc_avatar_pos;
 static bool mp_test_npc_ready = false;
+static tripoint_bub_ms mp_test_computer_pos;
+static bool mp_test_computer_ready = false;
 static void mp_test_spawn_car( npc &av, bool damaged = false )
 {
     map &here = get_map();
@@ -7777,6 +7781,28 @@ static void mp_test_spawn_car( npc &av, bool damaged = false )
                     std::fclose( f );
                 }
             }
+            if( std::getenv( "DDA_MP_TEST_COMPUTER" ) != nullptr ) {
+                // Console test: a computer next to the avatar with one
+                // activatable option.
+                const tripoint_bub_ms comp_pos( ctrl_pos.x() + 1, ctrl_pos.y() + 1,
+                                                ctrl_pos.z() );
+                computer *comp = nullptr;
+                if( here.inbounds( comp_pos ) ) {
+                    here.furn_set( comp_pos, furn_str_id( "f_console" ) );
+                    comp = here.add_computer( comp_pos, "Netplay Test Console", 0 );
+                    if( comp != nullptr ) {
+                        comp->add_option( "Run test action", COMPACT_OPEN, 0 );
+                    }
+                }
+                mp_test_computer_pos = comp_pos;
+                mp_test_computer_ready = comp != nullptr;
+                if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+                    std::fprintf( f, "test computer comp=%d pos=%d,%d options=%d\n",
+                                  comp != nullptr ? 1 : 0, comp_pos.x(), comp_pos.y(),
+                                  comp != nullptr ? static_cast<int>( comp->options.size() ) : 0 );
+                    std::fclose( f );
+                }
+            }
             if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
                 const tripoint_bub_ms seed_pos = seed_part >= 0 ?
                                                  veh->bub_part_pos( here, seed_part ) :
@@ -8234,6 +8260,31 @@ static bool mp_cmd_vehicle_menu_here( const netplay::intent_request &in )
     return true;
 }
 
+static bool mp_use_computer_at( npc &av, map &here, const tripoint_bub_ms &p )
+{
+    // DDA MP v4.0a-340: run the real computer_session for the session avatar.
+    // Its uilists and query_ynq/query_any prompts are bridged to the client;
+    // the terminal text itself stays on the host for now.
+    if( av.is_blind() ) {
+        av.add_msg_if_player( m_info, _( "You can not see a computer screen!" ) );
+        return true;
+    }
+    computer *used = here.computer_at( p );
+    if( used == nullptr ) {
+        av.add_msg_if_player( m_bad, _( "The console doesn't display anything coherent." ) );
+        return true;
+    }
+    if( used->eocs.empty() ) {
+        computer_session( *used ).use();
+    } else {
+        dialogue d( get_talker_for( av ), get_talker_for( used ) );
+        for( const effect_on_condition_id &eoc : used->eocs ) {
+            eoc->activate( d );
+        }
+    }
+    return true;
+}
+
 static bool mp_run_npc_menu( npc &av, npc &who )
 {
     // DDA MP v4.0a-339: native NPC examine menu for the session avatar. The
@@ -8412,9 +8463,7 @@ static bool mp_cmd_examine_at( const netplay::intent_request &in )
                     av->add_msg_if_player( m_warning,
                                            _( "You cannot use a console while mounted." ) );
                 } else {
-                    av->add_msg_if_player(
-                        m_info,
-                        _( "Using computers is not available to netplay clients yet." ) );
+                    mp_use_computer_at( *av, here, p );
                 }
             } else if( here.has_furn( p ) ) {
                 if( !av->cant_do_mounted() &&

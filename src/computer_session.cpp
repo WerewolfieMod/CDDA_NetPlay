@@ -43,6 +43,7 @@
 #include "messages.h"
 #include "mission.h"
 #include "monster.h"
+#include "netplay/netplay.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "omdata.h"
@@ -165,7 +166,7 @@ void computer_session::use()
         refresh();
     } );
 
-    avatar &player_character = get_avatar();
+    Character &player_character = get_player_character();
     // Login
     print_line( _( "Logging into %s…" ), comp.name );
     if( comp.security > 0 ) {
@@ -209,6 +210,7 @@ void computer_session::use()
 
     // Main computer loop
     int sel = 0;
+    int mp_test_computer_actions = 0;
     while( true ) {
         size_t options_size = comp.options.size();
 
@@ -234,6 +236,12 @@ void computer_session::use()
 
         sel = computer_menu.ret;
         computer_option current = comp.options[sel];
+        if( std::FILE *f = netplay::mp_diag_open( "netplay_actions.log" ) ) {
+            std::fprintf( f, "computer select=%d action=%d options=%d\n",
+                          sel, static_cast<int>( current.action ),
+                          static_cast<int>( comp.options.size() ) );
+            std::fclose( f );
+        }
         reset_terminal();
         // Once you trip the security, you have to roll every time you want to do something
         if( current.security + comp.alerts > 0 ) {
@@ -254,6 +262,10 @@ void computer_session::use()
         }
         reset_terminal();
         // Done processing a selected option.
+        if( const char *one_shot = std::getenv( "DDA_MP_TEST_COMPUTER_ONESHOT" );
+            one_shot != nullptr && one_shot[0] != '\0' && ++mp_test_computer_actions >= 1 ) {
+            break;
+        }
     }
 
     reset_terminal(); // This should have been done by now, but just in case.
@@ -1721,12 +1733,35 @@ bool computer_session::query_bool( const std::string &text, Args &&... args )
 template<typename ...Args>
 bool computer_session::query_any( const std::string &text, Args &&... args )
 {
-    print_indented_line( 0, width, text, std::forward<Args>( args )... );
+    const std::string formatted_text = string_format( text, std::forward<Args>( args )... );
+    print_indented_line( 0, width, "%s", formatted_text );
+    if( netplay::host_prompt_owner() != 0 ) {
+        std::vector<netplay::prompt_entry> pe;
+        netplay::prompt_entry e;
+        e.txt = _( "Continue" );
+        e.retval = 0;
+        e.enabled = true;
+        e.key = ' ';
+        pe.push_back( e );
+        netplay::host_prompt_uilist( formatted_text, 0, pe );
+        return true;
+    }
     return query_any();
 }
 
 bool computer_session::query_any()
 {
+    if( netplay::host_prompt_owner() != 0 ) {
+        std::vector<netplay::prompt_entry> pe;
+        netplay::prompt_entry e;
+        e.txt = _( "Continue" );
+        e.retval = 0;
+        e.enabled = true;
+        e.key = ' ';
+        pe.push_back( e );
+        netplay::host_prompt_uilist( _( "Press any key to continue…" ), 0, pe );
+        return true;
+    }
     ui_manager::redraw();
     inp_mngr.wait_for_any_key();
     return true;
@@ -1736,6 +1771,38 @@ template<typename ...Args>
 computer_session::ynq computer_session::query_ynq( const std::string &text, Args &&... args )
 {
     const std::string formatted_text = string_format( text, std::forward<Args>( args )... );
+    if( netplay::host_prompt_owner() != 0 ) {
+        std::vector<netplay::prompt_entry> pe;
+        netplay::prompt_entry yes;
+        yes.txt = _( "Yes" );
+        yes.retval = 0;
+        yes.enabled = true;
+        yes.key = 'y';
+        pe.push_back( yes );
+        netplay::prompt_entry no;
+        no.txt = _( "No" );
+        no.retval = 1;
+        no.enabled = true;
+        no.key = 'n';
+        pe.push_back( no );
+        netplay::prompt_entry quit;
+        quit.txt = _( "Quit" );
+        quit.retval = 2;
+        quit.enabled = true;
+        quit.key = 'q';
+        pe.push_back( quit );
+        const auto ans = netplay::host_prompt_uilist( formatted_text, 0, pe );
+        if( !ans || ans->canceled ) {
+            return ynq::quit;
+        }
+        if( ans->index == 0 ) {
+            return ynq::yes;
+        }
+        if( ans->index == 1 ) {
+            return ynq::no;
+        }
+        return ynq::quit;
+    }
     const bool force_uc = get_option<bool>( "FORCE_CAPITAL_YN" );
     const auto &allow_key = force_uc ? input_context::disallow_lower_case_or_non_modified_letters
                             : input_context::allow_all_keys;

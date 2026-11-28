@@ -10049,6 +10049,32 @@ void run_view_loop()
                                 sent = false;
                             }
                         }
+                    } else if( action_name == "computer_test" ) {
+                        static int mp_comp_phase = 0;
+                        static auto mp_comp_t0 = std::chrono::steady_clock::now();
+                        if( mp_comp_phase == 0 ) {
+                            mp_comp_t0 = std::chrono::steady_clock::now();
+                            netplay::client_send_intent( "test_vehicle_refuel", 0, {} );
+                            mp_inv_log( "test: computer spawn" );
+                            ++mp_comp_phase;
+                            sent = false;
+                        } else {
+                            const long long mp_comp_ms =
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - mp_comp_t0 ).count();
+                            if( mp_comp_phase == 1 && mp_comp_ms > 2500 ) {
+                                mp_client_dispatch_action( ACTION_EXAMINE, "", "" );
+                                mp_inv_log( "test: computer examine" );
+                                ++mp_comp_phase;
+                                sent = false;
+                            } else if( mp_comp_phase == 2 && mp_comp_ms > 8000 ) {
+                                mp_inv_log( "test: computer done" );
+                                ++mp_comp_phase;
+                                sent = true;
+                            } else {
+                                sent = false;
+                            }
+                        }
                     } else if( action_name == "examine_adjacent_test" ) {
                         static int mp_ea_phase = 0;
                         static auto mp_ea_t0 = std::chrono::steady_clock::now();
